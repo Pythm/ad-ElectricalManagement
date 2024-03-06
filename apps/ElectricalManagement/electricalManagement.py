@@ -834,8 +834,8 @@ class ElectricalUsage(hass.Hass):
             self.heaters.append(climate)
 
 
-        heater_switchs = self.args.get('on_off_switch', {})
-        for heater_switch in heater_switchs:
+        heater_switches = self.args.get('heater_switches', {})
+        for heater_switch in heater_switches:
             if 'name' in heater_switch:
                 sensor_states = self.get_state(entity='sensor')
                 for sensor_id, sensor_states in sensor_states.items():
