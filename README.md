@@ -1,11 +1,11 @@
 # ad-Electrical Management
 
 > [!NOTE]
-> Readme currently under construction. Some more functionality to come before taking this out of beta.
+> Readme currently under construction. Some more testing before taking this out of beta.
 
-Controls your electrical chargers, heaters and switches based on Nordpool price with a maximum kWh pr hour limitation.
+Controls your electrical chargers, heaters and switches based on consumption/production. Uses Nordpool prices and has a maximum kWh pr hour limitation.
 
-Currently supports controlling Tesla and Easee chargers.
+Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested.
 
 ### Dependencies:
 Install Nordpool custom components via HACS: https://github.com/custom-components/nordpool
@@ -16,9 +16,11 @@ Consumption sensor and accumulated consumption pr hour sensor.
 I recommend Tibber Pulse connected to HAN port. Check out https://tibber.com/
 If you are interested in switching to Tibber you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
+If you have solar or other electricity production you add a production sensor and a accumulated production sensor.
+
 ## Installation
 
-Download the `hacs` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `hacs` module.
+Download the `Electricalmanagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
 
 ## App configuration
 
@@ -26,8 +28,7 @@ Download the `hacs` directory from inside the `apps` directory here to your loca
 electricity:
   module: electricalManagement
   class: ElectricalUsage
-  log: power_log
-  log_level: INFO ###
+  log_level: WARNING ### Set to INFO for more logging. 
   json_path: /conf/apps/ElectricalManagement/ElectricityData.json
   nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
   daytax: 0.4738
@@ -96,7 +97,7 @@ electricity:
       on_for_minimum: 8
 
   climate:
-    - name: heating_cables
+    - name: floor_thermostat
     #- heater: climate.floor_thermostat
     #  consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
     #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
