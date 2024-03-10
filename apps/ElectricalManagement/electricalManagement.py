@@ -1,128 +1,5 @@
 """ ElectricalManagement.
 
-    ElectricityPrice:
-        Gets prices from Nordpool integration and calculates savings and spend hours.
-        Dependencies:
-        Install Nordpool custom components via HACS: https://github.com/custom-components/nordpool
-
-        Current bugs:
-        Does not check if tomorrow is holiday when applying day or night tax to tomorrows prices.
-
-    ElectricalUsage:
-        Uses a consumption sensor and an accumulated consumption pr hour sensor to calculate and stay within preferred kWh limit. Controls hot-water, heaters and charging (Tesla or Easee)
-        Max usage limit during one hour increases by 5 kWh if average of the 3 highest consumption hours is over limit
-        If limit is set to low it will turn down heating including hot-water and charging to 5 Ampere before it breaks limit 3 times and raises it by 5 kWh
-        This is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on but should easily be adoptable to other countries with some rewrite
-        Is intended for use at your Home location and will only change charging amps on chargers/cars that are home.
-        I use sensors from Tibber Pulse connected to HAN port.
-        Check out https://tibber.com/ If you are interested in switching to Tibber you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t 
-
-    Charger:
-        Base class of a charger/car. Calculates time to charge car based on battery size and charger data. Multiple cars with priority 1-5 is supported. Queues after priority.
-        If you have other high electricity consumption in combination with low limit it will turn down charging but no lower than 5 Amp to stay within given consumption limit.
-        That may result in unfinished charging if limit is too low or consumption is too high during calculated charge time.
-
-        Priority:
-            1: Will start at calculated time even if staying below consumption limit will result in heaters turning down/off. Will also charge until full even if it is not complete
-                due to turning down speed based on consumption limit.
-            2-5: Will wait to start charging car until it is 2kW free capacity. Will also stop charging at price increase after calculated charge time ends. If multiple chargers apply first will have to charge at full capacity before next charger checks if it is 2kW free capacity to start.
-
-        Tesla:
-            Dependencies:
-            Install Tesla Custom Integration via HACS: https://github.com/alandtse/tesla
-    
-    Climate
-        Heating sources you wish to control that sets the temperature based on outside temperature, electricity price and with possibility to reduce temporarily when consumption is high. 
-        A more extensive app for Heat-pumps/Aircondition that includes control over screens/covers etc is coming.
-
-    Hot-water:
-        Is for now programmed for 'dumb' hot-water boilers with no temperature sensors and only a on/off switch
-        It will use functions from ElectricityPrice to find times to heat your water
-        If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage
-        Other heavy consumption switches can be configured here but I have not found a use for it other than hot-water. Washing machines and Tumble dryers etc ill rather check electricity prices than having to listen to my better part complaining for hours about it not working when needed on the offset she is trying to use one of them
-
-
-    Args to configure app:
-        json_path = Path inkl name to a place to store the json file. Defaults to /homeassistat/appdaemon/apps/ElectricalManagement/ElectricityData.json
-        nordpool = your Nordpool sensor. App will search HA for nordpool sensor if none is input
-        daytax = Daytime cost to grid provider
-        nighttax = Nighttime cost to grid provider
-        workday = binary_sensor.workday_sensor # Set nighttax on holidays: https://www.home-assistant.io/integrations/workday/
-
-        power_consumption = Watt power consumption sensor
-        accumulated_consumption_current_hour = kWh consumption current hour
-        max_kwh_goal = int: Default limit for consumption during one hour. Resets to this value on month start if exided.
-        buffer = Calculation buffer below max kWh usage. In kWh. Defaults to 0.5 Depending on controllable high consumption units this can be tweaked to aim closer to goal
-        away_state = Default away state for hot-water and heaters. You can also specify this pr hot-water and heater if you want to control separate parts of the house individually
-        notify_receiver: To get notifications about charging times and if key sensors gets unavailable
-
-        locations = list up other places where you want to smart charge your car. Name must be same as in HA Zone and tracking must be available on car
-            https://www.home-assistant.io/integrations/zone/
-
-        tesla:
-            charger = None, # Unique name of charger/car. Will automatically fetch:
-            charger_sensor = None, # Sensor Plugged in or not with charging states
-            charger_switch = None, # Switch Charging or not
-            charging_amps = None, # Input Number Amps to charge
-            charger_power = None, # Charger power in kW. Contains volts and phases
-            charge_limit = None, # SOC limit sensor
-            asleep_sensor = None, # If car is sleeping
-            online_sensor = None, # If car is online
-            battery_sensor = None, # SOC (State Of Charge)
-            location_tracker = None, # Location of car/charger
-            destination_location_tracker = None, # Destination of car
-            arrival_time = None, # Sensor with Arrival time, estimated energy at arrival and destination.
-            software_update = None, # If Tesla updates software it cannot change or stop charging
-                In addition you should provide:
-            pref_charge_limit = 90, # User input if preferred SOC limit is other than 90%
-            battery_size = 100, # User input size of battery. Used to calculate amount of time to charge
-            finishByHour = None, # HA input_number for when car should be finished charging
-            priority = 3, # Priority. See full description
-            charge_now = None, # HA input_boolean to bypass smart charge if true. Tesla will also start charging immediately if SOC limit is above 90%
-            electric_consumption = None, # If you have a sensor with measure on watt consumption. Can be one sensor for many chargers
-            departure = None): # HA input_datetime for when to have car finished charging to 100%. To be written.
-
-        climate:
-
-        on_off_switch = All your hot-water boilers
-            name: You can try to use name if you have a unique name and it will find switch.uniqueName for on_off_switch and 
-                sensor.uniqueName_electric_consumption_w or sensor.uniqueName_electric_consumed_w in entities
-                my zwave entities usually has an either consumption or consumed so both those will work. Else provide both
-            on_off_switch: name of your switch and 
-            kWhconsumptionSensor: watt sensor for switch
-            peakdifference = Amount the price has to drop from one hour to next for saving measures to take affect
-            max_continuous_hours = Maximum continuous hours the unit can be off before price drops
-            on_for_minimum = Unit is on for at least the amount of hours specified during one day unless on vacation.
-
-    Example configuration:
-
-electrical_usage:
-  module: electricalManagement
-  class: ElectricalUsage
-  json_path: /conf/apps/ElectricalManagement/ElectricityData.json
-  nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
-  daytax: 0.499
-  nighttax: 0.399
-  workday: binary_sensor.workday_sensor
-  power_consumption: sensor.power_YourAdress
-  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_YourAdress
-  max_kwh_goal: 5
-  buffer: 0.5
-  away_state: input_boolean.vacation
-  csvFileForLogHighHourUsage: /config/appdaemon/SomeFolder/SomeName.csv
-  notify_receiver:
-    - mobile_app_
-
-  on_off_switch:
-    - name: SomeHotwater
-      switch: switch.SomeHotwater
-      consumptionSensor: sensor.SomeHotwater_electric_consumption_w
-      away_state: input_boolean.vacation
-      peakdifference: 0.15
-      max_continuous_hours: 15
-      on_for_minimum: 8
-
-
     @Pythm / https://github.com/Pythm
 
 """
@@ -254,6 +131,11 @@ class ElectricityPrice:
                         calculated_support:float = 0.0 # Power support calculation
                         if float(self.nordpool_tomorrow_prices[hour]) > self.power_support_above:
                             calculated_support = (float(self.nordpool_tomorrow_prices[hour]) - self.power_support_above ) * self.support_amount
+
+                        """
+                            TODO: Does not check if tomorrow is holiday when applying day or night tax to tomorrows prices. 
+                        """
+
                         if (
                             hour < 6
                             or hour > 21

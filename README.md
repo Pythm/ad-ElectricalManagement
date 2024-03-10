@@ -1,26 +1,63 @@
 # ad-Electrical Management
 
 > [!NOTE]
-> Readme currently under construction. Some more testing before taking this out of beta.
+> Readme currently under construction.
 
-Controls your electrical chargers, heaters and switches based on consumption/production. Uses Nordpool prices and has a maximum kWh pr hour limitation.
+Controls charging, climate entities and switches to control power consuming equipment like hot-water boilers etc, based on consumption/production and prices from Nordpool.
 
-Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested.
+> [!TIP]
+> This Appdaemon app is intended for use with Home Assistant at your home location and will only change charging amps on chargers/cars that are home. If you want to control electricity usage other places I recomend creating a Home Assistant and Appdaemon pr place.
+
+I use sensors from Tibber Pulse connected to HAN port.
+Check out https://tibber.com/ If you are interested in switching to Tibber you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+
+
+## Installation
+Download the `Electricalmanagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
 
 ### Dependencies:
 Install Nordpool custom components via HACS: https://github.com/custom-components/nordpool
 Workday Sensor: https://www.home-assistant.io/integrations/workday/
 
-### Sensors:
-Consumption sensor and accumulated consumption pr hour sensor.
-I recommend Tibber Pulse connected to HAN port. Check out https://tibber.com/
-If you are interested in switching to Tibber you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+Uses Met.no if you do not configure an outside temperature: https://www.home-assistant.io/integrations/met/
 
-If you have solar or other electricity production you add a production sensor and a accumulated production sensor.
+Other only needed if configured:
+Tesla Custom Integration via HACS: https://github.com/alandtse/tesla
+Easee
 
-## Installation
+## Control of your electricity usage
+Fetches prices from [Nordpool integration](https://github.com/custom-components/nordpool) to calculates savings and spend hours for heaters in addition to charging time.
 
-Download the `Electricalmanagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
+Set a max kWh limit with `max_kwh_goal` and input your `buffer` to be on the safe side. Buffer size depends on how strict you want to limit usage and how much of your electricity usage is controllable.
+Max usage limit during one hour increases by 5 kWh if average of the 3 highest consumption hours is over limit.
+If limit is set to low it will turn down heating including switches and reduce charging to 6 Ampere before it breaks limit 3 times and raises it by 5 kWh.
+Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on but should easily be adoptable to other countries with some rewrite. 
+
+> [!TIP]
+> If you live in a country where there is no tariff on higher usage I would set limit to the same size as your main fuse in kWh.
+
+Provide a consumption sensor and an accumulated consumption pr hour sensor to calculate electricity usage to stay within a preferred kWh limit. 
+If you have solar or other electricity production you add a production sensor and a accumulated production sensor. The app will the try to charge any cars with the surplus production.
+
+## Charger
+Calculates time to charge car based on battery size and charger data. App will also register electricity usage from heaters and other based on outside temperature to better calculate time needed to charge.
+Multiple cars with priority 1-5 is supported. Queues after priority.
+If you have other high electricity consumption in combination with low limit it will turn down charging but no lower than 6 Amp to stay within given consumption limit.
+This may result in unfinished charging if limit is too low or consumption is too high during calculated charge time.
+
+Priority settings for charger:
+1: Will start at calculated time even if staying below consumption limit will result in heaters turning down/off. Will also charge until full even if it is not complete due to turning down speed based on consumption limit.
+2-5: Will wait to start charging until it is 1,6kW free capacity. Will also stop charging at price increase after calculated charge time ends. If multiple chargers apply, first will have to charge at full capacity before next charger checks if it is 1,6kW free capacity to start.
+
+Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested.
+
+## Climate
+Heating sources you wish to control that sets the temperature based on outside temperature, electricity price and with possibility to reduce temporarily when consumption is high. 
+
+
+## Switches
+Dumb hot-water boilers with no temperature sensors and only a on/off switch. It will use functions from ElectricityPrice to find times to heat/turn on. If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage.
+
 
 ## App configuration
 
