@@ -3,17 +3,14 @@
 > [!NOTE]
 > Readme currently under construction.
 
-Controls charging, climate entities and switches to control power consuming equipment like hot-water boilers etc, based on consumption/production and prices from Nordpool.
+Controls charging, climate entities and switches on power consuming equipment like hot-water boilers etc, based on consumption/production and prices from Nordpool.
 
 > [!TIP]
 > This Appdaemon app is intended for use with Home Assistant at your home location and will only change charging amps on chargers/cars that are home. If you want to control electricity usage other places I recomend creating a Home Assistant and Appdaemon pr place.
 
 I use sensors from Tibber Pulse connected to HAN port.
-Check out https://tibber.com/ If you are interested in switching to Tibber you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+Check out https://tibber.com/ If you are interested in switching to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
-
-## Installation
-Download the `Electricalmanagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
 
 ### Dependencies:
 Install Nordpool custom components via HACS: https://github.com/custom-components/nordpool
@@ -22,16 +19,35 @@ Workday Sensor: https://www.home-assistant.io/integrations/workday/
 Uses Met.no if you do not configure an outside temperature: https://www.home-assistant.io/integrations/met/
 
 Other only needed if configured:
-Tesla Custom Integration via HACS: https://github.com/alandtse/tesla
-Easee
+Tesla Custom Integration. Available at HACS: https://github.com/alandtse/tesla
+Easee EV charger component for Home Assistant. Available at HACS: https://github.com/nordicopen/easee_hass
+
+
+## Installation
+Download the `ElectricalManagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
+
+Minimum configuration with suggested values:
+
+```yaml
+electricity:
+  module: electricalManagement
+  class: ElectricalUsage 
+  json_path: /conf/apps/ElectricalManagement/ElectricityData.json
+  nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
+  power_consumption: sensor.power_home
+  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
+```
+
 
 ## Control of your electricity usage
 Fetches prices from [Nordpool integration](https://github.com/custom-components/nordpool) to calculates savings and spend hours for heaters in addition to charging time.
 
+Savings is calculated based on a future drop in price, with given `pricedrop`, with calculations backwards from prisedrop to save electricity as long as price is higher than the low price when electricity turns back on + pricedrop + 5% increase pr hour backwards. Spend hours is before any price increases defined with `priceincrease`
+
 Set a max kWh limit with `max_kwh_goal` and input your `buffer` to be on the safe side. Buffer size depends on how strict you want to limit usage and how much of your electricity usage is controllable.
 Max usage limit during one hour increases by 5 kWh if average of the 3 highest consumption hours is over limit.
 If limit is set to low it will turn down heating including switches and reduce charging to 6 Ampere before it breaks limit 3 times and raises it by 5 kWh.
-Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on but should easily be adoptable to other countries with some rewrite. 
+Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for average of the 3 highest peak loads in steps 2-5kWh - 5-10kWh etc. Should be adoptable to other tariffs with some rewrite. 
 
 > [!TIP]
 > If you live in a country where there is no tariff on higher usage I would set limit to the same size as your main fuse in kWh.
@@ -52,7 +68,21 @@ Priority settings for charger:
 Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested.
 
 ## Climate
-Heating sources you wish to control that sets the temperature based on outside temperature, electricity price and with possibility to reduce temporarily when consumption is high. 
+Heating sources you wish to control based on electricity price. Sets the temperature based on outside temperature defined in a dictionary as example ,  and with possibility to reduce temporarily when consumption is high.
+
+```yaml
+      temperatures:
+        - out: -4
+          normal: 20
+          spend: 21
+          save: 13
+          away: 14
+        - out: 1
+          normal: 19
+          spend: 21
+          save: 12
+          away: 14
+```
 
 
 ## Switches
@@ -60,6 +90,14 @@ Dumb hot-water boilers with no temperature sensors and only a on/off switch. It 
 
 
 ## App configuration
+
+### Json storage
+Configure a path to store a json file with `json_path`. Persistent data will be updated with max kWh usage for the 3 highest hours.
+
+Store max Ampere the car/charger can receive. This could be when the set ampere in charger is higher that the car can receive, or if charger starts low and increases output to "soft start" charging.
+
+Store heaters and other unregistered consumptions after save functions with outside temperature and hours saving to better calculate how many hours cars need to finish charging
+
 
 ```yaml
 electricity:
@@ -123,13 +161,13 @@ electricity:
 #      switch: switch.vvb_hus
 #      consumptionSensor: sensor.vvb_hus_electric_consumption_w
 #      away_state: input_boolean.vekk_reist
-      peakdifference: 0.12
+      pricedrop: 0.12
       max_continuous_hours: 15
       on_for_minimum: 8
     - name: vvb_leilighet
       namespace: hass_leil
       away_state: input_boolean.leil_vekk_reist
-      peakdifference: 0.12
+      pricedrop: 0.12
       max_continuous_hours: 15
       on_for_minimum: 8
 
@@ -140,14 +178,14 @@ electricity:
     #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 14
       on_for_minimum: 6
-      peakdifference: 0.15
+      pricedrop: 0.15
       #away_state: Will use default if not specified.
       automate: input_boolean.automatiser_varmekabler_bod
       #recipient:
       indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
       target_indoor_temp: 20
       low_price_max_continuous_hours: 3
-      low_price_peakdifference: 0.65
+      priceincrease: 0.65
       temperatures:
         - out: -4
           normal: 20

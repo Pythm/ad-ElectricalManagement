@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 import hassapi as hass
 import datetime
@@ -18,13 +18,12 @@ OUT_TEMP:float = 0.0
 RAIN_AMOUNT:float = 0.0
 WIND_AMOUNT:float = 0.0
 
+
 class ElectricityPrice:
 
     ADapi = None
     nordpool_prices = None
     currency = None
-    daytax = 0
-    nighttax = 0
     workday = None
     elpricestoday = []
     nordpool_todays_prices = []
@@ -33,11 +32,12 @@ class ElectricityPrice:
     sorted_elprices_tomorrow = []
 
 
-    def __init__(self,
+    def __init__(
+        self,
         api,
         nordpool = None,
-        daytax = None,
-        nighttax = None,
+        daytax = 0,
+        nighttax = 0,
         workday = None,
         power_support_above = 10,
         support_amount = 0
@@ -59,10 +59,8 @@ class ElectricityPrice:
             )
 
         self.currency = self.ADapi.get_state(entity_id = self.nordpool_prices, attribute = 'currency')
-        if daytax:
-            self.daytax = daytax
-        if nighttax:
-            self.nighttax = nighttax
+        self.daytax = daytax
+        self.nighttax = nighttax
         if workday:
             self.workday = workday
         else:
@@ -88,11 +86,14 @@ class ElectricityPrice:
         self.getprices()
 
 
-        # Fetches prices from Nordpool sensor and adds day and night tax
     def getprices(self):
+        """ Fetches prices from Nordpool sensor and adds day and night tax
+            
+            TODO: Verify time with attributes from "Raw today" and "Raw tomorrow" containing datetime
+            Fail every time summertime is starting/stopping due to one hour less/more.
+        """
         self.elpricestoday = []
         isNotWorkday = self.ADapi.get_state(self.workday) == 'off'
-
 
         # Todays prices
         try:
@@ -155,20 +156,22 @@ class ElectricityPrice:
                 self.sorted_elprices_tomorrow = sorted(self.sorted_elprices_tomorrow)
 
 
-        # Returns starttime, endtime and price for cheapest continuous hours with different ranges depenting on time the call was made
     def getContinuousCheapestTime(self,
         hoursTotal = 1,
         calculateBeforeNextDayPrices = False,
         startTime = datetime.datetime.today().hour,
         finishByHour = 8
     ):
+        """ Returns starttime, endtime and price for cheapest continuous hours with different options depenting on time the call was made
+        """
+
         finishByHour += 1
         h = math.floor(hoursTotal)
         if h == 0:
             h = 1
         if (
             self.ADapi.now_is_between('13:00:00', '23:59:59')
-            and len(self.elpricestoday) >= 47
+            and len(self.elpricestoday) >= 47 # Looses one hour when starting summertime
         ):
             finishByHour += 24
         elif (
@@ -184,7 +187,11 @@ class ElectricityPrice:
             and len(self.elpricestoday) < 47
             and self.ADapi.datetime(aware=True) - self.nordpool_last_updated > datetime.timedelta(minutes = 30)
         ):
-            # TODO: Reload integration based on?:
+            """ It can happen that the Nordpool does not update properly with tomorrows prices.
+                That has not been tested properly so I'm not sure reloading intergration works.
+                One time I had to restart HA for Nordpool integration to get tomorrows prices.
+                TODO: Find out what data to trigger reload of Nordpool integration.
+            """
             self.nordpool_last_updated = self.ADapi.datetime(aware=True)
             self.ADapi.log(
                 f"RELOADS Nordpool integration. Is tomorrows prices valid? {self.ADapi.get_state(entity_id = self.nordpool_prices, attribute = 'tomorrow_valid')} : "
@@ -212,19 +219,24 @@ class ElectricityPrice:
                 priceToComplete += self.elpricestoday[hour]
                 divide += 1
             avgPriceToComplete = priceToComplete / divide
-            self.ADapi.log(f"PriceToComplete hour avgPriceToComplete = {avgPriceToComplete}", level = 'INFO') ###
+            self.ADapi.log(
+                "Hours to complete is longer than given time from start to finish. "
+                f"Average price to complete pr hour = {avgPriceToComplete}"
+                , level = 'INFO'
+            ) ###
 
         if startTime < datetime.datetime.today().hour:
             self.ADapi.log(
-                f"DEBUG: Starttime {startTime} before adding {datetime.datetime.today().replace(hour = 0, minute = 0, second = 0, microsecond = 0 ) + datetime.timedelta(hours = startTime)}",
-                level = 'INFO'
+                f"CHECK IF CORRECT: Starttime set to the past: {startTime}. "
+                f"Hours Total: {hoursTotal} Finish By Hour: {finishByHour}. Calculate before next day price? {calculateBeforeNextDayPrices} "
+                , level = 'INFO'
             ) ###
-            self.ADapi.log(f"{hoursTotal} - {calculateBeforeNextDayPrices} {finishByHour}", level = 'INFO') ###
             startTime += 24
             self.ADapi.log(
-                f"Starttime {startTime} after adding {datetime.datetime.today().replace(hour = 0, minute = 0, second = 0, microsecond = 0 ) + datetime.timedelta(hours = startTime)}",
+                f"Starttime is {startTime} after adding 24 hours",
                 level = 'INFO'
             ) ###
+
         runtime = datetime.datetime.today().replace(hour = 0, minute = 0, second = 0, microsecond = 0 ) + datetime.timedelta(hours = startTime)
         endtime = runtime + datetime.timedelta(hours = hoursTotal)
         if runtime.hour == datetime.datetime.today().hour:
@@ -232,12 +244,14 @@ class ElectricityPrice:
         return runtime, endtime, round(avgPriceToComplete/h, 3)
 
 
-        # Compares the X hour lowest price to a minimum change and retuns the lowest price
     def findlowprices(self,
         checkhour = 1,
         hours = 6,
         min_change = 0.1
     ):
+        """ Helper function that compares the X hour lowest price to a minimum change and retuns the lowest price
+        """
+
         hours -= 1 # Lists operates 0-23
         if checkhour < 24:
             if self.sorted_elprices_today[hours] > self.sorted_elprices_today[0] + min_change:
@@ -251,25 +265,26 @@ class ElectricityPrice:
                 return self.sorted_elprices_tomorrow[0] + min_change
 
 
-        # Finds peak variations in electricity price for saving purposes and returns list with datetime objects
     def findpeakhours(self,
-        peakdifference = 0.3,
+        pricedrop = 0.3,
         max_continuous_hours = 3,
         on_for_minimum = 6
     ):
+        """ Finds peak variations in electricity price for saving purposes and returns list with datetime objects
+        """
         peak_hours = []
         hour = 0
         length = len(self.elpricestoday) -1
         while hour < length:
                 # Checks if price drops more than wanted peak difference
-            if self.elpricestoday[hour] - self.elpricestoday[hour+1] >= peakdifference:
+            if self.elpricestoday[hour] - self.elpricestoday[hour+1] >= pricedrop:
                 if self.elpricestoday[hour] > self.findlowprices(checkhour = hour, hours = on_for_minimum):
                     peak_hours.append(hour)
                 else:
                     countDown = on_for_minimum
                     h = hour +1
                     while (
-                        self.elpricestoday[hour] - self.elpricestoday[h] >= peakdifference
+                        self.elpricestoday[hour] - self.elpricestoday[h] >= pricedrop
                         and h < length
                         and countDown > 0
                     ):
@@ -284,7 +299,7 @@ class ElectricityPrice:
             while hour < length -2:
                     # Checks if price drops 2x more than wanted peak difference during 3 hours
                 if (
-                    self.elpricestoday[hour] - self.elpricestoday[hour+3] >= peakdifference * 1.8
+                    self.elpricestoday[hour] - self.elpricestoday[hour+3] >= pricedrop * 1.8
                     and self.elpricestoday[hour+1] > self.findlowprices(checkhour = hour, hours = on_for_minimum)
                 ):
                     peak_hours.append(hour+2)
@@ -316,7 +331,7 @@ class ElectricityPrice:
             ):
                 if not last_hour in peak_hours:
                     continuous_hours = 0
-                peakdiff = peakdifference
+                peakdiff = pricedrop
                 last_hour = peaks_list[neg_peak_counter_hour]
                 counter = 0
                 h = last_hour 
@@ -396,11 +411,13 @@ class ElectricityPrice:
         return peak_times
 
 
-        # Finds low price variations in electricity price for spending purposes and returns list with datetime objects
     def findLowPriceHours(self,
-        peakdifference = 0.6,
+        priceincrease = 0.6,
         max_continuous_hours = 2
     ):
+        """ Finds low price variations in electricity price for spending purposes and returns list with datetime objects
+        """
+
         cheap_hours = []
         hour = 1
         length = len(self.elpricestoday) -2
@@ -408,7 +425,7 @@ class ElectricityPrice:
         while hour < length:
                 # Checks if price increases more than wanted peak difference
             if (
-                self.elpricestoday[hour+1] - self.elpricestoday[hour] >= peakdifference
+                self.elpricestoday[hour+1] - self.elpricestoday[hour] >= priceincrease
                 and self.elpricestoday[hour] <= self.findlowprices(hour, 3, 0.08)
             ):
                 cheap_hours.append(hour)
@@ -417,8 +434,8 @@ class ElectricityPrice:
                 hour += 1
                 # Checks if price increases x1,4 peak difference during two hours
             elif (
-                self.elpricestoday[hour+1] - self.elpricestoday[hour] >= (peakdifference * 0.6)
-                and self.elpricestoday[hour+1] - self.elpricestoday[hour-1] >= (peakdifference * 1.4)
+                self.elpricestoday[hour+1] - self.elpricestoday[hour] >= (priceincrease * 0.6)
+                and self.elpricestoday[hour+1] - self.elpricestoday[hour-1] >= (priceincrease * 1.4)
                 and self.elpricestoday[hour-1] <= self.findlowprices(hour, 3, 0.1)
             ):
                 cheap_hours.append(hour-1)
@@ -433,8 +450,11 @@ class ElectricityPrice:
                 cheap_times.append(datetime.datetime.today().replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(hours = t))
         return cheap_times
 
-        # Returns how many hours continiously peak hours turn something off/down for savings
+
     def continuousHoursOff(self, peak_hours = []):
+        """ Returns how many hours continiously peak hours turn something off/down for savings
+        """
+
         off_hours:int = 0
         max_off_hours:int = 0
         turn_on_at = datetime.datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -459,8 +479,10 @@ class ElectricityPrice:
         return max_off_hours, turn_on_at
 
 
-        # Formats hours list to readable string for easy logging/testing of settings
     def print_peaks(self, peak_hours = []):
+        """ Formats hours list to readable string for easy logging/testing of settings
+        """
+
         print_peak_hours:str = ''
         for t in peak_hours:
             if (
@@ -496,13 +518,12 @@ class ElectricityPrice:
 
 
 
-""" ElectricalUsage.
-Main class of ElectricalManagement
-
-    @Pythm / https://github.com/Pythm
-
-"""
 class ElectricalUsage(hass.Hass):
+
+    """ Main class of ElectricalManagement
+
+        @Pythm / https://github.com/Pythm
+    """
 
     chargers:list = []
     appliances:list = []
@@ -511,16 +532,14 @@ class ElectricalUsage(hass.Hass):
 
     def initialize(self):
 
-        self.log("electricalManagement initialized") ###
-
         global RECIPIENTS
         RECIPIENTS = self.args.get('notify_receiver', [])
 
         global ELECTRICITYPRICE
         ELECTRICITYPRICE = ElectricityPrice(self,
         nordpool = self.args.get('nordpool',None),
-        daytax = self.args.get('daytax',None),
-        nighttax = self.args.get('nighttax',None),
+        daytax = self.args.get('daytax',0),
+        nighttax = self.args.get('nighttax',0),
         workday = self.args.get('workday',None),
         power_support_above = self.args.get('power_support_above', 10),
         support_amount = self.args.get('support_amount', 0)
@@ -564,20 +583,21 @@ class ElectricalUsage(hass.Hass):
                 level = 'WARNING'
             )
             self.log(
-                "Check out https://tibber.com/no to learn more. "
-                "If you are interested in switchin to Tibber please use my invite link to get a startup bonus: "
+                "Check out https://tibber.com/ to learn more. "
+                "If you are interested in switchin to Tibber you can use my invite link to get a startup bonus: "
                 "https://invite.tibber.com/fydzcu9t",
                 level = 'INFO'
             )
             raise Exception (
-                "accumulated_consumption_current_hour not found. Please install Tibber or input equivialent to provide needed data"
+                "accumulated_consumption_current_hour not found. "
+                "Please install Tibber Pulse or input equivialent to provide kWh consumption current hour."
             )
         else:
             attr_last_updated = self.get_state(entity_id=self.accumulated_consumption_current_hour, attribute="last_updated")
             if not attr_last_updated:
                 self.log(
                     f"{self.get_state(self.accumulated_consumption_current_hour)} has no 'last_updated' attribute. Function might fail",
-                    level = 'WARNING'
+                    level = 'INFO'
                 )
 
             # Production sensors
@@ -585,23 +605,18 @@ class ElectricalUsage(hass.Hass):
         self.accumulated_production_current_hour = self.args.get('accumulated_production_current_hour', None) # Watt
 
             # Setting buffer for kWh usage
-        self.buffer = self.args.get('buffer', 0.5)
+        self.buffer = self.args.get('buffer', 0.4)
         self.buffer -= 0.04 # Correction of calculation
         self.max_kwh_goal: int = self.args.get('max_kwh_goal', 5)
 
 
             # Establish and recall persistent data using JSON
-        """ Persistent data will be updated with max kWh usage for the 3 highest hours.
-            In Norway we pay extra for average of the 3 highest peak loads in steps 2-5kWh - 5-10kWh etc.
-
-            Store max Ampere the car can charge when connected to Easee in cases where the set ampere in charger
-            is higher that the car can receive
-
-            Store consuption after save functions depending on outside temperature and hours saving,
-            to better calculate how many hours cars need to finish charging.
-        """
         global JSON_PATH
-        JSON_PATH = self.args.get('json_path', '/conf/apps/ElectricalManagement/ElectricityData.json')
+        JSON_PATH = self.args.get('json_path', None)
+        if not JSON_PATH:
+            raise Exception (
+                "Path to store json not provided. Please input a valid path with configuration 'json_path' "
+            )
         ElectricityData:dict = {}
         try:
             with open(JSON_PATH, 'r') as json_read:
@@ -612,6 +627,10 @@ class ElectricalUsage(hass.Hass):
                             "consumption" : {"idleConsumption" : {"ConsumptionData" : {}}}}
             with open(JSON_PATH, 'w') as json_write:
                 json.dump(ElectricityData, json_write, indent = 4)
+            self.log(
+                f"Json file created at {JSON_PATH}",
+                level = 'INFO'
+            )
 
         self.max_kwh_usage_pr_hour = ElectricityData['MaxUsage']['max_kwh_usage_pr_hour']
         newTotal:float = 0.0
@@ -842,7 +861,7 @@ class ElectricalUsage(hass.Hass):
                 kWhconsumptionSensor = heater['kWhconsumptionSensor'],
                 max_continuous_hours = heater.get('max_continuous_hours', 2),
                 on_for_minimum = heater.get('on_for_minimum', 12),
-                peakdifference = heater.get('peakdifference', 1),
+                pricedrop = heater.get('pricedrop', 1),
                 namespace = heater.get('namespace', None),
                 away = heater['away_state'],
                 automate = heater.get('automate', None),
@@ -852,7 +871,7 @@ class ElectricalUsage(hass.Hass):
                 rain_level = heater.get('rain_level', self.rain_level),
                 anemometer_speed = heater.get('anemometer_speed', self.anemometer_speed),
                 low_price_max_continuous_hours = heater.get('low_price_max_continuous_hours', 2),
-                low_price_peakdifference = heater.get('low_price_peakdifference', 1),
+                priceincrease = heater.get('priceincrease', 1),
                 windowsensors = heater.get('windowsensors', []),
                 daytime_savings = heater.get('daytime_savings', {}),
                 temperatures = heater.get('temperatures', {})
@@ -916,8 +935,8 @@ class ElectricalUsage(hass.Hass):
                 heater_switch['max_continuous_hours'] = 8
             if not 'on_for_minimum' in heater_switch:
                 heater_switch['on_for_minimum'] = 8
-            if not 'peakdifference' in heater_switch:
-                heater_switch['peakdifference'] = 0.3
+            if not 'pricedrop' in heater_switch:
+                heater_switch['pricedrop'] = 0.3
             if not 'away_state' in heater_switch:
                 heater_switch['away_state'] = self.away_state
 
@@ -928,7 +947,7 @@ class ElectricalUsage(hass.Hass):
                 kWhconsumptionSensor = heater_switch['kWhconsumptionSensor'],
                 max_continuous_hours = heater_switch['max_continuous_hours'],
                 on_for_minimum = heater_switch['on_for_minimum'],
-                peakdifference = heater_switch['peakdifference'],
+                pricedrop = heater_switch['pricedrop'],
                 namespace = heater_switch.get('namespace', None),
                 away = heater_switch['away_state'],
                 automate = heater_switch.get('automate', None),
@@ -1160,9 +1179,7 @@ class ElectricalUsage(hass.Hass):
             if (
                 CHARGE_SCHEDULER.isPastChargingTime()
                 or not CHARGE_SCHEDULER.isChargingTime()
-                or not self.solarChargingList
             ):
-                self.SolarProducing_ChangeToZero = False
                 for c in self.chargers:
                     if (
                         c.getLocation() == 'home'
@@ -1174,7 +1191,10 @@ class ElectricalUsage(hass.Hass):
                         ):
                             pass
 
-                        elif not c.dontStopMeNow():
+                        elif (
+                            not c.dontStopMeNow()
+                            and not self.SolarProducing_ChangeToZero
+                        ):
                             c.stopCharging()
                             if CHARGE_SCHEDULER.isPastChargingTime():
                                 self.log(
@@ -1183,7 +1203,9 @@ class ElectricalUsage(hass.Hass):
                                     level = 'INFO'
                                 )
 
-            self.heatersRedusedConsumption = []
+            for heater in reversed(self.heatersRedusedConsumption):
+                heater.isOverconsumption = False
+                self.heatersRedusedConsumption.remove(heater)
 
 
             """ Change consumption if above target or below production
@@ -1229,7 +1251,6 @@ class ElectricalUsage(hass.Hass):
 
                             if c.ampereCharging > 6:
                                 AmpereToReduce = math.ceil(reduce_Wh / c.voltphase)
-                                self.log(f"Ampere to reduce in reducing overconsumption: {AmpereToReduce}") ###
                                 if (c.ampereCharging + AmpereToReduce) < 6:
                                     c.setChargingAmps(charging_amp_set = 6)
                                     available_Wh += (AmpereToReduce + 6) * c.voltphase
@@ -4140,7 +4161,7 @@ class Heater:
         kWhconsumptionSensor = None,
         max_continuous_hours = 8,
         on_for_minimum = 8,
-        peakdifference = 0.3,
+        pricedrop = 0.3,
         namespace = None,
         away = None,
         automate = None,
@@ -4177,7 +4198,7 @@ class Heater:
         self.prev_consumption = 0
         self.max_continuous_hours = max_continuous_hours
         self.on_for_minimum = on_for_minimum
-        self.peakdifference = peakdifference
+        self.pricedrop = pricedrop
 
             # Consumption data
         self.time_to_save:list = []
@@ -4228,7 +4249,7 @@ class Heater:
     def heater_getNewPrices(self, kwargs):
         global ELECTRICITYPRICE
         self.time_to_save = ELECTRICITYPRICE.findpeakhours(
-            peakdifference = self.peakdifference,
+            pricedrop = self.pricedrop,
             max_continuous_hours = self.max_continuous_hours,
             on_for_minimum = self.on_for_minimum
         )
@@ -4409,7 +4430,7 @@ class Climate(Heater):
         kWhconsumptionSensor = None,
         max_continuous_hours = 8,
         on_for_minimum = 8,
-        peakdifference = 0.3,
+        pricedrop = 0.3,
         namespace = None,
         away = None,
         automate = None,
@@ -4419,7 +4440,7 @@ class Climate(Heater):
         rain_level = 300,
         anemometer_speed = 10,
         low_price_max_continuous_hours = 1,
-        low_price_peakdifference = 1,
+        priceincrease = 1,
         windowsensors = [],
         daytime_savings = {},
         temperatures = {}
@@ -4430,7 +4451,7 @@ class Climate(Heater):
         self.rain_level = rain_level
         self.anemometer_speed = anemometer_speed
         self.low_price_max_continuous_hours = low_price_max_continuous_hours
-        self.low_price_peakdifference = low_price_peakdifference
+        self.priceincrease = priceincrease
         self.windowsensors = windowsensors
         self.daytime_savings = daytime_savings
         self.temperatures = temperatures
@@ -4442,7 +4463,7 @@ class Climate(Heater):
             kWhconsumptionSensor = kWhconsumptionSensor,
             max_continuous_hours = max_continuous_hours,
             on_for_minimum = on_for_minimum,
-            peakdifference = peakdifference,
+            pricedrop = pricedrop,
             namespace = namespace,
             away = away,
             automate = automate,
@@ -4484,7 +4505,7 @@ class Climate(Heater):
         global ELECTRICITYPRICE
         super().heater_getNewPrices(0)
         self.time_to_spend = ELECTRICITYPRICE.findLowPriceHours(
-            peakdifference = self.low_price_peakdifference,
+            priceincrease = self.priceincrease,
             max_continuous_hours = self.low_price_max_continuous_hours
         )
 
@@ -4691,7 +4712,7 @@ class On_off_switch(Heater):
         kWhconsumptionSensor = None,
         max_continuous_hours = 8,
         on_for_minimum = 8,
-        peakdifference = 0.3,
+        pricedrop = 0.3,
         namespace = None,
         away = None,
         automate = None,
@@ -4707,7 +4728,7 @@ class On_off_switch(Heater):
             kWhconsumptionSensor = kWhconsumptionSensor,
             max_continuous_hours = max_continuous_hours,
             on_for_minimum = on_for_minimum,
-            peakdifference = peakdifference,
+            pricedrop = pricedrop,
             namespace = namespace,
             away = away,
             automate = automate,
