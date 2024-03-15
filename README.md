@@ -1,27 +1,49 @@
 # ad-Electrical Management
 
 > [!NOTE]
-> Readme currently under construction.
+> This README is currently under construction. Some configurations have changed or will change to make them more understandable during this process. Recently, `peakdifference` changed to `pricedrop` in heater configuration. Similarly, `low_price_peakdifference` changed to `priceincrease`. Documentation on changes will only be given after the first release. Stay tuned!
 
-Controls charging, climate entities and switches on power consuming equipment like hot-water boilers etc, based on consumption/production and prices from Nordpool.
+The purpose of this app is to help reduce your electricity bill by:
+- Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
+- Turning on/off heating sources and hot water boilers based on electricity prices.
+
+
+## What platforms does it support?
+This app is designed to work with [AppDaemon](https://github.com/AppDaemon/appdaemon) and [Home Assistant](https://www.home-assistant.io/). Home Assistant is a popular open-source home automation platform that offers a wide range of features and integrations with various smart home devices. If you're not already using Home Assistant, we recommend checking it out.
+
+AppDaemon is a loosely coupled, multi-threaded, sandboxed Python execution environment for writing automation apps for various types of home automation software, including Home Assistant and MQTT.
+
+
+## How does it work?
+The app calculates the optimal charging time for your electric car based on your historical electricity consumption, current rates, and future prices from the [Nordpool integration](https://github.com/custom-components/nordpool). It also takes into account other factors like weather conditions.
+
+For heating sources and hot water boilers, the app uses similar calculations to determine when to turn them on/off based on the lowest possible electricity rates while still ensuring comfort needs are met. It can also turn up heating sources before a price increase. The app continuously monitors your energy consumption and adjusts settings accordingly, helping you avoid peak hours when electricity rates are higher and maximize savings during off-peak hours.
 
 > [!TIP]
-> This Appdaemon app is intended for use with Home Assistant at your home location and will only change charging amps on chargers/cars that are home. If you want to control electricity usage other places I recomend creating a Home Assistant and Appdaemon pr place.
+> App is written to control electricity at your home location and will only change charging amps on chargers/cars that are home. If you want to control electricity usage in other places, I recommend creating a separate Home Assistant and AppDaemon instance for each location.
 
-I use sensors from Tibber Pulse connected to HAN port.
-Check out https://tibber.com/ If you are interested in switching to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+> [!TIP]
+> I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in switching to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+
+> [!NOTE]
+> Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications.
+
+> [!TIP]
+> If you live in a country where there is no tariff on higher usage, set the limit to the same size as your main fuse in kWh.
+
+If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production. I do not have solar panels installed and this feature is only tested with manual input of test data. Please report any unexpected behavior.
 
 
 ### Dependencies:
-Install Nordpool custom components via HACS: https://github.com/custom-components/nordpool
-Workday Sensor: https://www.home-assistant.io/integrations/workday/
+To use this app, install the following components via HACS:
+- [Nordpool custom components](https://github.com/custom-components/nordpool)
+- Workday Sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
 
-Uses Met.no if you do not configure an outside temperature: https://www.home-assistant.io/integrations/met/
+The app uses the Met.no API for outside temperature if you do not configure an alternative source: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
 
-Other only needed if configured:
-Tesla Custom Integration. Available at HACS: https://github.com/alandtse/tesla
-Easee EV charger component for Home Assistant. Available at HACS: https://github.com/nordicopen/easee_hass
-
+You only need the following optional components if they are configured in your setup:
+- Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
+- Easee EV charger component for Home Assistant: [HACS Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
 
 ## Installation
 Download the `ElectricalManagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
@@ -38,39 +60,96 @@ electricity:
   accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
 ```
 
+Provide a consumption sensor `power_consumption` and an accumulated consumption pr hour sensor `accumulated_consumption_current_hour` to calculate and adjust electricity usage.
 
-## Control of your electricity usage
-Fetches prices from [Nordpool integration](https://github.com/custom-components/nordpool) to calculates savings and spend hours for heaters in addition to charging time.
 
-Savings is calculated based on a future drop in price, with given `pricedrop`, with calculations backwards from prisedrop to save electricity as long as price is higher than the low price when electricity turns back on + pricedrop + 5% increase pr hour backwards. Spend hours is before any price increases defined with `priceincrease`
+### Json storage
+Configure a path inclusive name 'name.json' to store a JSON file using the `json_path` as persistent data.
 
-Set a max kWh limit with `max_kwh_goal` and input your `buffer` to be on the safe side. Buffer size depends on how strict you want to limit usage and how much of your electricity usage is controllable.
-Max usage limit during one hour increases by 5 kWh if average of the 3 highest consumption hours is over limit.
-If limit is set to low it will turn down heating including switches and reduce charging to 6 Ampere before it breaks limit 3 times and raises it by 5 kWh.
-Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for average of the 3 highest peak loads in steps 2-5kWh - 5-10kWh etc. Should be adoptable to other tariffs with some rewrite. 
+Persistent data will be updated with:
+- The maximum kWh usage for the 3 highest hours.
+- The maximum amperage that the car/charger can receive. This could occur when the set amperage in the charger is higher than what the car can receive, or if the charger starts low and increases output to perform a "soft start" charging.
+- Store heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
 
-> [!TIP]
-> If you live in a country where there is no tariff on higher usage I would set limit to the same size as your main fuse in kWh.
 
-Provide a consumption sensor and an accumulated consumption pr hour sensor to calculate electricity usage to stay within a preferred kWh limit. 
-If you have solar or other electricity production you add a production sensor and a accumulated production sensor. The app will the try to charge any cars with the surplus production.
+### Other configurations for main app
+Set a max kWh limit with `max_kwh_goal` and input your `buffer` to be on the safe side. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as should be a good starting point.
 
-## Charger
-Calculates time to charge car based on battery size and charger data. App will also register electricity usage from heaters and other based on outside temperature to better calculate time needed to charge.
-Multiple cars with priority 1-5 is supported. Queues after priority.
-If you have other high electricity consumption in combination with low limit it will turn down charging but no lower than 6 Amp to stay within given consumption limit.
-This may result in unfinished charging if limit is too low or consumption is too high during calculated charge time.
+> [!IMPORTANT]
+> Max usage limit during one hour increases by 5 kWh if the average of the 3 highest consumption hours is over the limit. If the limit is set too low, it will turn down heating including switches and reduce charging to as low as 6 Ampere.
 
-Priority settings for charger:
-1: Will start at calculated time even if staying below consumption limit will result in heaters turning down/off. Will also charge until full even if it is not complete due to turning down speed based on consumption limit.
-2-5: Will wait to start charging until it is 1,6kW free capacity. Will also stop charging at price increase after calculated charge time ends. If multiple chargers apply, first will have to charge at full capacity before next charger checks if it is 1,6kW free capacity to start.
+Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 and on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
 
-Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested.
+In Norway, we get 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account.
 
-## Climate
-Heating sources you wish to control based on electricity price. Sets the temperature based on outside temperature defined in a dictionary as example ,  and with possibility to reduce temporarily when consumption is high.
+Set a main vacation switch with `away_state` to lower temperature when away. This can be configured/overridden individually per climate/switch entity if you are controlling apartments, etc.
+
+Get notifications about charge time to your mobile phones with `notify_receiver`.
 
 ```yaml
+  max_kwh_goal: 5 # 5 is default.
+  buffer: 0.4
+  daytax: 0.5573 # 0 is default
+  nighttax: 0.4393 # 0 is default
+  workday: binary_sensor.workday_sensor
+  power_support_above: 0.9125 # Inkl vat
+  support_amount: 0.9 # 90%
+  away_state: input_boolean.vacation
+  notify_receiver:
+    - mobile_app_yourphone
+```
+
+### Weather sensors
+The app relies on outside temperature to log and calculate electricity usage. If no sensors is defined with `outside_temperature`, the app will try to retrieve data from [Met.no](https://www.home-assistant.io/integrations/met/).
+
+In addition, you can configure rain and anemometer sensors. For more information on these sensors, check the climate documentation.
+
+```yaml
+  outside_temperature: sensor.netatmo_out_temperature
+  rain_sensor: sensor.netatmo_regnsensor_rain
+  anemometer: sensor.netatmo_anemometer_wind_strength
+```
+
+## Charging
+Calculates time to charge cars based on SOC, battery sizes and charger data. App will also register electricity usage from heaters and other based on outside temperature to better calculate time needed to charge if max usage limit is expected to be below needed kW to maintain a full chargespeed.
+
+Multiple cars with priority 1-5 is supported. Queues after priority.
+If you have other high electricity consumption in combination with low limit it will turn down charging but no lower than 6 Amp.
+This may result in unfinished charging if limit is too low or consumption is too high during calculated charge time.
+
+The next car by priority will start when there is enough power available. Either by current cars charging with max ampere or is finished. If multiple chargers in queue, first will have to charge at full capacity before next charger checks if it is 1,6kW free capacity to start.
+
+Priority settings for charger:
+1-2: Will start at calculated time even if staying below consumption limit will result in heaters turning down/off. Will also charge until full even if it is not complete in time before price increase, due to turning down speed based on consumption limit.
+3-5: Will wait to start charging until it is 1,6kW free capacity. Will also stop charging at price increase after calculated charge time ends.
+
+Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested but implemented. Documentation to request other cars or wall chargers will be published later.
+
+
+## Climate
+entites are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used. If the heater does not have a consumption sensor you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit, and together with kWh sensor, it calculate expected available power during chargetime.
+
+> [!IMPORTANT]
+> If there is no kWh sensor for heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your power_consumption sensor, but this does not take into acount if the heater has been turned down for longer periodes of time. This might affect calculated chargetime.
+
+
+```yaml
+  climate:
+    - name: floor_thermostat
+    #- heater: climate.floor_thermostat
+    #  consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
+    #  power: 1000
+    #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
+      max_continuous_hours: 2
+      on_for_minimum: 6
+      pricedrop: 0.15
+      #away_state: Will use default if not specified.
+      automate: input_boolean.automatiser_varmekabler_bod
+      #recipient:
+      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
+      target_indoor_temp: 20
+      low_price_max_continuous_hours: 3
+      priceincrease: 0.65
       temperatures:
         - out: -4
           normal: 20
@@ -86,18 +165,17 @@ Heating sources you wish to control based on electricity price. Sets the tempera
 
 
 ## Switches
-Dumb hot-water boilers with no temperature sensors and only a on/off switch. It will use functions from ElectricityPrice to find times to heat/turn on. If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage.
+Hot-water boilers with no temperature sensors with only a on/off switch. It will use functions from ElectricityPrice to find times to heat/turn on. If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage.
 
 
-## App configuration
+### Savings settings
+Savings is calculated based on a future drop in price, with given `pricedrop`, with calculations backwards from prisedrop to save electricity as long as price is higher than the low price when electricity turns back on + pricedrop + 5% increase pr hour backwards Configure `max_continuous_hours` it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete is consideres magazines and can be off for multiple hours before comfort is lost so configure depending on magazine pr climate/switch entity. You can also define a `on_for_minimum` for how many hours pr day the entity needs to heat normal. This defaults to 12 hours.
 
-### Json storage
-Configure a path to store a json file with `json_path`. Persistent data will be updated with max kWh usage for the 3 highest hours.
+### Spending settings
+Spend hours occurs before any price increases defined with `priceincrease`
 
-Store max Ampere the car/charger can receive. This could be when the set ampere in charger is higher that the car can receive, or if charger starts low and increases output to "soft start" charging.
 
-Store heaters and other unregistered consumptions after save functions with outside temperature and hours saving to better calculate how many hours cars need to finish charging
-
+### Example App configuration
 
 ```yaml
 electricity:
