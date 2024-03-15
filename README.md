@@ -9,7 +9,9 @@ The purpose of this app is to help reduce your electricity bill by:
 
 
 ## What platforms does it support?
-This app is designed to work with [AppDaemon](https://github.com/AppDaemon/appdaemon) and [Home Assistant](https://www.home-assistant.io/). Home Assistant is a popular open-source home automation platform that offers a wide range of features and integrations with various smart home devices. If you're not already using Home Assistant, we recommend checking it out.
+This app is designed to work with [AppDaemon](https://github.com/AppDaemon/appdaemon) and [Home Assistant](https://www.home-assistant.io/).
+
+Home Assistant is a popular open-source home automation platform that offers a wide range of features and integrations with various smart home devices. If you're not already using Home Assistant, I recommend checking it out.
 
 AppDaemon is a loosely coupled, multi-threaded, sandboxed Python execution environment for writing automation apps for various types of home automation software, including Home Assistant and MQTT.
 
@@ -36,8 +38,8 @@ If you have solar or other electricity production, add a production sensor and a
 
 ### Dependencies:
 To use this app, install the following components via HACS:
-- [Nordpool custom components](https://github.com/custom-components/nordpool)
-- Workday Sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
+- Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
+- Workday sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
 
 The app uses the Met.no API for outside temperature if you do not configure an alternative source: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
 
@@ -46,7 +48,7 @@ You only need the following optional components if they are configured in your s
 - Easee EV charger component for Home Assistant: [HACS Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
 
 ## Installation
-Download the `ElectricalManagement` directory from inside the `apps` directory here to your local `apps` directory, then add the configuration to enable the `electricalManagement` module.
+Download the `ElectricalManagement` directory from inside the `apps` directory here to your [Appdaemon](https://appdaemon.readthedocs.io/en/latest/) `apps` directory, then add configuration to a .yaml or .toml file to enable the `electricalManagement` module.
 
 Minimum configuration with suggested values:
 
@@ -61,6 +63,9 @@ electricity:
 ```
 
 Provide a consumption sensor `power_consumption` and an accumulated consumption pr hour sensor `accumulated_consumption_current_hour` to calculate and adjust electricity usage.
+
+> [!IMPORTANT]
+>  `accumulated_consumption_current_hour` is a kWh sensor that resets to 0 every hour
 
 
 ### Json storage
