@@ -115,27 +115,38 @@ In addition, you can configure rain and anemometer sensors. For more information
   anemometer: sensor.netatmo_anemometer_wind_strength
 ```
 
+
 ## Charging
-Calculates time to charge cars based on SOC, battery sizes and charger data. App will also register electricity usage from heaters and other based on outside temperature to better calculate time needed to charge if max usage limit is expected to be below needed kW to maintain a full chargespeed.
+Calculates the time required to charge electric vehicles based on the State of Charge (SOC), battery sizes, and charger data. The app also registers electricity usage from heaters and other appliances based on outside temperature to better calculate the time needed to charge if the maximum usage limit is expected to be below the necessary kW to maintain a full charge speed.
 
-Multiple cars with priority 1-5 is supported. Queues after priority.
-If you have other high electricity consumption in combination with low limit it will turn down charging but no lower than 6 Amp.
-This may result in unfinished charging if limit is too low or consumption is too high during calculated charge time.
+##### Priority settings for charger
+Multiple cars with priority 1-5 are supported. The app queues the next car by priority to start when there is enough power available. If multiple chargers are in queue, charging vehicles will have to charge at full capacity before the next charger checks if it has 1.6kW of free capacity to start.
 
-The next car by priority will start when there is enough power available. Either by current cars charging with max ampere or is finished. If multiple chargers in queue, first will have to charge at full capacity before next charger checks if it is 1,6kW free capacity to start.
+- Priority 1-2: These cars will start at the calculated time even if starting will result in heaters turning down/off to stay below the consumption limit. They will also charge until complete even when exceeding the time before a price increase, due to turning down the speed based on the consumption limit.
 
-Priority settings for charger:
-1-2: Will start at calculated time even if staying below consumption limit will result in heaters turning down/off. Will also charge until full even if it is not complete in time before price increase, due to turning down speed based on consumption limit.
-3-5: Will wait to start charging until it is 1,6kW free capacity. Will also stop charging at price increase after calculated charge time ends.
+- Priority 3-5: These cars will wait to start charging until it is 1.6kW free capacity. They will also stop charging at the price increase after the calculated charge time ends..
 
-Currently supports controlling Tesla and Easee chargers. Charging Tesla on an Easee charger is not yet tested but implemented. Documentation to request other cars or wall chargers will be published later.
+> [!NOTE]
+> If you have other high electricity consumption in combination with low limit, it will turn down charging but no lower than 6 Ampere. This may result in unfinished charging if the limit is too low or consumption is too high during calculated charge time.
 
+Currently supports controlling Tesla vehicles and Easee wall chargers. Charging Tesla by controlling Easee charger is implemented but not yet tested. Documentation to request other cars or wall chargers will be published later.
+
+### Tesla
+
+> [!WARNING]
+> It is nessesary to restart probably both Home Assistant and Appdaemon and in cases also reboot of vehicle to reestablish communications with Tesla API on occations. For now I have found it is needed after any service visits and also changes/reconfiguration of integration in Home Assistant. For instance if you need to update API key.
 
 ## Climate
 entites are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used. If the heater does not have a consumption sensor you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit, and together with kWh sensor, it calculate expected available power during chargetime.
 
 > [!IMPORTANT]
 > If there is no kWh sensor for heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your power_consumption sensor, but this does not take into acount if the heater has been turned down for longer periodes of time. This might affect calculated chargetime.
+
+### Savings settings
+Savings is calculated based on a future drop in price, with the given `pricedrop`, calculating backward from price drop to save electricity as long as the price is higher than the low price + pricedrop + 5% increase per hour backwards. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You can also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
+
+### Spending settings
+Spend hours occurs before price increases and the temperature is set to the `spend` setting to increse magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting.
 
 
 ```yaml
@@ -172,12 +183,6 @@ entites are defined under `climate` and set the temperature based on the outside
 ## Switches
 Hot-water boilers with no temperature sensors with only a on/off switch. It will use functions from ElectricityPrice to find times to heat/turn on. If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage.
 
-
-### Savings settings
-Savings is calculated based on a future drop in price, with given `pricedrop`, with calculations backwards from prisedrop to save electricity as long as price is higher than the low price when electricity turns back on + pricedrop + 5% increase pr hour backwards Configure `max_continuous_hours` it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete is consideres magazines and can be off for multiple hours before comfort is lost so configure depending on magazine pr climate/switch entity. You can also define a `on_for_minimum` for how many hours pr day the entity needs to heat normal. This defaults to 12 hours.
-
-### Spending settings
-Spend hours occurs before any price increases defined with `priceincrease`
 
 
 ### Example App configuration

@@ -226,7 +226,16 @@ class ElectricityPrice:
             ) ###
 
         if startTime < datetime.datetime.today().hour:
+            self.ADapi.log(
+                f"CHECK IF CORRECT: Starttime set to the past: {startTime}. "
+                f"Hours Total: {hoursTotal} Finish By Hour: {finishByHour}. Calculate before next day price? {calculateBeforeNextDayPrices} "
+                , level = 'INFO'
+            ) ###
             startTime += 24
+            self.ADapi.log(
+                f"Starttime is {startTime} after adding 24 hours",
+                level = 'INFO'
+            ) ###
 
         runtime = datetime.datetime.today().replace(hour = 0, minute = 0, second = 0, microsecond = 0 ) + datetime.timedelta(hours = startTime)
         endtime = runtime + datetime.timedelta(hours = hoursTotal)
@@ -793,6 +802,49 @@ class ElectricalUsage(hass.Hass):
             self.chargers.append(easee)
 
 
+        tesla_Easees = self.args.get('tesla_easee', {})
+        for e in tesla_Easees:
+
+            tesla_Easee = Tesla_Easee(self,
+                charger = e.get('charger',None),
+                charger_status = e.get('charger_status',None),
+                reason_for_no_current = e.get('reason_for_no_current',None),
+                current = e.get('current',None),
+                charger_power = e.get('charger_power',None),
+                voltage = e.get('voltage',None),
+                max_charger_limit = e.get('max_charger_limit',None),
+                online_sensor = e.get('online_sensor',None),
+                session_energy = e.get('session_energy',None),
+                car = e.get('car',None),
+                charger_sensor = t.get('charger_sensor',None),
+                #charger_switch = t.get('charger_switch',None),
+                #charging_amps = t.get('charging_amps',None),
+                #charger_power = t.get('charger_power',None),
+                charge_limit = t.get('charge_limit',None),
+                #asleep_sensor = t.get('asleep_sensor', None),
+                #online_sensor = t.get('online_sensor',None),
+                battery_sensor = t.get('battery_sensor',None),
+                location_tracker = t.get('location_tracker',None),
+                destination_location_tracker = t.get('destination_location_tracker',None),
+                arrival_time = t.get('arrival_time',None),
+                software_update = t.get('software_update',None),
+                force_data_update = t.get('force_data_update', None),
+                polling_switch = t.get('polling_switch',None),
+                data_last_update_time = t.get('data_last_update_time',None),
+                pref_charge_limit = t.get('pref_charge_limit',90),
+                charge_on_solar = t.get('charge_on_solar', False),
+                battery_size = t.get('battery_size',100),
+                namespace = t.get('namespace', None),
+                finishByHour = t.get('finishByHour',None),
+                priority = t.get('priority',3),
+                charge_now = t.get('charge_now',None),
+                electric_consumption = t.get('electric_consumption',None),
+                departure = t.get('departure',None),
+                guest = e.get('guest',None)
+            )
+            self.chargers.append(tesla_Easee)
+
+
             # Set up hot water boilers and electrical heaters
         self.heatersRedusedConsumption:list = [] # Heaters currently turned off/down due to overconsumption
 
@@ -1257,6 +1309,7 @@ class ElectricalUsage(hass.Hass):
                                     c.setChargingAmps(charging_amp_set = 6)
                                     available_Wh -= (c.ampereCharging  - 6) * c.voltphase
                                     reduce_Wh -= (c.ampereCharging  - 6) * c.voltphase
+                                    self.log(f"Available watt after reducing charging speed to 6amp: {available_Wh}", level = 'INFO') ###
                                 else:
                                     c.changeChargingAmps(charging_amp_change = AmpereToReduce)
                                     available_Wh -= AmpereToReduce * c.voltphase
@@ -1299,6 +1352,7 @@ class ElectricalUsage(hass.Hass):
                 self.queueChargingList
                 and reduce_Wh > 0
             ):
+                self.log(f"Reduce charging: {reduce_Wh} with added available: {reduce_Wh + available_Wh} to turn heaters back on", level = 'INFO') ###
                 reduce_Wh += available_Wh
 
                 for queue_id in reversed(self.queueChargingList):
@@ -1317,6 +1371,7 @@ class ElectricalUsage(hass.Hass):
                                     c.setChargingAmps(charging_amp_set = 6)
                                     available_Wh -= (c.ampereCharging  - 6) * c.voltphase
                                     reduce_Wh -= (c.ampereCharging  - 6) * c.voltphase
+                                    self.log(f"Available watt after reducing charging speed to 6amp: {available_Wh}", level = 'INFO') ###
                                 else:
                                     c.changeChargingAmps(charging_amp_change = AmpereToReduce)
                                     available_Wh -= AmpereToReduce * c.voltphase
@@ -2321,7 +2376,6 @@ class Charger:
         self.electric_consumption = electric_consumption
 
         self.pref_charge_limit = pref_charge_limit
-        self.charge_on_solar = charge_on_solar
         self.charging_on_solar = False
 
         self.vehicle_id:str = '1'
@@ -2361,6 +2415,19 @@ class Charger:
                 )
 
         self.checkCharging_handler = None
+
+        if not charge_on_solar:
+            self.charge_on_solar = charge_on_solar
+        else:
+            self.ADapi.log(f"Charge on solar exist: {charge_on_solar}")
+            if not self.namespace:
+                self.charge_on_solar = self.ADapi.get_state(charge_on_solar)  == 'on'
+                self.ADapi.listen_state(self.charge_on_solar_Listen, charge_on_solar)
+            else:
+                self.charge_on_solar = self.ADapi.get_state(charge_on_solar, namespace = self.namespace)  == 'on'
+                self.ADapi.listen_state(self.charge_on_solar_Listen, charge_on_solar,
+                    namespace = self.namespace
+                )
 
             # TODO Maxrange handling: To be re-written before implementation
             # Set a departure time in a HA datetime sensor for when car is almost finished charging to 100% to have warm battery when departing
@@ -2411,6 +2478,21 @@ class Charger:
                 self.stopCharging()
 
 
+    def charge_on_solar_Listen(self, entity, attribute, old, new, kwargs):
+        """ Listener for HA input boolean to enable/disable solar charing
+        """
+        global CHARGE_SCHEDULER
+        if not self.namespace:
+            self.charge_on_solar = self.ADapi.get_state(entity) == 'on'
+        else:
+            self.charge_on_solar = self.ADapi.get_state(entity, namespace = self.namespace) == 'on'
+        if new == 'on':
+            CHARGE_SCHEDULER.removeFromQueue(vehicle_id = self.vehicle_id)
+        elif new == 'off':
+            if not self.findNewChargeTime():
+                self.stopCharging()
+
+
     def whenStartedUp(self, kwargs):
         """ Helper function to find chargetime when initialized from child
         """
@@ -2426,7 +2508,10 @@ class Charger:
 
         # Functions for charge times
     def findNewChargeTimeWhenTomorrowPricesIsReady(self, kwargs):
-        self.findNewChargeTime()
+        if not self.findNewChargeTime():
+            self.stopCharging()
+            self.ADapi.log(f"Found new chargetime for {self.charger} with {self.kWhRemaining()}") ###
+        
 
 
     def findNewChargeTime(self):
@@ -2436,6 +2521,7 @@ class Charger:
             and self.getChargingState() != 'Complete'
             and self.getChargingState() != 'Disconnected'
             and not self.charging_on_solar
+            and not self.charge_on_solar
         ):
 
             return CHARGE_SCHEDULER.queueForCharging(
@@ -2446,6 +2532,7 @@ class Charger:
                 finishByHour = self.finishByHour,
                 priority = self.priority
             )
+        return False
 
 
     def hasChargingScheduled(self):
@@ -2460,7 +2547,10 @@ class Charger:
 
         # Returns true if charger should not or can not be stopped
     def dontStopMeNow(self):
-        if self.charge_now:
+        if (
+            self.charge_now
+            or self.charging_on_solar
+        ):
             return True
         return self.SoftwareUpdates()
 
@@ -2489,6 +2579,11 @@ class Charger:
                 and self.ADapi.get_state(self.charging_amps) != 'unavailable'
             ):
                 return True
+            else:
+                self.ADapi.log(
+                    f"{self.charger} charging_amps is: {self.ADapi.get_state(self.charging_amps)} when checking if available",
+                    level = 'INFO'
+                ) ###
         return False
 
 
@@ -2598,9 +2693,12 @@ class Charger:
                                 f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                                 level = 'DEBUG'
                             )
+                        self.ADapi.log(f"Check Charging Handler stopped when Starting to charge. Should only occur when stopping/starting charging in close proximity") ###
                         return False
                 self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
                 return True
+            else:
+                self.ADapi.log(f"{self.charger} was already charging when trying to startCharging") ###
         return False
 
 
@@ -2620,6 +2718,7 @@ class Charger:
                         )
                     finally:
                         self.checkCharging_handler = None
+                    self.ADapi.log(f"Check Charging Handler stopped when Stopping to charge. Should only occur when stopping/starting charging in close proximity") ###
                     return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
             return True
@@ -2641,6 +2740,7 @@ class Charger:
                         f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                         level = 'DEBUG'
                     )
+                self.ADapi.log(f"Check Charging Handler stopped when checking if charging started. Should only occur when stopping/starting charging in close proximity") ###
                 return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
             return False
@@ -2659,6 +2759,7 @@ class Charger:
                         f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                         level = 'DEBUG'
                     )
+                self.ADapi.log(f"Check Charging Handler stopped when checking if charging stopped. Should only occur when stopping/starting charging in close proximity") ###
                 return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
             return False
@@ -2997,6 +3098,7 @@ class Tesla(Charger):
                         command = 'WAKE_UP',
                         parameters = { 'path_vars': {'vehicle_id': self.vehicle_id}, 'wake_if_asleep' : True}
                     )
+                    self.ADapi.log(f"Waking up {self.charger}") ###
 
 
     def recentlyUpdated(self):
@@ -3210,7 +3312,8 @@ class Tesla(Charger):
                 if self.ADapi.get_state(self.charger_switch) == 'on':
                     return # Calculations will be handeled by ChargingStarted
 
-                self.findNewChargeTime()
+                if not self.findNewChargeTime():
+                    self.stopCharging()
 
             elif new == 'off':
                 if self.hasChargingScheduled():
@@ -3224,17 +3327,19 @@ class Tesla(Charger):
 
     def ChargeLimitChanged(self, entity, attribute, old, new, kwargs):
         try:
-            self.oldChargeLimit = new
+            self.oldChargeLimit = int(new)
         except (ValueError, TypeError) as ve:
             self.ADapi.log(
                 f"{self.charger} new charge limit: {new}. Error: {ve}",
                 level = 'DEBUG'
             )
+            new = self.oldChargeLimit
         except Exception as e:
             self.ADapi.log(
                 f"Not able to process {self.charger} new charge limit: {new}. Exception: {e}",
                 level = 'WARNING'
             )
+            new = self.oldChargeLimit
         if self.getLocation() == 'home':
             if float(self.ADapi.get_state(self.battery_sensor)) > float(new):
                 if self.hasChargingScheduled():
@@ -3317,6 +3422,9 @@ class Tesla(Charger):
                     command = 'STOP_CHARGE',
                     parameters = { 'path_vars': {'vehicle_id': self.vehicle_id}, 'wake_if_asleep': True}
                 )
+                #self.forceDataUpdate()
+                #self.ADapi.call_service('switch/turn_off', entity_id = self.charger_switch)
+                self.ADapi.log(f"StopCharging {self.charger} from charger class", level = 'INFO') ###
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
 
@@ -3747,6 +3855,7 @@ class Easee(Charger):
                     action_command = 'resume',
                     charger_id = self.vehicle_id
                     ) # start
+                self.ADapi.log(f"{self.charger} Try Start Charging in checkIfChargingStarted", level = 'INFO') ###
             except Exception as e:
                 self.ADapi.log(
                     f"Could not Start Charging in checkIfChargingStarted for {self.charger}. Exception: {e}",
@@ -4036,7 +4145,12 @@ class Tesla_Easee(Easee):
             or self.guestCharging
         ):
             super().startCharging()
-
+        else : ### TESTING ONLY
+            self.ADapi.log(
+                "Not starting to charge. Not home or not connected. "
+                f"Location: {self.ADapi.get_state(self.location_tracker)}. "
+                f"Connected? {self.ADapi.get_state(self.charger_sensor)}"
+            )
     
     def kWhRemaining(self):
         status = self.ADapi.get_state(self.charger_status)
@@ -4094,17 +4208,19 @@ class Tesla_Easee(Easee):
 
     def ChargeLimitChanged(self, entity, attribute, old, new, kwargs):
         try:
-            self.oldChargeLimit = new
+            self.oldChargeLimit = int(new)
         except (ValueError, TypeError) as ve:
             self.ADapi.log(
                 f"{self.charger} new charge limit: {new}. Error: {ve}",
                 level = 'DEBUG'
             )
+            new = self.oldChargeLimit
         except Exception as e:
             self.ADapi.log(
                 f"Not able to process {self.charger} new charge limit: {new}. Exception: {e}",
                 level = 'WARNING'
             )
+            new = self.oldChargeLimit
         if self.getLocation() == 'home':
             if float(self.ADapi.get_state(self.battery_sensor)) > float(new):
                 if self.hasChargingScheduled():
