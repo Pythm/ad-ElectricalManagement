@@ -25,7 +25,7 @@ For heating sources and hot water boilers, the app uses similar calculations to 
 > App is written to control electricity at your home location and will only change charging amps on chargers/cars that are home. If you want to control electricity usage in other places, I recommend creating a separate Home Assistant and AppDaemon instance for each location.
 
 > [!TIP]
-> I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in switching to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
+> I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in changeing your electricity provider to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
 > [!NOTE]
 > Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications.
@@ -68,7 +68,7 @@ Provide a consumption sensor `power_consumption` and an accumulated consumption 
 >  `accumulated_consumption_current_hour` is a kWh sensor that resets to 0 every hour
 
 
-### Json storage
+#### Json storage
 Configure a path inclusive name 'name.json' to store a JSON file using the `json_path` as persistent data.
 
 Persistent data will be updated with:
@@ -77,7 +77,7 @@ Persistent data will be updated with:
 - Store heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
 
 
-### Other configurations for main app
+#### Other configurations for main app
 Set a max kWh limit with `max_kwh_goal` and input your `buffer` to be on the safe side. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as should be a good starting point.
 
 > [!IMPORTANT]
@@ -89,7 +89,7 @@ In Norway, we get 90% electricity support (Strømstøtte) on electricity prices 
 
 Set a main vacation switch with `away_state` to lower temperature when away. This can be configured/overridden individually per climate/switch entity if you are controlling apartments, etc.
 
-Get notifications about charge time to your mobile phones with `notify_receiver`.
+Get notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and window is closed.
 
 ```yaml
   max_kwh_goal: 5 # 5 is default.
@@ -102,18 +102,27 @@ Get notifications about charge time to your mobile phones with `notify_receiver`
   away_state: input_boolean.vacation
   notify_receiver:
     - mobile_app_yourphone
+    - mobile_app_yourotherphone
 ```
 
 ### Weather sensors
-The app relies on outside temperature to log and calculate electricity usage. If no sensors is defined with `outside_temperature`, the app will try to retrieve data from [Met.no](https://www.home-assistant.io/integrations/met/).
+The app relies on outside temperature to log and calculate electricity usage. If no sensors is defined with `outside_temperature`, the app will try to retrieve data from [Met.no](https://www.home-assistant.io/integrations/met/) integration. Climate entities sets heating based on outside temperature.
 
-In addition, you can configure rain and anemometer sensors. For more information on these sensors, check the climate documentation.
+In addition, you can configure rain and anemometer sensors. These are used by climate entities where you can define a rain amount and a wind amount to increase heating by 1 degree.
 
 ```yaml
   outside_temperature: sensor.netatmo_out_temperature
   rain_sensor: sensor.netatmo_regnsensor_rain
   anemometer: sensor.netatmo_anemometer_wind_strength
 ```
+
+### Namespace
+A part of Appdaemon is the possibility to define custom namespaces. Appdaemon documentation: https://appdaemon.readthedocs.io/en/latest/CONFIGURE.html#
+
+If you do not have any namespace configured in your appdaemon.yaml file you can skip this.
+
+> [!IMPORTANT]
+> You need to configure `namespace` in every charger and climate that belongs to HASS instances with custom namespace.
 
 
 ## Charging
@@ -137,15 +146,24 @@ Currently supports controlling Tesla vehicles and Easee wall chargers. Charging 
 > It is nessesary to restart probably both Home Assistant and Appdaemon and in cases also reboot of vehicle to reestablish communications with Tesla API on occations. For now I have found it is needed after any service visits and also changes/reconfiguration of integration in Home Assistant. For instance if you need to update API key.
 
 ## Climate
-entites are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used. If the heater does not have a consumption sensor you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit, and together with kWh sensor, it calculate expected available power during chargetime.
+Here you configure climate entities that you want to control based on outside temperature and electricity price.
+
+> For HVAC and other climate entities that is not very power consuming you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is based around the same logic with outside temperature, but more automated to keep a constant inside temperature.
+
+CLimate entites are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
+
+> [!IMPORTANT]
+> If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured the app will log with warning to your appdaemon log, or the log you define in app configuration.
+
+If the heater does not have a consumption sensor you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit, and together with kWh sensor, it calculate expected available power during chargetime.
 
 > [!IMPORTANT]
 > If there is no kWh sensor for heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your power_consumption sensor, but this does not take into acount if the heater has been turned down for longer periodes of time. This might affect calculated chargetime.
 
-### Savings settings
-Savings is calculated based on a future drop in price, with the given `pricedrop`, calculating backward from price drop to save electricity as long as the price is higher than the low price + pricedrop + 5% increase per hour backwards. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You can also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
+#### Savings settings
+Savings is calculated based on a future drop in price, with the given `pricedrop`, calculating backward from price drop to save electricity as long as the price is higher than the low price + pricedrop + 5% increase per hour backwards. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
 
-### Spending settings
+#### Spending settings
 Spend hours occurs before price increases and the temperature is set to the `spend` setting to increse magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting.
 
 
@@ -154,10 +172,10 @@ Spend hours occurs before price increases and the temperature is set to the `spe
     - name: floor_thermostat
     #- heater: climate.floor_thermostat
     #  consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
-    #  power: 1000
+    #  power: 300
     #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
-      on_for_minimum: 6
+      on_for_minimum: 12
       pricedrop: 0.15
       #away_state: Will use default if not specified.
       automate: input_boolean.automatiser_varmekabler_bod
