@@ -127,38 +127,35 @@ If you have not configured any namespace in your 'appdaemon.yaml' file, you can 
 > The app is designed to control electricity usage at your primary residence and will only adjust charging amps on chargers/cars that are  within your home location. If you want to manage electricity consumption in other locations, I recommend setting up a separate Home Assistant and AppDaemon instance for each location.
 
 
-## Charging
-Calculates the time required to charge electric vehicles based on the State of Charge (SOC), battery sizes, and charger data. The app also registers electricity usage based on outside temperature to better calculate the time needed to charge if the maximum usage limit is expected to be below the necessary kW to maintain a full charge speed.
+### Charging
+The app calculates the time required to charge electric vehicles based on State of Charge (SOC), battery sizes, and charger data. It also takes outside temperature into account to better estimate the time needed for charging if the maximum usage limit is expected to be below the necessary kW to maintain full charge speed.
 
 > [!NOTE]
-> If you have other high electricity consumption in combination with low limit, it will turn down charging but no lower than 6 Ampere. This may result in unfinished charging if the limit is too low or consumption is too high during calculated charge time.
+> If you have other high electricity consumption in combination with a low limit, it will reduce charging but not lower than 6 Ampere. This may result in unfinished charging if the limit is too low or consumption is too high during calculated charge time.
 
-Currently supports controlling Tesla vehicles and Easee wall chargers. Charging Tesla by controlling Easee charger is implemented but not yet tested. Documentation to request other cars or wall chargers will be published later.
-
+Currently supports controlling Tesla vehicles and Easee wall chargers. Charging Tesla by controlling an Easee charger is implemented but not yet tested. Documentation to request other cars or wall chargers will be published later.
 
 ### Configuration for all vehicles and wall chargers
-
-##### Priority settings for charger
-Multiple cars with priority 1-5 are supported. The app queues the next car by priority to start when there is enough power available. If multiple chargers are in queue, charging vehicles will have to charge at full capacity before the next charger checks if it has 1.6kW of free capacity to start.
+#### Priority settings for charger
+Multiple cars with priority 1-5 are supported. The app queues the next car by priority when there is enough power available. If multiple chargers are in queue, charging vehicles will have to charge at full capacity before the next charger checks if it has 1.6kW of free capacity to start.
 
 - Priority 1-2: These cars will start at the calculated time even if starting will result in heaters turning down/off to stay below the consumption limit. They will also charge until complete even when exceeding the time before a price increase, due to turning down the speed based on the consumption limit.
 
-- Priority 3-5: These cars will wait to start charging until it is 1.6kW free capacity. They will also stop charging at the price increase after the calculated charge time ends..
+- Priority 3-5: These cars will wait to start charging until it is 1.6kW free capacity. They will also stop charging at the price increase after the calculated charge time ends.
 
-##### Home Assistant helpers
+#### Home Assistant helpers
 Create helpers in Home Assistant to manage charging.
 
-Charging is by default finished by 7:00. To set a different hour the charging should be finished use input_number sensor configured with `finishByHour`.
+Charging is by default finished by 7:00. To set a different hour the charging should be finished use an `input_number` sensor configured with `finishByHour`.
 
-To bypass smartcharing and charge now you can configure `charge_now` with a input_boolean and set it to true. The sensor will be set to false after charging is finished or charger is disconnected.
+To bypass smart charging and charge now, you can configure `charge_now` with an `input_boolean` and set it to true. The sensor will be set to false after charging is finished or the charger is disconnected.
 
-If you are producing electricity you can choose to only charge on surplus production. Define another input_boolean and configure with `charge_on_solar`.
-
+If you are generating electricity, you can choose to charge only during surplus production. Define another `input_boolean` and configure it with the `charge_on_solar` option.
 
 ### Tesla
 
-> [!WARNING]
-> It is nessesary to restart probably both Home Assistant and Appdaemon and in cases also reboot of vehicle to re-establish communications with Tesla API on occations. For now I have found it is needed after any service visits and also changes/reconfiguration of integration in Home Assistant, for instance if you need to update API key.
+> :warning: **WARNING**
+> It is necessary to restart probably both Home Assistant and Appdaemon, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
 
 ```yaml
   tesla:
@@ -168,7 +165,7 @@ If you are producing electricity you can choose to only charge on surplus produc
 ```
 
 ### Easee
-If your Easee integration has english sensor names you can input your Easee wall charger name with `charger` and the app will try to find the rest. If the sensor names is in another language you will need to fill current configuration with proper sensor names.
+The Easee integration automatically detects the wall charger's information if its sensor names are in English; simply provide the name of your Easee with the `charger` option. However, if your sensors have names in another language, you must manually input the correct sensor names in the configuration.
 
 ```yaml
   easee:
@@ -183,31 +180,33 @@ If your Easee integration has english sensor names you can input your Easee wall
       session_energy: sensor.nameOfCharger_energi_ladesesjon
 ```
 
-The app writes the highest session energy to persistent storage as this is the only indication on how much is needed to charge and calculates time needed to charge based on this.
+The app stores the highest session energy in persistent storage, as this is the only indication of how much charge is needed to reach full capacity. It then calculates the time required for charging based on this information.
 
-If another vehicle is charging you can disable logging of highes session energy and maximum ampere the vehicle can charge by using an Home Assistant input_boolean helper configured as `guest`. Turning this on will start charging session immidiately. 
+If another vehicle is using the charger, you can disable logging of the highest session energy and maximum ampere that the guest vehicle can charge by using an Home Assistant input_boolean helper configured as `guest`. Enabling this sensor will initiate the charging session immediately.
+
+
+Apologies for that. Here's an updated version of the text with some improvements and corrections in punctuation, capitalization, and grammar:
 
 ## Climate
 Here you configure climate entities that you want to control based on outside temperature and electricity price.
 
-> For HVAC and other climate entities that is not very power consuming you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is based around the same logic with outside temperature, but more automated to keep a constant inside temperature.
+> For HVAC and other climate entities that are not very power consuming, you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is based around the same logic with the outside temperature, but more automated to keep a constant inside temperature.
 
-CLimate entites are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
-
-> [!IMPORTANT]
-> If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured the app will log with warning to your appdaemon log, or the log you define in app configuration.
-
-If the heater does not have a consumption sensor you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit, and together with kWh sensor, it calculate expected available power during chargetime.
+Climate entities are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
 > [!IMPORTANT]
-> If there is no kWh sensor for heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your power_consumption sensor, but this does not take into acount if the heater has been turned down for longer periodes of time. This might affect calculated chargetime.
+> If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured, the app will log with a warning to your AppDaemon log, or the log you define in the app configuration.
 
-#### Savings settings
-Savings is calculated based on a future drop in price, with the given `pricedrop`, calculating backward from price drop to save electricity as long as the price is higher than the low price + pricedrop + 5% increase per hour backwards. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
+If the heater does not have a consumption sensor, you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit and together with the kWh sensor, it calculates expected available power during charging time.
 
-#### Spending settings
-Spend hours occurs before price increases and the temperature is set to the `spend` setting to increse magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting.
+> [!IMPORTANT]
+> If there is no kWh sensor for the heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your `power_consumption` sensor, but this does not take into account if the heater has been turned down for longer periods of time. This might affect calculated charging time.
 
+#### Savings Settings
+Savings are calculated based on a future drop in price, with the given `pricedrop`, calculating backward from the price drop to save electricity as long as the price is higher than the low price + `pricedrop` + 5% increase per hour backward. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
+
+#### Spending Settings
+Spending hours occur before price increases and the temperature is set to the `spend` setting to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting.
 
 ```yaml
   climate:
@@ -241,8 +240,18 @@ Spend hours occurs before price increases and the temperature is set to the `spe
 
 
 ## Switches
-Hot-water boilers with no temperature sensors with only a on/off switch. It will use functions from ElectricityPrice to find times to heat/turn on. If power consumption sensor is provided it will also be able to calculate better how to avoid max usage limit in ElectricalUsage.
+Hot-water boilers with no temperature sensors and only an on/off switch can also be controlled using the app's functionality. It will utilize ElectricityPrice functions to find optimal times for heating or turning on the heater. If a power consumption sensor is provided, it will enable more accurate calculations to avoid exceeding the maximum usage limit in ElectricalUsage.
 
+```yaml
+  heater_switches:
+    - name: hotwater
+    #- switch: switch.hotwater
+    #  consumptionSensor: sensor.hotwater_electric_consumption_w
+    #  away_state: input_boolean.vacation
+      pricedrop: 0.3
+      max_continuous_hours: 8
+      on_for_minimum: 8
+```
 
 
 ### Example App configuration
@@ -305,21 +314,6 @@ electricity:
       charge_now: input_boolean.easeelader_charge_Now
       guest: input_boolean.easeelader_guest_using
 
-  heater_switches: # Used for dumb Hotwater boilers and other things to turn off during expencive hours
-    - name: vvb_hus
-#      switch: switch.vvb_hus
-#      consumptionSensor: sensor.vvb_hus_electric_consumption_w
-#      away_state: input_boolean.vekk_reist
-      pricedrop: 0.12
-      max_continuous_hours: 15
-      on_for_minimum: 8
-    - name: vvb_leilighet
-      namespace: hass_leil
-      away_state: input_boolean.leil_vekk_reist
-      pricedrop: 0.12
-      max_continuous_hours: 15
-      on_for_minimum: 8
-
   climate:
     - name: floor_thermostat
     #- heater: climate.floor_thermostat
@@ -368,6 +362,15 @@ electricity:
           normal: 12
           save: 10
           away: 12
+
+  heater_switches:
+    - name: hotwater
+    #- switch: switch.hotwater
+    #  consumptionSensor: sensor.hotwater_electric_consumption_w
+    #  away_state: input_boolean.vacation
+      pricedrop: 0.3
+      max_continuous_hours: 8
+      on_for_minimum: 8
 ```
 
 key | optional | type | default | description
