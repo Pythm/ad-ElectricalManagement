@@ -157,6 +157,8 @@ If you are generating electricity, you can choose to charge only during surplus 
 > :warning: **WARNING**
 > It is necessary to restart probably both Home Assistant and Appdaemon, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
 
+Input the name of your Tesla with `charger`. Check logs for any errors.
+
 ```yaml
   tesla:
     - charger: nameOfCar
@@ -202,11 +204,47 @@ If the heater does not have a consumption sensor, you can input its `power` in w
 > [!IMPORTANT]
 > If there is no kWh sensor for the heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your `power_consumption` sensor, but this does not take into account if the heater has been turned down for longer periods of time. This might affect calculated charging time.
 
+### Temperatures
+You define the climate working temperatures based on outdoor conditions. The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. It includes a `normal` operations temperature, an `away` setting for vacations, and a `save` mode for when electricity prices are high. Optionally, you can also specify a `spend` mode temperature.
+
+```yaml
+      temperatures:
+        - out: -4
+          normal: 20
+          spend: 21
+          save: 13
+          away: 14
+```
+
+> [!TIP]
+> To create a comprehensive temperature profile, start from your current indoor temperature and add a new dictionary entry for each additional degree adjustment required based on the outdoor temperature.
+
 #### Savings Settings
 Savings are calculated based on a future drop in price, with the given `pricedrop`, calculating backward from the price drop to save electricity as long as the price is higher than the low price + `pricedrop` + 5% increase per hour backward. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
 
 #### Spending Settings
-Spending hours occur before price increases and the temperature is set to the `spend` setting to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting.
+Spending hours occur before price increases and the temperature is set to the `spend` setting to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting. If you are producing more electricity than you are consuming, the app will try to set spend settings on climate entities.
+
+Hi! Here is the corrected and improved text:
+
+#### Away State
+Turns down temperature to `away` setting. Uses the default away switch if left blank.
+
+#### Breaking Automation
+The climate will automate by default but you can define a Home Assistant `input_boolean` helper to turn it off. Note that when the switch is on, it will automate.
+
+#### Indoor Temperature
+It's recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. Set a target with `target_indoor_temp`, and the app will reduce heating if exceeded.
+
+#### Window Sensors
+The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold.
+
+#### Daylight Savings
+The `daylight_savings` has a start and stop time. The time accepts the start time before midnight and the stop time after midnight. In addition, you can define presence so that it does not apply daylight savings.
+
+#### Recipients
+Define custom recipients per climate or use recipients defined in the main configuration.
+
 
 ```yaml
   climate:
@@ -218,13 +256,20 @@ Spending hours occur before price increases and the temperature is set to the `s
       max_continuous_hours: 2
       on_for_minimum: 12
       pricedrop: 0.15
-      #away_state: Will use default if not specified.
-      automate: input_boolean.automatiser_varmekabler_bod
-      #recipient:
-      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
-      target_indoor_temp: 20
       low_price_max_continuous_hours: 3
       priceincrease: 0.65
+      #away_state: Will use default if not specified.
+      automate: input_boolean.automate_heating
+      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
+      target_indoor_temp: 20
+      windowsensors:
+        - binary_sensor.your_window_door_is_open
+      daytime_savings:
+        - start: '07:30:00'
+          stop: '22:00:00'
+          presence:
+            - person.wife
+      #recipient:
       temperatures:
         - out: -4
           normal: 20
@@ -371,6 +416,13 @@ electricity:
       pricedrop: 0.3
       max_continuous_hours: 8
       on_for_minimum: 8
+
+  appliances:
+    - remote_start: binary_sensor.oppvaskmaskin_remote_start
+      program: switch.oppvaskmaskin_program_nightwash
+      running_time: 4
+      finishByHour: 6
+
 ```
 
 key | optional | type | default | description
