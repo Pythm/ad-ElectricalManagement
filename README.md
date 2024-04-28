@@ -1,7 +1,8 @@
 # ad-Electrical Management
 
 > [!NOTE]
-> This README is currently under construction. Some configurations have changed or will change to make them more understandable during this process. Recently, `peakdifference` changed to `pricedrop` in heater configuration. Similarly, `low_price_peakdifference` changed to `priceincrease`. Documentation on changes will only be given after the first release. Stay tuned!
+> This README is currently under construction. Some configurations have changed or will change to make them more understandable during this process. Documentation on changes will only be given after the first release. Stay tuned!
+
 
 The purpose of this app is to help reduce your electricity bill by:
 - Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
@@ -34,11 +35,15 @@ If you have solar or other electricity production, add a production sensor and a
 
 
 ### Dependencies:
-To use this app, install the following components via HACS:
-- Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
+To use this app, install the following integrations:
+From Home Assistant:
 - Workday sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
 
 The app uses the Met.no API for outside temperature if you do not configure an alternative source: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
+
+Install the following components via HACS:
+- Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
+
 
 You only need the following optional components if they are configured in your setup:
 - Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
