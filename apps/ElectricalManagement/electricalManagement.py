@@ -2867,7 +2867,7 @@ class Charger:
 
 
     def kWhRemaining(self) -> float:
-        kWhRemain = Car.kWhRemaining
+        kWhRemain = self.Car.kWhRemaining()
         if kWhRemain == -2:
             status = self.ADapi.get_state(self.charger_sensor)
             if (
@@ -2880,7 +2880,8 @@ class Charger:
                 if self.guestCharging:
                     self.ADapi.log(f"Guest charging when trying to calculate kWh Remaining. Session: {self.ADapi.get_state(self.session_energy)}")
                     return 100 - (float(self.ADapi.get_state(self.session_energy)))
-                self.Car.kWhRemainToCharge = self.maxkWhCharged - float(self.ADapi.get_state(self.session_energy)) +1
+                self.Car.kWhRemainToCharge = self.Car.maxkWhCharged - float(self.ADapi.get_state(self.session_energy))
+        self.ADapi.log(f"kWhRemain to charge: {self.Car.kWhRemainToCharge}")
         return self.Car.kWhRemainToCharge
 
 
@@ -4286,7 +4287,7 @@ class Easee(Charger):
                     finally:
                         self.checkCharging_handler = None
                     self.ADapi.log(f"Check Charging Handler stopped when Stopping to charge. Should only occur when stopping/starting charging in close proximity") ###
-                    return False
+                    #return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
 
             try:
