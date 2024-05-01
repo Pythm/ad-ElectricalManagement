@@ -1805,6 +1805,8 @@ class ElectricalUsage(hass.Hass):
                             available_Wh -= AmpereToReduce * c.voltphase
                             reduce_Wh -= AmpereToReduce * c.voltphase
                             break
+
+        self.log(f"{c.charger} Available {available_Wh} and reduce wh {reduce_Wh}")
         return available_Wh
 
 
@@ -1872,22 +1874,33 @@ class ElectricalUsage(hass.Hass):
                                 popcharger = chargerToForceUpdate.pop()
                         if c.getChargingState() != 'Charging':
                             chargerToForceUpdate.append(c.charger_id)
-
+                            self.log(
+                                f"Append {c.charger_id}. {c.charger} is {c.getChargingState()}. "
+                                f"Charging: {c.ampereCharging * c.voltphase} and is close enough to electric_consumption {cConsump}",
+                                level = 'INFO'
+                            ) ###
                         consuptionTest = c.electric_consumption # Get name of measure entity in case more chargers are charging on same
                     # Other car charging
                     elif c.ampereCharging > 0:
                         consuptionTest = c.electric_consumption # Get name of measure entity in case more chargers are charging on same
                         if c.getChargingState() != 'Charging':
                             chargerToForceUpdate.append(c.charger_id)
-
+                            self.log(
+                                f"Append {c.charger_id} = {c.charger} to be updated. "
+                                f"State: {c.getChargingState()}. Charging {c.ampereCharging * c.voltphase} with electric_consumption {cConsump}",
+                                level = 'INFO'
+                            ) ###
                     elif c.getChargingState() == 'Charging' and c.ampereCharging == 0:
                         chargerToForceUpdate.append(c.charger_id)
                     elif consuptionTest != c.electric_consumption:
                         chargerToForceUpdate.append(c.charger_id)
                         consuptionTest = c.electric_consumption
+                        self.log(
+                            f"Append {c.charger_id} = {c.charger} to be updated. "
+                            f"State: {c.getChargingState()}. consuptionTest != c.electric_consumption",
+                            level = 'INFO'
+                        ) ###
 
-                    if c.Car.getLocation() == 'away':
-                
         
         if chargerToForceUpdate:
             self.log(f"Chargers to update: {chargerToForceUpdate}", level = 'INFO') ###
@@ -2874,8 +2887,7 @@ class Charger:
 
         # Functions for charge times
     def findNewChargeTimeWhen(self, kwargs) -> None:
-        if self.isHomeandAwake():
-            self.kWhRemaining()
+        if self.Car.getLocation() == 'home':
             if not self.findNewChargeTime():
                 self.stopCharging()
         
@@ -2945,19 +2957,19 @@ class Charger:
             pwr = float(pwr)
         except ValueError as ve:
             self.ADapi.log(
-                f"{self.car} Could not get charger_power: {pwr} ValueError: {ve}",
+                f"{self.charger} Could not get charger_power: {pwr} ValueError: {ve}",
                 level = 'DEBUG'
             )
             pwr = 0
         except TypeError as te:
             self.ADapi.log(
-                f"{self.car} Could not get charger_power: {pwr} TypeError: {te}",
+                f"{self.charger} Could not get charger_power: {pwr} TypeError: {te}",
                 level = 'WARNING'
             )
             pwr = 0
         except Exception as e:
             self.ADapi.log(
-                f"{self.car} Could not get charger_power: {pwr} Exception: {e}",
+                f"{self.charger} Could not get charger_power: {pwr} Exception: {e}",
                 level = 'WARNING'
             )
             pwr = 0
@@ -3027,28 +3039,28 @@ class Charger:
 
     def ChargeLimitChanged(self, entity, attribute, old, new, kwargs) -> None:
         global CHARGE_SCHEDULER
-        if self.getLocation() == 'home':
+        if self.Car.getLocation() == 'home':
             try:
                 self.oldChargeLimit = int(old)
                 new = int(new)
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
-                    f"{self.carName} new charge limit: {new}. Error: {ve}",
+                    f"{self.charger} new charge limit: {new}. Error: {ve}",
                     level = 'INFO' #'DEBUG'
                 )
                 return
             except Exception as e:
                 self.ADapi.log(
-                    f"Not able to process {self.carName} new charge limit: {new}. Exception: {e}",
+                    f"Not able to process {self.charger} new charge limit: {new}. Exception: {e}",
                     level = 'WARNING'
                 )
                 return
 
             try:
-                battery_state = float(self.ADapi.get_state(self.battery_sensor))
+                battery_state = float(self.ADapi.get_state(self.Car.battery_sensor))
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
-                    f"{self.carName} battery state error {battery_state} when setting new charge limit: {new}. Error: {ve}",
+                    f"{self.charger} battery state error {battery_state} when setting new charge limit: {new}. Error: {ve}",
                     level = 'INFO' #'DEBUG'
                 )
                 return
@@ -3109,7 +3121,7 @@ class Charger:
              CHARGE_SCHEDULER.removeFromQueue(charger_id = self.charger_id)
              self.turnOff_Charge_now()
         else:
-            self.ADapi.log(f"Not ready to StartCharging {self.Car} from car class. Check for errors", level = 'WARNING') ### TODO: Find out if any errors causes this
+            self.ADapi.log(f"Not ready to StartCharging {self.charger} from car class. Check for errors", level = 'WARNING') ### TODO: Find out if any errors causes this
 
         return False
 
@@ -3383,6 +3395,7 @@ class Car:
                 self.car_limit_max_charging = math.ceil(float(ElectricityData['charger'][self.vehicle_id]['CarLimitAmpere']))
             if 'MaxkWhCharged' in ElectricityData['charger'][self.vehicle_id]:
                 self.maxkWhCharged = float(ElectricityData['charger'][self.vehicle_id]['MaxkWhCharged'])
+            self.ADapi.log(f"Limit max set to {self.car_limit_max_charging} and max charged set to {self.maxkWhCharged} for {self.carName}")
 
         self.kWhRemainToCharge = self.kWhRemaining()
 
@@ -3494,14 +3507,6 @@ class Car:
         return True
 
 
-    """ Calculations of kWh remaining to charge based on available data. # FIXME
-        Sensors:
-        - charge_limit
-        - battery_sensor
-        - battery_size (User input)
-        Or:
-        - maxkWhCharged
-    """
     def kWhRemaining(self) -> float:
         if (
             self.battery_sensor
@@ -3576,6 +3581,7 @@ class Car:
             else: # TODO: Find a way to calculate
                 SOC = 10
 
+        self.ADapi.log(f"SOC for {self.carName} is {SOC}") ###
         return SOC
 
 
@@ -4040,8 +4046,6 @@ class Easee(Charger):
 
         self.reason_for_no_current = reason_for_no_current
 
-        #self.session_energy = session_energy
-
         volts = api.get_state(voltage)
         try:
             volts = math.ceil(float(volts))
@@ -4158,7 +4162,7 @@ class Easee(Charger):
                 if self.guestCharging:
                     return
 
-                session = float(self.ADapi.get_state(self.session_energy))/1000
+                session = float(self.ADapi.get_state(self.session_energy))
                 if self.Car.maxkWhCharged < session:
                     self.Car.maxkWhCharged = session
                         # Find max kWh charged from charger during one session.
