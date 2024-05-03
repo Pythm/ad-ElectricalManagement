@@ -6,7 +6,7 @@
 
 The purpose of this app is to help reduce your electricity bill by:
 - Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
-- Turning on/off heating sources and hot water boilers based on electricity prices.
+- Turning up/down heating sources and on/off hot water boilers based on electricity prices.
 
 
 ## What platforms does it support?
@@ -191,8 +191,6 @@ The app stores the highest session energy in persistent storage, as this is the 
 
 If another vehicle is using the charger, you can disable logging of the highest session energy and maximum ampere that the guest vehicle can charge by using an Home Assistant input_boolean helper configured as `guest`. Enabling this sensor will initiate the charging session immediately.
 
-
-Apologies for that. Here's an updated version of the text with some improvements and corrections in punctuation, capitalization, and grammar:
 
 ## Climate
 Here you configure climate entities that you want to control based on outside temperature and electricity price.
