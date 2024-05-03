@@ -26,7 +26,7 @@ For heating sources and hot water boilers, the app uses similar calculations to 
 > I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in changeing your electricity provider to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
 > [!NOTE]
-> Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications.
+> Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
 
 > [!TIP]
 > If you live in a country where there is no tariff on higher usage, set the limit to the same size as your main fuse in kWh.
@@ -45,7 +45,7 @@ Install the following components via HACS:
 - Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
 
 
-You only need the following optional components if they are configured in your setup:
+You only need the following optional components if they are configured in your setup. Currently supported directly in app:
 - Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
 - Easee EV charger component for Home Assistant: [HACS Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
 
@@ -67,7 +67,7 @@ electricity:
 Provide a consumption sensor `power_consumption` and an accumulated consumption pr hour sensor `accumulated_consumption_current_hour` to calculate and adjust electricity usage.
 
 > [!IMPORTANT]
->  `accumulated_consumption_current_hour` is a kWh sensor that resets to 0 every hour
+>  `accumulated_consumption_current_hour` is a kWh sensor that resets to zero every hour
 
 
 #### Json storage
@@ -89,7 +89,7 @@ Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`
 
 In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account.
 
-Set a main vacation switch with `away_state` to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
+Set a main vacation switch with `vacation` to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
 Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
 
@@ -101,7 +101,7 @@ Receive notifications about charge time to your devices with `notify_receiver`. 
   workday: binary_sensor.workday_sensor
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
-  away_state: input_boolean.vacation
+  vacation: input_boolean.vacation
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
@@ -261,7 +261,7 @@ Define custom recipients per climate or use recipients defined in the main confi
       pricedrop: 0.15
       low_price_max_continuous_hours: 3
       priceincrease: 0.65
-      #away_state: Will use default if not specified.
+      #vacation: Will use default if not specified.
       automate: input_boolean.automate_heating
       indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
       target_indoor_temp: 20
@@ -295,7 +295,7 @@ Hot-water boilers with no temperature sensors and only an on/off switch can also
     - name: hotwater
     #- switch: switch.hotwater
     #  consumptionSensor: sensor.hotwater_electric_consumption_w
-    #  away_state: input_boolean.vacation
+    #  vacation: input_boolean.vacation
       pricedrop: 0.3
       max_continuous_hours: 8
       on_for_minimum: 8
@@ -324,7 +324,7 @@ electricity:
   outside_temperature: sensor.netatmo_out_temperature
   rain_sensor: sensor.netatmo_regnsensor_rain
   anemometer: sensor.netatmo_anemometer_wind_strength
-  away_state: input_boolean.vacation
+  vacation: input_boolean.vacation
   notify_receiver:
     - mobile_app_your_phone
 
@@ -370,7 +370,7 @@ electricity:
       max_continuous_hours: 14
       on_for_minimum: 6
       pricedrop: 0.15
-      #away_state: Will use default if not specified.
+      #vacation: Will use default if not specified.
       automate: input_boolean.automatiser_varmekabler_bod
       #recipient:
       indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
@@ -415,7 +415,7 @@ electricity:
     - name: hotwater
     #- switch: switch.hotwater
     #  consumptionSensor: sensor.hotwater_electric_consumption_w
-    #  away_state: input_boolean.vacation
+    #  vacation: input_boolean.vacation
       pricedrop: 0.3
       max_continuous_hours: 8
       on_for_minimum: 8
