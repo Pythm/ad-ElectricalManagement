@@ -83,7 +83,7 @@ Persistent data will be updated with:
 Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as it should be a good starting point.
 
 > [!IMPORTANT]
-> The maximum usage limit per hour increases by 5 kWh if the average of the 3 highest consumption hours exceeds the limit. If the limit is set too low, it will reduce heating, turn off switches, and change charge current to as low as 6 Amperes.
+> The maximum usage limit per hour is by default 5 and increases by 5 kWh if the average of the 3 highest consumption hours exceeds the limit. If the limit is set too low, it will reduce heating, turn off switches, and change charge current to as low as 6 Amperes.
 
 Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 on workdays and all day on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
 
@@ -91,7 +91,7 @@ In Norway, we receive 90% electricity support (Strømstøtte) on electricity pri
 
 Set a main vacation switch with `vacation` to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
-Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
 
 ```yaml
   max_kwh_goal: 5 # 5 is default.
@@ -105,6 +105,8 @@ Receive notifications about charge time to your devices with `notify_receiver`. 
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
+  options:
+    - informEveryChange
 ```
 
 
@@ -230,10 +232,10 @@ Spending hours occur before price increases and the temperature is set to the `s
 
 Hi! Here is the corrected and improved text:
 
-#### Away State
-Turns down temperature to `away` setting. Uses the default away switch if left blank.
+#### Vacation State
+Turns down temperature to `away` setting. Uses the default vacation switch if left blank.
 
-#### Breaking Automation
+#### Pausing Automation
 The climate will automate by default but you can define a Home Assistant `input_boolean` helper to turn it off. Note that when the switch is on, it will automate.
 
 #### Indoor Temperature
