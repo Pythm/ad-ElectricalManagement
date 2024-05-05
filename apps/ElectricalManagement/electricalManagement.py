@@ -720,7 +720,8 @@ class ElectricalUsage(hass.Hass):
         CHARGE_SCHEDULER = Scheduler(self,
             informEveryChange = self.informEveryChange,
             stopAtPriceIncrease = self.args.get('stopAtPriceIncrease', 0.3),
-            startBeforePrice = self.args.get('startBeforePrice', 0.01)
+            startBeforePrice = self.args.get('startBeforePrice', 0.01),
+            infotext = self.args.get('infotext', None)
         )
 
         self.queueChargingList:list = [] # Cars/chargers currently charging.
@@ -2254,7 +2255,8 @@ class Scheduler:
     def __init__(self, api,
         informEveryChange:bool,
         stopAtPriceIncrease:float,
-        startBeforePrice:float
+        startBeforePrice:float,
+        infotext
     ):
         self.ADapi = api
         self.stopAtPriceIncrease = stopAtPriceIncrease
@@ -2269,6 +2271,7 @@ class Scheduler:
         self.informedStop = None
         self.informEveryChange:bool = informEveryChange
         self.informHandler = None
+        self.infotext = infotext
        
         # Is updated from main class when turning off/down to save on electricity price
         self.turnsBackOn:int = 22
@@ -2482,7 +2485,7 @@ class Scheduler:
             and self.chargingStop != None
         ):
             self.ADapi.log(
-                f"chargingStart {self.chargingStart}. chargingStop {self.chargingStop}.",
+                f"Start charge at {self.chargingStart}. Finished at {self.chargingStop}.",
                 level = 'INFO'
             )
             charging_Start, charging_Stop = self.wideningChargingTime(
@@ -2492,6 +2495,18 @@ class Scheduler:
             )
             self.chargingStart = charging_Start
 
+            if self.infotext:
+                infotxt:str = f"Start charge at {self.chargingStart}. Finish estimated at {self.chargingStop}. Stop no later than {charging_Stop}"
+                if self.namespace:
+                    self.ADapi.set_state(self.infotext,
+                        namespace = self.namespace,
+                        state = infotxt
+                    )
+                else:
+                    self.ADapi.set_state(self.infotext,
+                        state = infotxt
+                    )
+
             if (
                 self.chargingStart != self.informedStart
                 or self.chargingStop != self.informedStop
@@ -2499,7 +2514,7 @@ class Scheduler:
             ):
                 for r in RECIPIENTS:
                     self.ADapi.notify(
-                        f"Start charge at {self.chargingStart}. Stopp at {self.chargingStop}",
+                        f"Start charge at {self.chargingStart}. Finished at {self.chargingStop}",
                         title = "🔋 Charge Queue",
                         name = r
                     )
@@ -2711,6 +2726,7 @@ class Charger:
                 energy_charged = 0
             except Exception as e:
                 energy_charged = 0
+                self.ADapi.log(f"Error trying to get session energy from {self.session_energy}", level = 'INFO') ### DEBUG
             if Car.maxkWhCharged < energy_charged:
                 Car.maxkWhCharged = energy_charged
                 ElectricityData['charger'][Car.vehicle_id].update(
@@ -3123,6 +3139,7 @@ class Charger:
                         )
                     finally:
                         self.checkCharging_handler = None
+                    #return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
 
             stack = inspect.stack() # Check if called from child
