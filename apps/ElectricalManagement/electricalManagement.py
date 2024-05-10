@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import appdaemon.plugins.hass.hassapi as hass
 import datetime
@@ -1099,11 +1099,8 @@ class ElectricalUsage(hass.Hass):
             charger_sensor = e.get('charger_sensor',None)
             #charger_switch = e.get('charger_switch',None)
             #charging_amps = e.get('charging_amps',None)
-            #charger_power = e.get('charger_power',None)
             charge_limit = e.get('charge_limit',None)
-            #session_energy = e.get('session_energy', None)
             asleep_sensor = e.get('asleep_sensor', None)
-            #online_sensor = e.get('online_sensor',None)
             battery_sensor = e.get('battery_sensor',None)
             location_tracker = e.get('location_tracker',None)
             destination_location_tracker = e.get('destination_location_tracker',None)
@@ -1142,6 +1139,9 @@ class ElectricalUsage(hass.Hass):
                 if 'binary_sensor.' + car + '_asleep' in sensor_id:
                     if not asleep_sensor:
                         asleep_sensor = sensor_id
+                if 'binary_sensor.' + car + '_online' in sensor_id:
+                    if not online_sensor:
+                        online_sensor = sensor_id
                 if 'sensor.' + car + '_battery' in sensor_id:
                     if not battery_sensor:
                         battery_sensor = sensor_id
@@ -1185,9 +1185,6 @@ class ElectricalUsage(hass.Hass):
                 if 'sensor.' + charger + '_max_charger_limit' in sensor_id:
                     if not max_charger_limit:
                         max_charger_limit = sensor_id
-                if 'binary_sensor.' + charger + '_online' in sensor_id:
-                    if not online_sensor:
-                        online_sensor = sensor_id
                 if 'sensor.' + charger + '_session_energy' in sensor_id:
                     if not session_energy:
                         session_energy = sensor_id
@@ -1219,7 +1216,7 @@ class ElectricalUsage(hass.Hass):
                 )
             if not online_sensor:
                 raise Exception (
-                    f"online_sensor not defined or found. Please provide 'online_sensor' in args for {charger}"
+                    f"online_sensor not defined or found. Please provide 'online_sensor' in args for {car}"
                 )
             if not session_energy:
                 raise Exception (
