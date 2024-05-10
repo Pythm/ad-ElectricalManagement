@@ -26,10 +26,10 @@ For heating sources and hot water boilers, the app uses similar calculations to 
 > I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in changeing your electricity provider to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
 > [!NOTE]
-> Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
+> Max usage limit `max_kwh_goal` is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
 
 > [!TIP]
-> If you live in a country where there is no tariff on higher usage, set the limit to the same size as your main fuse in kWh.
+> If you live in a country where there is no tariff on higher usage, set `max_kwh_goal` to the same size as your main fuse in kWh.
 
 If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production. I do not have solar panels installed and this feature is only tested with manual input of test data. Please report any unexpected behavior.
 
@@ -39,7 +39,7 @@ To use this app, install the following integrations:
 From Home Assistant:
 - Workday sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
 
-The app uses the Met.no API for outside temperature if you do not configure an alternative source: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
+The app uses the Met.no for outside temperature if you do not configure `outside_temperature`: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
 
 Install the following components via HACS:
 - Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
@@ -79,19 +79,17 @@ Persistent data will be updated with:
 - Store heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
 
 
-#### Other configurations for main app
+### Other configurations for main functions
 Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as it should be a good starting point.
 
 > [!IMPORTANT]
-> The maximum usage limit per hour is by default 5 and increases by 5 kWh if the average of the 3 highest consumption hours exceeds the limit. If the limit is set too low, it will reduce heating, turn off switches, and change charge current to as low as 6 Amperes.
+> The maximum usage limit per hour, `max_kwh_goal`, is by default 5 kWh. If the average of the 3 highest consumption hours exceeds this limit, it will increase by 5 kWh. If the limit is set too low, it may reduce heating, turn off switches, and change the charge current to as low as 6 Amperes. Please define a proper value for `max_kwh_goal` according to your normal electricity usage.
 
 Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 on workdays and all day on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
 
 In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account.
 
-Set a main vacation switch with `vacation` to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
-
-Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+Set a main `vacation` switch to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
 ```yaml
   max_kwh_goal: 5 # 5 is default.
@@ -102,9 +100,18 @@ Receive notifications about charge time to your devices with `notify_receiver` w
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
   vacation: input_boolean.vacation
+```
+
+#### Notifications and information
+Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+
+You can also create and configure an Home Assistant input_text with `infotext` to display currently planned chargetime in Home Assistant or some external displays.
+
+```yaml
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
+  infotext: input_text.information
   options:
     - informEveryChange
 ```

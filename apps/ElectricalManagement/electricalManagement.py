@@ -591,7 +591,7 @@ class ElectricalUsage(hass.Hass):
 
             # Setting buffer for kWh usage
         self.buffer:float = self.args.get('buffer', 0.4)
-        self.buffer += 0.02 # Correction of calculation
+        #self.buffer += 0.02 # Correction of calculation
         self.max_kwh_goal:int = self.args.get('max_kwh_goal', 5)
 
 
@@ -726,6 +726,55 @@ class ElectricalUsage(hass.Hass):
 
         self.queueChargingList:list = [] # Cars/chargers currently charging.
         self.solarChargingList:list = [] # Cars/chargers currently charging.
+
+
+        # Setting up generic chargers
+        chargers = self.args.get('charger', [])
+        for t in chargers:
+            namespace = t.get('namespace',None)
+            name = t.get('name',None)
+            charger_sensor = t.get('charger_sensor',None)
+
+            Car1 = Car(self,
+                namespace = namespace,
+                carName = name,
+                charger_sensor = charger_sensor,
+                charge_limit = t.get('charge_limit',None),
+                battery_sensor = t.get('battery_sensor',None),
+                asleep_sensor = t.get('asleep_sensor', None),
+                online_sensor = t.get('online_sensor',None),
+                location_tracker = t.get('location_tracker',None),
+                destination_location_tracker = t.get('destination_location_tracker',None),
+                arrival_time = t.get('arrival_time',None),
+                software_update = t.get('software_update',None),
+                force_data_update = t.get('force_data_update', None),
+                polling_switch = t.get('polling_switch',None),
+                data_last_update_time = t.get('data_last_update_time',None),
+                battery_size = t.get('battery_size',100),
+                pref_charge_limit = t.get('pref_charge_limit',90)
+            )
+
+            Charger1 = Charger(self,
+                Car = Car1,
+                namespace = namespace,
+                charger = name,
+                charger_id = t.get('charger_id', None),
+                charger_sensor = charger_sensor,
+                charger_switch = t.get('charger_switch',None),
+                charging_amps = t.get('charging_amps',None),
+                charger_power = t.get('charger_power',None),
+                session_energy = t.get('session_energy', None),
+                volts = t.get('volts', None),
+                phases = t.get('phases', None),
+                priority = t.get('priority',3),
+                finishByHour = t.get('finishByHour',None),
+                charge_now = t.get('charge_now',None),
+                charge_on_solar = t.get('charge_on_solar',None),
+                departure = t.get('departure',None),
+                guest = t.get('guest', None)
+            )
+
+            self.chargers.append(Charger1)
 
 
         # Setting up Tesla cars using Tesla API to control charging
@@ -942,8 +991,8 @@ class ElectricalUsage(hass.Hass):
                     if not reason_for_no_current:
                         reason_for_no_current = sensor_id
                 if 'sensor.' + charger + '_current' in sensor_id:
-                    if not charging_amps:
-                        charging_amps = sensor_id
+                    if not current:
+                        current = sensor_id
                 if 'sensor.' + charger + '_power' in sensor_id:
                     if not charger_power:
                         charger_power = sensor_id
@@ -969,7 +1018,7 @@ class ElectricalUsage(hass.Hass):
                     f"reason_for_no_current not defined or found. Please enable 'reason_for_no_current' "
                     f"sensor in Easee integration for {charger}"
                 )
-            if not charging_amps:
+            if not current:
                 raise Exception (
                     f"current not defined or found. Please enable 'current' sensor in Easee integration for {charger}"
                 )
@@ -1019,7 +1068,7 @@ class ElectricalUsage(hass.Hass):
                 charger = charger,
                 charger_sensor = charger_status,
                 reason_for_no_current = reason_for_no_current,
-                charging_amps = charging_amps,
+                charging_amps = current,
                 charger_power = charger_power,
                 session_energy = session_energy,
                 voltage = voltage,
@@ -1031,6 +1080,235 @@ class ElectricalUsage(hass.Hass):
                 departure = e.get('departure',None),
                 guest = e.get('guest',None)
             )
+            self.chargers.append(easeeCharger)
+
+
+        # Setting up Easee charger with Tesla car using Easee API to control charging
+        easee_tesla = self.args.get('easee_tesla', [])
+        for e in easee_tesla:
+            namespace = e.get('namespace',None)
+            charger_status = e.get('charger_status',None)
+            reason_for_no_current = e.get('reason_for_no_current',None)
+            current = e.get('current',None)
+            charger_power = e.get('charger_power',None)
+            voltage = e.get('voltage',None)
+            max_charger_limit = e.get('max_charger_limit',None)
+            online_sensor = e.get('online_sensor',None)
+            session_energy = e.get('session_energy',None)
+
+            charger_sensor = e.get('charger_sensor',None)
+            #charger_switch = e.get('charger_switch',None)
+            #charging_amps = e.get('charging_amps',None)
+            #charger_power = e.get('charger_power',None)
+            charge_limit = e.get('charge_limit',None)
+            #session_energy = e.get('session_energy', None)
+            asleep_sensor = e.get('asleep_sensor', None)
+            #online_sensor = e.get('online_sensor',None)
+            battery_sensor = e.get('battery_sensor',None)
+            location_tracker = e.get('location_tracker',None)
+            destination_location_tracker = e.get('destination_location_tracker',None)
+            arrival_time = e.get('arrival_time',None)
+            software_update = e.get('software_update',None)
+            force_data_update = e.get('force_data_update', None)
+            polling_switch = e.get('polling_switch',None)
+            data_last_update_time = e.get('data_last_update_time',None)
+
+            # Find sensors not provided:
+            if 'car' in e:
+                car = e['car']
+            if 'charger_sensor' in e:
+                charger_sensor:str = e['charger_sensor']
+                name = charger_sensor.replace(charger_sensor,'binary_sensor.','')
+                name = name.replace(name,'_charger','')
+                car = name
+
+            if 'charger' in e:
+                charger = e['charger']
+            if 'charger_status' in e:
+                charger_status:str = e['charger_status']
+                name = charger_status.replace(charger_status,'sensor.','')
+                name = name.replace(name,'_status','')
+                charger = name
+
+            sensor_states = self.get_state(entity='sensor')
+            for sensor_id, sensor_states in sensor_states.items():
+
+                if 'binary_sensor.' + car + '_charger' in sensor_id:
+                    if not charger_sensor:
+                        charger_sensor = sensor_id
+                if 'number.' + car + '_charge_limit' in sensor_id:
+                    if not charge_limit:
+                        charge_limit = sensor_id
+                if 'binary_sensor.' + car + '_asleep' in sensor_id:
+                    if not asleep_sensor:
+                        asleep_sensor = sensor_id
+                if 'sensor.' + car + '_battery' in sensor_id:
+                    if not battery_sensor:
+                        battery_sensor = sensor_id
+                if 'device_tracker.' + car + '_location_tracker' in sensor_id:
+                    if not location_tracker:
+                        location_tracker = sensor_id
+                if 'device_tracker.' + car + '_destination_location_tracker' in sensor_id:
+                    if not destination_location_tracker:
+                        destination_location_tracker = sensor_id
+                if 'sensor.' + car + '_arrival_time' in sensor_id:
+                    if not arrival_time:
+                        arrival_time = sensor_id
+                if 'update.' + car + '_software_update' in sensor_id:
+                    if not software_update:
+                        software_update = sensor_id
+                if 'button.' + car + '_force_data_update' in sensor_id:
+                    if not force_data_update:
+                        force_data_update = sensor_id
+                if 'switch.' + car + '_polling' in sensor_id:
+                    if not polling_switch:
+                        polling_switch = sensor_id
+                if 'sensor.' + car + '_data_last_update_time' in sensor_id:
+                    if not data_last_update_time:
+                        data_last_update_time = sensor_id
+
+                if 'sensor.' + charger + '_status' in sensor_id:
+                    if not charger_status:
+                        charger_status = sensor_id
+                if 'sensor.' + charger + '_reason_for_no_current' in sensor_id:
+                    if not reason_for_no_current:
+                        reason_for_no_current = sensor_id
+                if 'sensor.' + charger + '_current' in sensor_id:
+                    if not current:
+                        current = sensor_id
+                if 'sensor.' + charger + '_power' in sensor_id:
+                    if not charger_power:
+                        charger_power = sensor_id
+                if 'sensor.' + charger + '_voltage' in sensor_id:
+                    if not voltage:
+                        voltage = sensor_id
+                if 'sensor.' + charger + '_max_charger_limit' in sensor_id:
+                    if not max_charger_limit:
+                        max_charger_limit = sensor_id
+                if 'binary_sensor.' + charger + '_online' in sensor_id:
+                    if not online_sensor:
+                        online_sensor = sensor_id
+                if 'sensor.' + charger + '_session_energy' in sensor_id:
+                    if not session_energy:
+                        session_energy = sensor_id
+
+            if not charger_status:
+                raise Exception (
+                    f"charger_status not defined or found. Please provide 'charger_status' in args for {charger}"
+                )
+            if not reason_for_no_current:
+                raise Exception (
+                    f"reason_for_no_current not defined or found. Please enable 'reason_for_no_current' "
+                    f"sensor in Easee integration for {charger}"
+                )
+            if not current:
+                raise Exception (
+                    f"current not defined or found. Please enable 'current' sensor in Easee integration for {charger}"
+                )
+            if not charger_power:
+                raise Exception (
+                    f"charger_power not defined or found. Please enable 'charger_power' sensor in Easee integration for {charger}"
+                )
+            if not voltage:
+                raise Exception (
+                    f"voltage not defined or found. Please enable 'voltage' sensor in Easee integration for {charger}"
+                )
+            if not max_charger_limit:
+                raise Exception (
+                    f"max_charger_limit not defined or found. Please enable 'max_charger_limit' sensor in Easee integration for {charger}"
+                )
+            if not online_sensor:
+                raise Exception (
+                    f"online_sensor not defined or found. Please provide 'online_sensor' in args for {charger}"
+                )
+            if not session_energy:
+                raise Exception (
+                    f"session_energy not defined or found. Please enable 'session_energy' sensor in Easee integration for {charger}"
+                )
+            if not charger_sensor:
+                raise Exception (
+                    f"charger_sensor not defined or found. Please provide 'charger_sensor' in args for {car}"
+                )
+            if not charge_limit:
+                raise Exception (
+                    f"charge_limit not defined or found. Please provide 'charge_limit' in args for {car}"
+                )
+            if not asleep_sensor:
+                raise Exception (
+                    f"asleep_sensor not defined or found. Please provide 'asleep_sensor' in args for {car}"
+                )
+            if not battery_sensor:
+                raise Exception (
+                    f"battery_sensor not defined or found. Please provide 'battery_sensor' in args for {car}"
+                )
+            if not location_tracker:
+                raise Exception (
+                    f"location_tracker not defined or found. Please provide 'location_tracker' in args for {car}"
+                )
+            if not destination_location_tracker:
+                raise Exception (
+                    f"destination_location_tracker not defined or found. Please provide 'destination_location_tracker' "
+                    f"in args for {car}"
+                )
+            if not arrival_time:
+                raise Exception (
+                    f"arrival_time not defined or found. Please provide 'arrival_time' in args for {car}"
+                )
+            if not software_update:
+                raise Exception (
+                    f"software_update not defined or found. Please provide 'software_update' in args for {car}"
+                )
+            if not force_data_update:
+                raise Exception (
+                    f"force_data_update not defined or found. Please provide 'force_data_update' in args for {car}"
+                )
+            if not polling_switch:
+                raise Exception (
+                    f"polling_switch not defined or found. Please provide 'polling_switch' in args for {car}"
+                )
+            if not data_last_update_time:
+                raise Exception (
+                    f"force_data_update not defined or found. Please provide 'force_data_update' in args for {car}"
+                )
+
+            teslaCar = Tesla_car(self,
+                namespace = namespace,
+                carName = car,
+                charger_sensor = charger_sensor,
+                charge_limit = charge_limit,
+                battery_sensor = battery_sensor,
+                asleep_sensor = asleep_sensor,
+                online_sensor = online_sensor,
+                location_tracker = location_tracker,
+                destination_location_tracker = destination_location_tracker,
+                arrival_time = arrival_time,
+                software_update = software_update,
+                force_data_update = force_data_update,
+                polling_switch = polling_switch,
+                data_last_update_time = data_last_update_time,
+                battery_size = t.get('battery_size',100),
+                pref_charge_limit = t.get('pref_charge_limit',90)
+            )
+
+            easeeCharger = Easee(self,
+                Car = teslaCar,
+                namespace = namespace,
+                charger = charger,
+                charger_sensor = charger_status,
+                reason_for_no_current = reason_for_no_current,
+                charging_amps = current,
+                charger_power = charger_power,
+                session_energy = session_energy,
+                voltage = voltage,
+                max_charger_limit = max_charger_limit,
+                priority = e.get('priority',3),
+                finishByHour = e.get('finishByHour',None),
+                charge_now = e.get('charge_now',None),
+                charge_on_solar = e.get('charge_on_solar',None),
+                departure = e.get('departure',None),
+                guest = e.get('guest',None)
+            )
+
             self.chargers.append(easeeCharger)
 
 
@@ -1532,10 +1810,6 @@ class ElectricalUsage(hass.Hass):
             self.SolarProducing_ChangeToZero = True
             available_Wh:float = round(current_production - current_consumption , 2)
 
-            #self.log(f"Production is higher than consumption. Increasing usage. {accumulated_kWh} <= {production_kWh}", level="INFO") ###
-            #self.log(f"projected_kWh_usage: {projected_kWh_usage}", level="INFO") ###
-            #self.log(f"Current consumption: {current_consumption} - production: {current_production} = {available_Wh}", level="INFO") ###
-
             # Check if any heater is reduced
             if self.heatersRedusedConsumption:
                 for heater in reversed(self.heatersRedusedConsumption):
@@ -1636,11 +1910,6 @@ class ElectricalUsage(hass.Hass):
 
             """
             available_Wh:float = round(current_production - current_consumption , 2)
-
-        
-            #self.log(f"Production is lower than consumption. Increasing usage. {accumulated_kWh} > {production_kWh}", level="INFO") ###
-            #self.log(f"projected_kWh_usage: {projected_kWh_usage}", level="INFO") ###
-            #self.log(f"Current production : {current_production} - consumption: {current_consumption} = {available_Wh}", level="INFO") ###
 
             # Remove spend in heaters
             for heater in self.heaters:
@@ -1832,83 +2101,6 @@ class ElectricalUsage(hass.Hass):
                 self.queueChargingList.append(c.charger_id)
         return True
 
-
-    def chargerToForceUpdate(self) -> None:
-        """ A function to force update of Teslas charging when no cars charging but power to chargers is measured.
-            Tesla cars can be slow to update so there are some logical problems to avoid overconsumption.
-            TODO: 
-            Add a listen state in 'initialize' to listen to a power sensor.
-            Find a good logic to not force update unless needed.
-            Two or more cars connected/linked to same power sensor. 
-            FIND sensor ampere charging and test speed/charging
-
-            Function not implemented for now.
-        """
-
-        chargerToForceUpdate:list = []
-        electricChargeConsumption:float = 0.0
-        consuptionTest:str = ""
-        for c in self.chargers: # Change to cars charging thru power sensor
-            try:
-                cConsump = float(self.get_state(c.electric_consumption))
-            except ValueError as ve:
-                self.log(f"Not able to get consumption sensor {self.get_state(c.electric_consumption)} ValueError: {ve}", level = 'WARNING')
-                cConsump = 0
-            except Exception as e:
-                self.log(f"Not able to get consumption sensor {self.get_state(c.electric_consumption)} Exception: {e}", level = 'WARNING')
-                cConsump = 0
-            if cConsump > 100: 
-                if c.Car.getLocation() == 'home' or c.Car.getLocation() == 'away':
-
-                    # Charging
-                        # Sjekk om consumption og charging er nogenlunde likt -> Break / .pop()
-                    if cConsump > (c.ampereCharging * c.voltphase) - 1000 and cConsump -1000 < (c.ampereCharging * c.voltphase):
-                        if consuptionTest == c.electric_consumption:
-                            if chargerToForceUpdate:
-                                popcharger = chargerToForceUpdate.pop()
-                                self.log(f"Pop {popcharger} from beeing updated because {c.charger} is charging.", level = 'INFO') ###
-                        if c.getChargingState() != 'Charging':
-                            chargerToForceUpdate.append(c.charger_id)
-                            self.log(
-                                f"Append {c.charger_id}. {c.charger} is {c.getChargingState()}. "
-                                f"Charging: {c.ampereCharging * c.voltphase} and is close enough to electric_consumption {cConsump}",
-                                level = 'INFO'
-                            ) ###
-                        consuptionTest = c.electric_consumption # Get name of measure entity in case more chargers are charging on same
-                    # Other car charging
-                    elif c.ampereCharging > 0:
-                        consuptionTest = c.electric_consumption # Get name of measure entity in case more chargers are charging on same
-                        if c.getChargingState() != 'Charging':
-                            chargerToForceUpdate.append(c.charger_id)
-                            self.log(
-                                f"Append {c.charger_id} = {c.charger} to be updated. "
-                                f"State: {c.getChargingState()}. Charging {c.ampereCharging * c.voltphase} with electric_consumption {cConsump}",
-                                level = 'INFO'
-                            ) ###
-                    elif c.getChargingState() == 'Charging' and c.ampereCharging == 0:
-                        chargerToForceUpdate.append(c.charger_id)
-                        self.log(f"{c.charger} has Charging state with Ampere = 0. Finished or started? electric_consumption {cConsump}", level = 'INFO') ###
-                    elif consuptionTest != c.electric_consumption:
-                        chargerToForceUpdate.append(c.charger_id)
-                        consuptionTest = c.electric_consumption
-                        self.log(
-                            f"Append {c.charger_id} = {c.charger} to be updated. "
-                            f"State: {c.getChargingState()}. consuptionTest != c.electric_consumption",
-                            level = 'INFO'
-                        ) ###
-                    if c.Car.getLocation() == 'away':
-                        self.log(f"{c.charger} is away...", level = 'INFO') ###
-                
-        
-        if chargerToForceUpdate:
-            self.log(f"Chargers to update: {chargerToForceUpdate}", level = 'INFO') ###
-
-        #for c in self.chargers:
-        #    if c.charger_id in chargerToForceUpdate:
-        #        self.log(f"Do data pull from {c.charger}. {c.getChargingState()}") ###
-        #        c.Car.forceDataUpdate()
-        #        self.log(f"After data pull from {c.charger}. {c.getChargingState()}") ###
-        # TODO: Add to updated list and check if time since last > 10 min.
 
 
     def getHeatersReducedPreviousConsumption(self, available_Wh:float) -> float:
@@ -2726,10 +2918,10 @@ class Charger:
                 energy_charged = 0
             except Exception as e:
                 energy_charged = 0
-                self.ADapi.log(f"Error trying to get session energy from {self.session_energy}", level = 'INFO') ### DEBUG
-            if Car.maxkWhCharged < energy_charged:
-                Car.maxkWhCharged = energy_charged
-                ElectricityData['charger'][Car.vehicle_id].update(
+                self.ADapi.log(f"Error trying to get session energy from {self.session_energy}", level = 'DEBUG')
+            if self.Car.maxkWhCharged < energy_charged:
+                self.Car.maxkWhCharged = energy_charged
+                ElectricityData['charger'][self.Car.vehicle_id].update(
                 {"MaxkWhCharged" : energy_charged}
             )
 
@@ -2750,7 +2942,7 @@ class Charger:
     #        if not self.ADapi.entity_exists(self.ADapi.get_entity(self.departure)):
     #            self.ADapi.set_state(self.departure, state = self.ADapi.parse_time('00:00:00'))
     #        else:
-    #            self.ADapi.log(f"'input_datetime.departure_time_max_range' configured for {self.charger} during setup. ") ###
+    #            self.ADapi.log(f"'input_datetime.departure_time_max_range' configured for {self.charger} during setup. ")
         """
             Add Maxrange solution for charging finished to 100% at given time.
             #self.ADapi.listen_state(self.MaxRangeListener, self.departure, duration = 5 )
@@ -3099,7 +3291,6 @@ class Charger:
                                 f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                                 level = 'DEBUG'
                             )
-                        #return False
                 self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
 
                 stack = inspect.stack() # Check if called from child
@@ -3139,7 +3330,6 @@ class Charger:
                         )
                     finally:
                         self.checkCharging_handler = None
-                    #return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
 
             stack = inspect.stack() # Check if called from child
@@ -3171,7 +3361,6 @@ class Charger:
                         f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                         level = 'DEBUG'
                     )
-                #return True
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
 
             stack = inspect.stack() # Check if called from child
@@ -3205,7 +3394,6 @@ class Charger:
                         f"Not possible to stop timer to check if charging started/stopped. Exception: {e}",
                         level = 'DEBUG'
                     )
-                #return True
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
 
             stack = inspect.stack() # Check if called from child
@@ -3299,19 +3487,20 @@ class Charger:
         if self.charger_id in ElectricityData['charger']:
             ChargerInfo = ElectricityData['charger'][self.charger_id]
             if (
-                'VoltPhase' in ChargerInfo
+                'voltPhase' in ChargerInfo
                 and voltphase == 220
             ):
                 self.voltphase = int(ChargerInfo['voltPhase'])
             else:
                 self.voltphase = voltphase
-                ChargerInfo.update(
-                    { "voltPhase" : self.voltphase}
-                )
-                ElectricityData['charger'][self.charger_id].update(ChargerInfo)
-                
-                with open(JSON_PATH, 'w') as json_write:
-                    json.dump(ElectricityData, json_write, indent = 4)
+                if int(ChargerInfo['voltPhase']) != voltphase:
+                    ChargerInfo.update(
+                        { "voltPhase" : voltphase}
+                    )
+                    ElectricityData['charger'][self.charger_id].update(ChargerInfo)
+                    
+                    with open(JSON_PATH, 'w') as json_write:
+                        json.dump(ElectricityData, json_write, indent = 4)
 
 
 class Car:
@@ -3404,12 +3593,6 @@ class Car:
             self.cableConnected = True
         self.cableConnected = self.isConnected()
 
-        # TESTING:
-        if self.destination_location_tracker:
-           self.ADapi.listen_state(self.destination_updated, self.destination_location_tracker)
-        if self.arrival_time:
-            self.ADapi.listen_state(self.arrival_updated, self.arrival_time)
-
 
         """ End initialization Car Class
         """
@@ -3452,26 +3635,6 @@ class Car:
         if self.location_tracker:
             return self.ADapi.get_state(self.location_tracker)
         return 'home'
-
-
-    def destination_updated(self, entity, attribute, old, new, kwargs) -> None:
-        """ Get arrival time if destination == 'home'
-            and use estimated battery on arrival to calculate chargetime
-        """
-        self.ADapi.log(f"Destination updated: {entity}, attr: {attribute}, new {new}, kwargs {kwargs}") ###
-        self.ADapi.log(
-            f"Arrival Time: {self.ADapi.get_state(self.arrival_time)}. "
-            f"Energy at Arrival: {self.ADapi.get_state(self.arrival_time)}") #, attribute='Energy at arrival' ###
-
-
-    def arrival_updated(self, entity, attribute, old, new, kwargs) -> None:
-        """ Get arrival time if destination == 'home'
-            and use estimated battery on arrival to calculate chargetime
-        """
-        self.ADapi.log(f"Arrival time updated: {entity}, attr: {attribute}, new {new}, kwargs {kwargs}") ###
-        self.ADapi.log(
-            f"Arrival Time: {self.ADapi.get_state(self.arrival_time)}. "
-            f"Energy at Arrival: {self.ADapi.get_state(self.arrival_time)}") #, attribute='Energy at arrival' ###
 
 
     def SoftwareUpdates(self) -> bool:
@@ -3517,7 +3680,7 @@ class Car:
                     self.ADapi.log(
                         f"Not able to calculate kWh Remaining To Charge based on battery: {battery_pct} and limit: {limit_pct} for {self.carName}. "
                         f"Return existing value: {self.kWhRemainToCharge}. ValueError: {ve}",
-                        level = 'INFO' ###'DEBUG'
+                        level = 'DEBUG'
                     )
                     return self.kWhRemainToCharge
                 except TypeError as te:
@@ -3555,13 +3718,13 @@ class Car:
         except ValueError as ve:
             self.ADapi.log(
                 f"{self.carName} Not able to get SOC. Trying alternative calculations. ValueError: {ve}",
-                level = 'INFO' # 'DEBUG'
-            ) ### DEBUG
+                level = 'DEBUG'
+            )
         except TypeError as te:
             self.ADapi.log(
                 f"{self.carName} Not able to get SOC. Trying alternative calculations. TypeError: {te}",
-                level = 'WARNING' # 'DEBUG'
-            ) ### DEBUG
+                level = 'DEBUG'
+            )
         except Exception as e:
             self.ADapi.log(
                 f"{self.carName} Not able to get SOC. Trying alternative calculations. Exception: {e}",
@@ -3572,6 +3735,7 @@ class Car:
                 SOC = 100
             else: # TODO: Find a way to calculate
                 SOC = 10
+
         return SOC
 
 
@@ -3643,7 +3807,7 @@ class Tesla_charger(Charger, Car):
             except Exception as e:
                 api.log(f"Error trying to get phases: "
                     f"{(api.get_state(charger_power, attribute = 'charger_phases'))}. "
-                    "Exception: {e}", level = 'WARNING'
+                    f"Exception: {e}", level = 'WARNING'
                 )
 
         super().__init__(
@@ -3689,14 +3853,14 @@ class Tesla_charger(Charger, Car):
         except ValueError as ve:
             self.ADapi.log(
                 f"{self.charger} Could not getChargingState: {self.ADapi.get_state(self.charger_sensor)} ValueError: {ve}",
-                level = 'WARNING'
-            ) ### DEBUG
+                level = 'DEBUG'
+            )
             return None
         except TypeError as te:
             self.ADapi.log(
                 f"{self.charger} Could not getChargingState: {self.ADapi.get_state(self.charger_sensor)} TypeError: {te}",
-                level = 'WARNING'
-            ) ### DEBUG
+                level = 'DEBUG'
+            )
             return None
         except Exception as e:
             self.ADapi.log(
@@ -3707,20 +3871,23 @@ class Tesla_charger(Charger, Car):
 
 
     def setmaxChargingAmps(self) -> None:
-        if self.Car.getLocation() == 'home':
+        if (
+            self.Car.getLocation() == 'home'
+            and self.charger_id
+        ):
             if self.ADapi.get_state(self.charging_amps) != 'unavailable':
                 try:
                     maxChargerAmpere = math.ceil(float(self.ADapi.get_state(self.charging_amps, attribute = 'max')))
                 except ValueError as ve:
                     self.ADapi.log(
                         f"{self.charger} Could not get maxChargingAmps. ValueError: {ve}",
-                        level = 'WARNING'
-                    ) ### DEBUG
+                        level = 'DEBUG'
+                    )
                 except TypeError as te:
                     self.ADapi.log(
                         f"{self.charger} Could not get maxChargingAmps. TypeError: {te}",
-                        level = 'WARNING'
-                    ) ### DEBUG
+                        level = 'DEBUG'
+                    )
                 except Exception as e:
                     self.ADapi.log(
                         f"{self.charger} Could not get maxChargingAmps. Exception: {e}",
@@ -3785,7 +3952,7 @@ class Tesla_charger(Charger, Car):
                     try:
                         phases = int(phases)
                     except (ValueError, TypeError):
-                        pass
+                        return
                     except Exception as e:
                         self.ADapi.log(f"Error trying to get phases: "
                             f"{(self.ADapi.get_state(self.charger_power, attribute = 'charger_phases'))}. "
@@ -3828,7 +3995,7 @@ class Tesla_charger(Charger, Car):
                 # TODO: Program charging to max at departure time.
                 # @HERE: Call a function that will cancel handler when car is disconnected
                 #self.ADapi.run_in(self.resetMaxRangeCharging, 1)
-                self.ADapi.log(f"{self.charger} Has a max_range_handler. Not Programmed yet", level = 'DEBUG') ###
+                self.ADapi.log(f"{self.charger} Has a max_range_handler. Not Programmed yet", level = 'DEBUG')
 
 
 
@@ -4038,7 +4205,7 @@ class Easee(Charger):
         except Exception as e:
             api.log(f"Error trying to get phases: "
                 f"{(api.get_state(charger_sensor, attribute = 'config_phaseMode'))}. "
-                "Exception: {e}", level = 'WARNING'
+                f"Exception: {e}", level = 'WARNING'
             )
 
         if api.get_state(max_charger_limit) != 'unavailable':
@@ -4197,7 +4364,7 @@ class Easee(Charger):
 
 
     def stopCharging(self) -> None:
-        if super().stopCharging():
+        if not self.dontStopMeNow():
             try:
                 self.ADapi.call_service('easee/action_command',
                     action_command = 'pause',
@@ -4221,7 +4388,6 @@ class Easee(Charger):
                         )
                     finally:
                         self.checkCharging_handler = None
-                    #return False
             self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
 
             try:
@@ -4449,8 +4615,8 @@ class Heater:
                 except Exception as e:
                     self.ADapi.log(
                         f"Not able to stop findConsumptionAfterTurnedOn_Handler for {self.heater}. Exception: {e}",
-                        level = "INFO"
-                    ) ### DEBUG
+                        level = "DEBUG"
+                    )
 
         self.findConsumptionAfterTurnedOn_Handler = None
         self.ADapi.listen_state(self.registerConsumption, self.consumptionSensor,
@@ -4504,7 +4670,7 @@ class Heater:
         except Exception as e:
             self.ADapi.log(
                 f"Not able to register consumption for {self.heater}. Exception: {e}",
-                level = "INFO" ### DEBUG
+                level = "DEBUG"
             )
 
 
