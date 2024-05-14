@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 import appdaemon.plugins.hass.hassapi as hass
 import datetime
@@ -731,6 +731,12 @@ class ElectricalUsage(hass.Hass):
         # Setting up generic chargers
         chargers = self.args.get('charger', [])
         for t in chargers:
+            location_tracker = t.get('location_tracker',None)
+            if not location_tracker:
+                raise Exception (
+                    "location_tracker sensor not provided in configuration for charger. Aborting Charger setup. "
+                    "Please provide a location_tracker sensor to use this function"
+                )
             namespace = t.get('namespace',None)
             name = t.get('name',None)
             charger_sensor = t.get('charger_sensor',None)
@@ -743,7 +749,7 @@ class ElectricalUsage(hass.Hass):
                 battery_sensor = t.get('battery_sensor',None),
                 asleep_sensor = t.get('asleep_sensor', None),
                 online_sensor = t.get('online_sensor',None),
-                location_tracker = t.get('location_tracker',None),
+                location_tracker = location_tracker,
                 destination_location_tracker = t.get('destination_location_tracker',None),
                 arrival_time = t.get('arrival_time',None),
                 software_update = t.get('software_update',None),

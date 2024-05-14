@@ -1,9 +1,5 @@
 # ad-Electrical Management
 
-> [!NOTE]
-> This README is currently under construction. Some configurations have changed or will change to make them more understandable during this process. Documentation on changes will only be given after the first release. Stay tuned!
-
-
 The purpose of this app is to help reduce your electricity bill by:
 - Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
 - Turning up/down heating sources and on/off hot water boilers based on electricity prices.
@@ -26,10 +22,10 @@ For heating sources and hot water boilers, the app uses similar calculations to 
 > I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you are interested in changeing your electricity provider to Tibber, you can use my invite link to get a startup bonus: https://invite.tibber.com/fydzcu9t
 
 > [!NOTE]
-> Max usage limit is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
+> Max usage limit `max_kwh_goal` is developed according to the new calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2-5 kWh, 5-10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
 
 > [!TIP]
-> If you live in a country where there is no tariff on higher usage, set the limit to the same size as your main fuse in kWh.
+> If you live in a country where there is no tariff on higher usage, set `max_kwh_goal` to the same size as your main fuse in kWh.
 
 If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production. I do not have solar panels installed and this feature is only tested with manual input of test data. Please report any unexpected behavior.
 
@@ -39,7 +35,7 @@ To use this app, install the following integrations:
 From Home Assistant:
 - Workday sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
 
-The app uses the Met.no API for outside temperature if you do not configure an alternative source: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
+The app uses the Met.no for outside temperature if you do not configure `outside_temperature`: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
 
 Install the following components via HACS:
 - Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
@@ -79,19 +75,17 @@ Persistent data will be updated with:
 - Store heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
 
 
-#### Other configurations for main app
+### Other configurations for main functions
 Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as it should be a good starting point.
 
 > [!IMPORTANT]
-> The maximum usage limit per hour is by default 5 and increases by 5 kWh if the average of the 3 highest consumption hours exceeds the limit. If the limit is set too low, it will reduce heating, turn off switches, and change charge current to as low as 6 Amperes.
+> The maximum usage limit per hour, `max_kwh_goal`, is by default 5 kWh. If the average of the 3 highest consumption hours exceeds this limit, it will increase by 5 kWh. If the limit is set too low, it may reduce heating, turn off switches, and change the charge current to as low as 6 Amperes. Please define a proper value for `max_kwh_goal` according to your normal electricity usage.
 
 Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 on workdays and all day on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
 
 In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account.
 
-Set a main vacation switch with `vacation` to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
-
-Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+Set a main `vacation` switch to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
 ```yaml
   max_kwh_goal: 5 # 5 is default.
@@ -102,9 +96,18 @@ Receive notifications about charge time to your devices with `notify_receiver` w
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
   vacation: input_boolean.vacation
+```
+
+#### Notifications and information
+Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+
+You can also create and configure an Home Assistant input_text with `infotext` to display currently planned chargetime in Home Assistant or some external displays.
+
+```yaml
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
+  infotext: input_text.information
   options:
     - informEveryChange
 ```
@@ -134,47 +137,39 @@ If you have not configured any namespace in your 'appdaemon.yaml' file, you can 
 > The app is designed to control electricity usage at your primary residence and will only adjust charging amps on chargers/cars that are  within your home location. If you want to manage electricity consumption in other locations, I recommend setting up a separate Home Assistant and AppDaemon instance for each location.
 
 
-### Charging
-The app calculates the time required to charge electric vehicles based on State of Charge (SOC), battery sizes, and charger data. It also takes outside temperature into account to better estimate the time needed for charging if the maximum usage limit is expected to be below the necessary kW to maintain full charge speed.
+## Charging
+The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature provided using the `battery_size` configuration. If an SOC sensor or battery size isn't provided, it will be based on the maximum charged during one session on the charger.
 
 > [!NOTE]
-> If you have other high electricity consumption in combination with a low limit, it will reduce charging but not lower than 6 Ampere. This may result in unfinished charging if the limit is too low or consumption is too high during calculated charge time.
+> If you have other high electricity consumption in combination with a low limit, it may reduce charging but not lower than 6 Amperes. This could result in unfinished charging if the limit is too low or consumption is too high during the calculated charge time.
 
-Currently supports controlling Tesla vehicles and Easee wall chargers. Charging Tesla by controlling an Easee charger is implemented but not yet tested. Documentation to request other cars or wall chargers will be published later.
+The app supports controlling Tesla vehicles directly and Easee wall chargers. Documentation on how to implement other vehicles and chargers will be published upon request/donations.
 
-### Configuration for all vehicles and wall chargers
+For each vehicle, provide sensors to calculate the amount of kWh needed for charging, such as a charge limit and an SOC battery sensor. For each charger, include sensors to know if a car is connected and charging speed, etc. You can combine a Tesla vehicle with an Easee charger or use the Tesla vehicle to control charging even when connected to a charger without connectivity.
+
+
+### Configuration for all chargers
+
 #### Priority settings for charger
-Multiple cars with priority 1-5 are supported. The app queues the next car by priority when there is enough power available. If multiple chargers are in queue, charging vehicles will have to charge at full capacity before the next charger checks if it has 1.6kW of free capacity to start.
+Multiple cars with priority levels 1-5 are supported by the app. The app queues the next car based on priority when there's enough power available. If multiple vehicles are in the queue, charging vehicles must reach full capacity before the next charger checks if it has 1.6 kW of free capacity to start.
 
-- Priority 1-2: These cars will start at the calculated time even if starting will result in heaters turning down/off to stay below the consumption limit. They will also charge until complete even when exceeding the time before a price increase, due to turning down the speed based on the consumption limit.
+Priority settings for cars include:
 
-- Priority 3-5: These cars will wait to start charging until it is 1.6kW free capacity. They will also stop charging at the price increase after the calculated charge time ends.
+- Priority 1-2: These cars will begin charging at the calculated time, even if it means reducing heating to stay below the consumption limit. They will continue charging until complete, regardless of any price increases due to adjusting the speed based on the consumption limit.
+
+- Priority 3-5: These cars will wait to start charging until there is 1.6 kW of free capacity available. They will stop charging at the price increase that occurs after the calculated charge time ends.
 
 #### Home Assistant helpers
-Create helpers in Home Assistant to manage charging.
+Create Home Assistant helpers to manage charging:
 
-Charging is by default finished by 7:00. To set a different hour the charging should be finished use an `input_number` sensor configured with `finishByHour`.
+1. **Default Finish Time**: Charging is completed by default at 7:00 AM. To set a different hour for the charging to be finished, use an `input_number` sensor configured with `finishByHour`.
+2. **Charge Now**: To bypass smart charging and charge immediately, configure `charge_now` as an `input_boolean`. The sensor will be automatically set to false after charging is completed or when the charger is disconnected.
+3. **Charging on Solar Power**: If you generate electricity, you can choose to charge only during surplus production. Define another `input_boolean` and configure it with the `charge_on_solar` option.
+4. **Guest Function**: There is a `guest` function defined with an `input_boolean` on chargers. This allows bypassing smart charging and avoids registering the maximum charged during one session and maximum amperage the car can charge.
 
-To bypass smart charging and charge now, you can configure `charge_now` with an `input_boolean` and set it to true. The sensor will be set to false after charging is finished or the charger is disconnected.
 
-If you are generating electricity, you can choose to charge only during surplus production. Define another `input_boolean` and configure it with the `charge_on_solar` option.
-
-### Tesla
-
-> :warning: **WARNING**
-> It is necessary to restart probably both Home Assistant and Appdaemon, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
-
-Input the name of your Tesla with `charger`. Check logs for any errors.
-
-```yaml
-  tesla:
-    - charger: nameOfCar
-      pref_charge_limit: 90
-      battery_size: 100
-```
-
-### Easee
-The Easee integration automatically detects the wall charger's information if its sensor names are in English; simply provide the name of your Easee with the `charger` option. However, if your sensors have names in another language, you must manually input the correct sensor names in the configuration.
+### Easee Charger
+The Easee integration automatically detects wall charger information if its sensor names are in English; simply provide the name of your Easee using the `charger` option. If your sensors have names in another language, manually input the correct sensor names in the configuration. Check logs for any errors and provide missing sensors.
 
 ```yaml
   easee:
@@ -189,9 +184,87 @@ The Easee integration automatically detects the wall charger's information if it
       session_energy: sensor.nameOfCharger_energi_ladesesjon
 ```
 
-The app stores the highest session energy in persistent storage, as this is the only indication of how much charge is needed to reach full capacity. It then calculates the time required for charging based on this information.
+In addition to priority and the Home Assistant helpers described above, you can provide vehicle information. This can be either a Tesla or individual sensors. Please refer to the documentation on [configuring Easee & Tesla](#configuring-easee--tesla) or consult the section on [Vehicle Sensors](#vehicle-sensors).
 
-If another vehicle is using the charger, you can disable logging of the highest session energy and maximum ampere that the guest vehicle can charge by using an Home Assistant input_boolean helper configured as `guest`. Enabling this sensor will initiate the charging session immediately.
+### Configuring Tesla
+
+> :warning: **WARNING**
+> It is necessary to restart probably both Home Assistant and Appdaemon, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
+
+Input the name of your Tesla using the `charger` option. Check logs for any errors and provide missing sensors.
+
+```yaml
+  tesla:
+    - charger: nameOfCar
+      pref_charge_limit: 90
+      battery_size: 100
+```
+
+### Configuring Easee & Tesla
+
+This configuration sets up a Tesla charging on an Easee charger. Provide the name of your Easee charger using the charger option and the name of your Tesla vehicle using the carName option. A typical configuration should look something like this:
+
+```yaml
+  easee_tesla:
+    - charger: leia
+      reason_for_no_current: sensor.leia_arsak_til_at_det_ikke_lades
+      current: sensor.leia_strom
+      charger_power: sensor.leia_effekt
+      voltage: sensor.leia_spenning
+      max_charger_limit: sensor.leia_maks_grense_for_lader
+      session_energy: sensor.leia_energi_ladesesjon
+      car: spacey
+      pref_charge_limit: 90
+      battery_size: 100
+      finishByHour: input_number.spaceyferdig
+      priority: 3
+      charge_now: input_boolean.spacey_ladna
+
+```
+
+### Vehicle sensors
+
+In addition to namespace and battery size you can provide the following vehicle sensors:
+
+`carName`: Name of car.
+`charger_sensor`: Charge cable Connected or Disconnected
+`charge_limit`: SOC limit sensor in %
+`battery_sensor`: SOC (State Of Charge) in %
+`asleep_sensor`: If car is sleeping
+`online_sensor`: If car is online
+`location_tracker`: Location of car/charger. 
+`destination_location_tracker`: Destination of car
+`arrival_time`: Sensor with Arrival time, estimated energy at arrival and destination.
+`software_update`: If cars updates software it probably can`t change charge speed or stop charging
+`force_data_update`: Button to Force Home Assistant to pull new data
+`polling_switch`: Home Assistant input_boolean to disable pulling data from car
+`data_last_update_time`: Last time Home Assistant pulled data
+`battery_size`: Size of battery in kWh
+`pref_charge_limit`: Preferred chargelimit
+
+
+### Charger sensors
+
+In addition to priority and HA sensors you can provide the following charger sensors:
+
+`charger`: Name of your charger.
+`charger_id`: Unique ID. Recommend using ID used to make API calls
+`charger_sensor`: Charge cable Connected or Disconnected
+`charger_switch`: Charging or not
+`charging_amps`: Ampere charging
+`charger_power`: Charger power in kWh
+`session_energy`:: Charged this session in kWh
+`volts`: Volt in charger. 230 or 400
+`phases`: 1 or 3 phases
+
+
+##### Just sensors for charging
+You can try to define just sensors with defining a `charger` instead of Easee of Tesla if you have other brands. This has not been tested.
+`charger_switch` must be a input boolean.
+`charging_amps` must be a sensor with number.
+
+> [!WARNING]
+> The default location if no sensor for location is provided is 'home'. This will stop charging if you are controlling your car and not a wall charger if it is not chargetime. Please make sure your location sensor is functioning properly
 
 
 ## Climate
@@ -337,16 +410,12 @@ electricity:
       finishByHour: input_number.finishChargingAt
       priority: 3
       charge_now: input_boolean.charge_Now
-      electric_consumption: sensor.tesla_electric_consumption_w
-      departure: input_datetime.departure # Not implemented yet
     - charger: yourOtherTesla
       pref_charge_limit: 70
       battery_size: 80
       finishByHour: input_number.yourOtherTesla_finishChargingAt
       priority: 4
       charge_now: input_boolean.yourOtherTesla_charge_Now
-      electric_consumption: sensor.tesla_electric_consumption_w
-      departure: input_datetime.departure_yourOtherTesla
 
   easee:
     - charger: nameOfCharger
