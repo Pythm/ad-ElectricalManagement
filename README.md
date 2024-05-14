@@ -67,12 +67,13 @@ Provide a consumption sensor `power_consumption` and an accumulated consumption 
 
 
 #### Json storage
-Configure a path inclusive name 'name.json' to store a JSON file using the `json_path` as persistent data.
+To configure storage, input a path, inclusive of a name and a .json filename (e.g., '/myfolder/example.json') to store a JSON file using the `json_path` as persistent data.
 
 Persistent data will be updated with:
 - The maximum kWh usage for the 3 highest hours.
-- The maximum amperage that the car/charger can receive. This could occur when the set amperage in the charger is higher than what the car can receive, or if the charger starts low and increases output to perform a "soft start" charging.
-- Store heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
+- The maximum amperage that the vehicle can receive. This could occur when the set amperage in the charger is higher than what the vehicle can receive, or if the charger starts low and increases output to perform a "soft start" charging.
+- Maximum kWh charged during one session.
+- Heater consumptions after saving functions with hours of savings and the heater + total power in watts after finishing charging, both with the outside temperature to better calculate how many hours cars need to finish charging.
 
 
 ### Other configurations for main functions
@@ -83,15 +84,15 @@ Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size 
 
 Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 on workdays and all day on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
 
-In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account.
+In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account. Do not define if not applicable.
 
 Set a main `vacation` switch to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
 ```yaml
   max_kwh_goal: 5 # 5 is default.
-  buffer: 0.4
-  daytax: 0.5573 # 0 is default
-  nighttax: 0.4393 # 0 is default
+  buffer: 0.4 # 0.4 is default.
+  daytax: 0.5648 # 0 is default
+  nighttax: 0.4468 # 0 is default
   workday: binary_sensor.workday_sensor
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
@@ -120,7 +121,7 @@ In addition, you can configure rain and anemometer sensors. These are used by cl
 
 ```yaml
   outside_temperature: sensor.netatmo_out_temperature
-  rain_sensor: sensor.netatmo_regnsensor_rain
+  rain_sensor: sensor.netatmo_sensor_rain
   anemometer: sensor.netatmo_anemometer_wind_strength
 ```
 
@@ -138,7 +139,7 @@ If you have not configured any namespace in your 'appdaemon.yaml' file, you can 
 
 
 ## Charging
-The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature provided using the `battery_size` configuration. If an SOC sensor or battery size isn't provided, it will be based on the maximum charged during one session on the charger.
+The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature. If an SOC sensor or battery size isn't provided, it will be based on the maximum charged during one session on the charger.
 
 > [!NOTE]
 > If you have other high electricity consumption in combination with a low limit, it may reduce charging but not lower than 6 Amperes. This could result in unfinished charging if the limit is too low or consumption is too high during the calculated charge time.
@@ -184,6 +185,9 @@ The Easee integration automatically detects wall charger information if its sens
       session_energy: sensor.nameOfCharger_energi_ladesesjon
 ```
 
+> [!NOTE]
+> Note that not all sensors are activated by default in the Easee integration. Please ensure you activate all relevant sensors to enable the full functionality of the app.
+
 In addition to priority and the Home Assistant helpers described above, you can provide vehicle information. This can be either a Tesla or individual sensors. Please refer to the documentation on [configuring Easee & Tesla](#configuring-easee--tesla) or consult the section on [Vehicle Sensors](#vehicle-sensors).
 
 ### Configuring Tesla
@@ -202,7 +206,7 @@ Input the name of your Tesla using the `charger` option. Check logs for any erro
 
 ### Configuring Easee & Tesla
 
-This configuration sets up a Tesla charging on an Easee charger. Provide the name of your Easee charger using the charger option and the name of your Tesla vehicle using the carName option. A typical configuration should look something like this:
+This configuration sets up a Tesla charging on an Easee charger. Provide the name of your Easee charger using the `charger` option and the name of your Tesla vehicle using the `carName` option. A typical configuration should look something like this:
 
 ```yaml
   easee_tesla:
@@ -226,42 +230,43 @@ This configuration sets up a Tesla charging on an Easee charger. Provide the nam
 
 In addition to namespace and battery size you can provide the following vehicle sensors:
 
-`carName`: Name of car.
-`charger_sensor`: Charge cable Connected or Disconnected
-`charge_limit`: SOC limit sensor in %
-`battery_sensor`: SOC (State Of Charge) in %
-`asleep_sensor`: If car is sleeping
-`online_sensor`: If car is online
-`location_tracker`: Location of car/charger. 
-`destination_location_tracker`: Destination of car
-`arrival_time`: Sensor with Arrival time, estimated energy at arrival and destination.
-`software_update`: If cars updates software it probably can`t change charge speed or stop charging
-`force_data_update`: Button to Force Home Assistant to pull new data
-`polling_switch`: Home Assistant input_boolean to disable pulling data from car
-`data_last_update_time`: Last time Home Assistant pulled data
-`battery_size`: Size of battery in kWh
-`pref_charge_limit`: Preferred chargelimit
+- `carName`: Name of car.
+- `charger_sensor`: Charge cable Connected or Disconnected
+- `charge_limit`: SOC limit sensor in %
+- `battery_sensor`: SOC (State Of Charge) in %
+- `asleep_sensor`: If car is sleeping
+- `online_sensor`: If car is online
+- `location_tracker`: Location of car/charger. 
+- `destination_location_tracker`: Destination of car
+- `arrival_time`: Sensor with Arrival time, estimated energy at arrival and destination.
+- `software_update`: If cars updates software it probably can`t change charge speed or stop charging
+- `force_data_update`: Button to Force Home Assistant to pull new data
+- `polling_switch`: Home Assistant input_boolean to disable pulling data from car
+- `data_last_update_time`: Last time Home Assistant pulled data
+- `battery_size`: Size of battery in kWh
+- `pref_charge_limit`: Preferred chargelimit
 
 
 ### Charger sensors
 
 In addition to priority and HA sensors you can provide the following charger sensors:
 
-`charger`: Name of your charger.
-`charger_id`: Unique ID. Recommend using ID used to make API calls
-`charger_sensor`: Charge cable Connected or Disconnected
-`charger_switch`: Charging or not
-`charging_amps`: Ampere charging
-`charger_power`: Charger power in kWh
-`session_energy`:: Charged this session in kWh
-`volts`: Volt in charger. 230 or 400
-`phases`: 1 or 3 phases
+- `charger`: Name of your charger.
+- `charger_id`: Unique ID. Recommend using ID used to make API calls
+- `charger_sensor`: Charge cable Connected or Disconnected
+- `charger_switch`: Charging or not
+- `charging_amps`: Ampere charging
+- `charger_power`: Charger power in kWh
+- `session_energy`:: Charged this session in kWh
+- `volts`: Volt in charger. 230 or 400
+- `phases`: 1 or 3 phases
 
 
-##### Just sensors for charging
+#### Configure vehicle and charger with sensors only
+
 You can try to define just sensors with defining a `charger` instead of Easee of Tesla if you have other brands. This has not been tested.
-`charger_switch` must be a input boolean.
-`charging_amps` must be a sensor with number.
+- `charger_switch` must be a input boolean.
+- `charging_amps` must be a sensor with number.
 
 > [!WARNING]
 > The default location if no sensor for location is provided is 'home'. This will stop charging if you are controlling your car and not a wall charger if it is not chargetime. Please make sure your location sensor is functioning properly
@@ -275,7 +280,7 @@ Here you configure climate entities that you want to control based on outside te
 Climate entities are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
 > [!IMPORTANT]
-> If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured, the app will log with a warning to your AppDaemon log, or the log you define in the app configuration.
+> If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured, the app will log with a warning to your AppDaemon log.
 
 If the heater does not have a consumption sensor, you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit and together with the kWh sensor, it calculates expected available power during charging time.
 
@@ -324,19 +329,21 @@ The `daylight_savings` has a start and stop time. The time accepts the start tim
 Define custom recipients per climate or use recipients defined in the main configuration.
 
 
+#### Example configuration
+Define either `name` of your heater, or input climate entity with `heater`.
+
 ```yaml
   climate:
     - name: floor_thermostat
     #- heater: climate.floor_thermostat
-    #  consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
-    #  power: 300
-    #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
+      consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
+      kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
       on_for_minimum: 12
       pricedrop: 0.15
       low_price_max_continuous_hours: 3
       priceincrease: 0.65
-      #vacation: Will use default if not specified.
+      #vacation: Will use apps default HA input boolean if not specified.
       automate: input_boolean.automate_heating
       indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
       target_indoor_temp: 20
@@ -347,7 +354,6 @@ Define custom recipients per climate or use recipients defined in the main confi
           stop: '22:00:00'
           presence:
             - person.wife
-      #recipient:
       temperatures:
         - out: -4
           normal: 20
@@ -365,12 +371,13 @@ Define custom recipients per climate or use recipients defined in the main confi
 ## Switches
 Hot-water boilers with no temperature sensors and only an on/off switch can also be controlled using the app's functionality. It will utilize ElectricityPrice functions to find optimal times for heating or turning on the heater. If a power consumption sensor is provided, it will enable more accurate calculations to avoid exceeding the maximum usage limit in ElectricalUsage.
 
+Define either `name` of your heater, or input switch entity with `switch`
+
 ```yaml
   heater_switches:
     - name: hotwater
     #- switch: switch.hotwater
-    #  consumptionSensor: sensor.hotwater_electric_consumption_w
-    #  vacation: input_boolean.vacation
+      consumptionSensor: sensor.hotwater_electric_consumption_w
       pricedrop: 0.3
       max_continuous_hours: 8
       on_for_minimum: 8
@@ -387,22 +394,47 @@ electricity:
   class: ElectricalUsage
   json_path: /conf/apps/ElectricalManagement/ElectricityData.json
   nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
-  daytax: 0.4738
-  nighttax: 0.3558
+  power_consumption: sensor.power_home
+  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
+
+  max_kwh_goal: 5 # 5 is default.
+  buffer: 0.4 # 0.4 is default.
+  daytax: 0.5648 # 0 is default
+  nighttax: 0.4468 # 0 is default
+  workday: binary_sensor.workday_sensor
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
-  workday: binary_sensor.workday_sensor
-  power_consumption: sensor.power_hjemme
-  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_hjemme
-  max_kwh_goal: 10
-  buffer: 0.3
-  outside_temperature: sensor.netatmo_out_temperature
-  rain_sensor: sensor.netatmo_regnsensor_rain
-  anemometer: sensor.netatmo_anemometer_wind_strength
   vacation: input_boolean.vacation
-  notify_receiver:
-    - mobile_app_your_phone
 
+
+  outside_temperature: sensor.netatmo_out_temperature
+  rain_sensor: sensor.netatmo_sensor_rain
+  anemometer: sensor.netatmo_anemometer_wind_strength
+
+  notify_receiver:
+    - mobile_app_yourphone
+    - mobile_app_yourotherphone
+  infotext: input_text.information
+  options:
+    - informEveryChange
+
+  # IF you are charging a Tesla connected to a Easee
+  easee_tesla:
+    - charger: leia
+      reason_for_no_current: sensor.leia_arsak_til_at_det_ikke_lades
+      current: sensor.leia_strom
+      charger_power: sensor.leia_effekt
+      voltage: sensor.leia_spenning
+      max_charger_limit: sensor.leia_maks_grense_for_lader
+      session_energy: sensor.leia_energi_ladesesjon
+      car: spacey
+      pref_charge_limit: 90
+      battery_size: 100
+      finishByHour: input_number.spaceyferdig
+      priority: 3
+      charge_now: input_boolean.spacey_ladna
+
+  # If your Tesla is connected to a "dumb" wallconnector. Example on two teslas..
   tesla:
     - charger: yourTesla
       pref_charge_limit: 90
@@ -417,6 +449,7 @@ electricity:
       priority: 4
       charge_now: input_boolean.yourOtherTesla_charge_Now
 
+  # If you have a vehicle connected to a Easee for charging.
   easee:
     - charger: nameOfCharger
       charger_status: sensor.nameOfCharger_status
@@ -436,18 +469,24 @@ electricity:
   climate:
     - name: floor_thermostat
     #- heater: climate.floor_thermostat
-    #  consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
-    #  kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
-      max_continuous_hours: 14
-      on_for_minimum: 6
+      consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
+      kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
+      max_continuous_hours: 2
+      on_for_minimum: 12
       pricedrop: 0.15
-      #vacation: Will use default if not specified.
-      automate: input_boolean.automatiser_varmekabler_bod
-      #recipient:
-      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
-      target_indoor_temp: 20
       low_price_max_continuous_hours: 3
       priceincrease: 0.65
+      #vacation: Will use apps default HA input boolean if not specified.
+      automate: input_boolean.automate_heating
+      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
+      target_indoor_temp: 20
+      windowsensors:
+        - binary_sensor.your_window_door_is_open
+      daytime_savings:
+        - start: '07:30:00'
+          stop: '22:00:00'
+          presence:
+            - person.wife
       temperatures:
         - out: -4
           normal: 20
@@ -485,8 +524,7 @@ electricity:
   heater_switches:
     - name: hotwater
     #- switch: switch.hotwater
-    #  consumptionSensor: sensor.hotwater_electric_consumption_w
-    #  vacation: input_boolean.vacation
+      consumptionSensor: sensor.hotwater_electric_consumption_w
       pricedrop: 0.3
       max_continuous_hours: 8
       on_for_minimum: 8
