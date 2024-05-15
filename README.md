@@ -88,6 +88,8 @@ In Norway, we receive 90% electricity support (Strømstøtte) on electricity pri
 
 Set a main `vacation` switch to lower temperature when away. This can be configured/overridden individually for each climate/switch entity if you are controlling multiple apartments, etc.
 
+The app calculates the optimal charging price and schedule, ensuring a coherent time frame from start to finish. Vehicles will charge when the price is cheaper than the calculated rate. Additionally, you can customize the charging behavior by specifying a price difference between the calculated charging period with startBeforePrice (default 0.01) to start earlier if prices are still low, ensuring enough time to charge even with limited data for maximum kWh usage per hour. You can also force stop charging with stopAtPriceIncrease (default 0.3) if the charging isn't completed.
+
 ```yaml
   max_kwh_goal: 5 # 5 is default.
   buffer: 0.4 # 0.4 is default.
@@ -97,6 +99,8 @@ Set a main `vacation` switch to lower temperature when away. This can be configu
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
   vacation: input_boolean.vacation
+  startBeforePrice: 0.01
+  stopAtPriceIncrease: 0.3
 ```
 
 #### Notifications and information
