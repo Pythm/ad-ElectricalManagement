@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 import appdaemon.plugins.hass.hassapi as hass
 import datetime
@@ -2692,15 +2692,9 @@ class Scheduler:
 
             if self.infotext:
                 infotxt:str = f"Start charge at {self.chargingStart}. Finish estimated at {self.chargingStop}. Stop no later than {charging_Stop}"
-                if self.namespace:
-                    self.ADapi.set_state(self.infotext,
-                        namespace = self.namespace,
-                        state = infotxt
-                    )
-                else:
-                    self.ADapi.set_state(self.infotext,
-                        state = infotxt
-                    )
+                self.ADapi.set_state(self.infotext,
+                    state = infotxt
+                )
 
             if (
                 self.chargingStart != self.informedStart
