@@ -324,7 +324,7 @@ The climate will automate by default but you can define a Home Assistant `input_
 It's recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. Set a target with `target_indoor_temp`, and the app will reduce heating if exceeded.
 
 #### Window Sensors
-The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold.
+The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold. You can also specify a temperature threshold with `getting_cold` to only get notifications if a window is open and it is getting cold. This defaults to 18 degrees.
 
 #### Daylight Savings
 The `daylight_savings` has a start and stop time. The time accepts the start time before midnight and the stop time after midnight. In addition, you can define presence so that it does not apply daylight savings.
@@ -353,6 +353,7 @@ Define either `name` of your heater, or input climate entity with `heater`.
       target_indoor_temp: 20
       windowsensors:
         - binary_sensor.your_window_door_is_open
+      getting_cold: 20
       daytime_savings:
         - start: '07:30:00'
           stop: '22:00:00'
