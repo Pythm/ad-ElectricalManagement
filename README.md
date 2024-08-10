@@ -91,7 +91,7 @@ Set a main `vacation` switch to lower temperature when away. This can be configu
 The app calculates the optimal charging price and schedule, ensuring a coherent time frame from start to finish. Vehicles will charge when the price is cheaper than the calculated rate. Additionally, you can customize the charging behavior by specifying a price difference between the calculated charging period with startBeforePrice (default 0.01) to start earlier if prices are still low, ensuring enough time to charge even with limited data for maximum kWh usage per hour. You can also force stop charging with stopAtPriceIncrease (default 0.3) if the charging isn't completed.
 
 ```yaml
-  max_kwh_goal: 5 # 5 is default.
+  max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
   daytax: 0.5648 # 0 is default
   nighttax: 0.4468 # 0 is default
@@ -103,8 +103,12 @@ The app calculates the optimal charging price and schedule, ensuring a coherent 
   stopAtPriceIncrease: 0.3
 ```
 
+#### Reducing consumption to stay below max kwh goal
+The app checks power consumptions and reacts to prevent using more than defined with `max_kwh_goal`. It reduces charging speed on car(s) currently charging to a minumum, before turning down heater_switches and climate entities. If it is still going over the app can pause charging if `pause_charging` is configured under `options`.
+
+
 #### Notifications and information
-Receive notifications about charge time to your devices with `notify_receiver` with option `informEveryChange` to get notification every time calculation on chargetime has been performed, like charge limit etc. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
 
 You can also create and configure an Home Assistant input_text with `infotext` to display currently planned chargetime in Home Assistant or some external displays.
 
@@ -114,14 +118,14 @@ You can also create and configure an Home Assistant input_text with `infotext` t
     - mobile_app_yourotherphone
   infotext: input_text.information
   options:
-    - informEveryChange
+    - notify_overconsumption
+    - pause_charging
 ```
-
 
 ### Weather Sensors
 The app relies on the outside temperature to log and calculate electricity usage. If no `outside_temperature` sensor is defined, the app will attempt to retrieve data from the [Met.no](https://www.home-assistant.io/integrations/met/) integration. Climate entities set heating based on the outside temperature.
 
-In addition, you can configure rain and anemometer sensors. These are used by climate entities where you can define a rain amount and wind speed to increase heating by 1 degree.
+In addition, you can configure rain and anemometer sensors. These are used by climate entities where you can define a rain amount `rain_level` (Defaults to 3) and wind speed `anemometer_speed` (Defaults to 40) to increase heating by 1 degree.
 
 ```yaml
   outside_temperature: sensor.netatmo_out_temperature
@@ -129,14 +133,17 @@ In addition, you can configure rain and anemometer sensors. These are used by cl
   anemometer: sensor.netatmo_anemometer_wind_strength
 ```
 
+> [!TIP]
+> `anemometer_speed` and `rain_level` target can be defined pr climate entity.
+
 
 ### Namespace
 A key feature of Appdaemon is the ability to define custom namespaces. Visit the [Appdaemon documentation](https://appdaemon.readthedocs.io/en/latest/CONFIGURE.html#) for more information.
 
-If you have not configured any namespace in your 'appdaemon.yaml' file, you can skip this section.
+If you have not configured any namespace for your HASS plugin in your 'appdaemon.yaml' file, you can safely ignore namespaces.
 
 > [!IMPORTANT]
-> You must configure the `namespace` in every charger and climate that belongs to Home Assistant instances with a custom namespace.
+> As of version 0.1.5 you can set a namespace for heater/climate and charging entities with `main_namespace` if you have defined a custom HASS namespace. You can then configure the `namespace` in every charger and heater/climate that belongs to Home Assistant instances with another custom namespace if you are running multiple namespaces.
 
 > :bulb: **TIP**
 > The app is designed to control electricity usage at your primary residence and will only adjust charging amps on chargers/cars that are  within your home location. If you want to manage electricity consumption in other locations, I recommend setting up a separate Home Assistant and AppDaemon instance for each location.
@@ -164,7 +171,9 @@ Priority settings for cars include:
 
 - Priority 3-5: These cars will wait to start charging until there is 1.6 kW of free capacity available. They will stop charging at the price increase that occurs after the calculated charge time ends.
 
+
 #### Home Assistant helpers
+
 Create Home Assistant helpers to manage charging:
 
 1. **Default Finish Time**: Charging is completed by default at 7:00 AM. To set a different hour for the charging to be finished, use an `input_number` sensor configured with `finishByHour`.
@@ -174,6 +183,10 @@ Create Home Assistant helpers to manage charging:
 
 
 ### Easee Charger
+
+> [!IMPORTANT]
+> Locking Easee charger to 3phase IT net (230v) requires a minumum of 11A to charge. The app can turn down charging as low as 6A, and if so, the charging will stop. To awoid this set Phase mode to Automatic in your Easee app.
+
 The Easee integration automatically detects wall charger information if its sensor names are in English; simply provide the name of your Easee using the `charger` option. If your sensors have names in another language, manually input the correct sensor names in the configuration. Check logs for any errors and provide missing sensors.
 
 ```yaml
@@ -292,13 +305,31 @@ If the heater does not have a consumption sensor, you can input its `power` in w
 > If there is no kWh sensor for the heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your `power_consumption` sensor, but this does not take into account if the heater has been turned down for longer periods of time. This might affect calculated charging time.
 
 ### Temperatures
-You define the climate working temperatures based on outdoor conditions. The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. It includes a `normal` operations temperature, an `away` setting for vacations, and a `save` mode for when electricity prices are high. Optionally, you can also specify a `spend` mode temperature.
+The climate is programmed to react to outdoor conditions configured with [Weather Sensors](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#weather-sensors). It's also recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. With that you can set a target, either with `target_indoor_temp` as an integer, or `target_indoor_input` as an Home Assistant input_number helper.
+
+The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. Version 0.1.5 introduces additional ways to set climate temperatures.
+
+Easiest way is to define `offset` +- degrees based on outside temperature. The offset also applies to `save_temp` and `away_temp`. Alternative to save temp you can define saving temperature with a `save_temp_offset` if you are using an input_number to set target.
+
+```yaml
+      save_temp_offset: -0.5
+      away_temp: 13
+
+      temperatures:
+        - out: 3
+          offset: 0.5
+        - out: 7
+          offset: 0
+        - out: 10
+          offset: -1
+```
+
+If you like to have more control over the save and away temperatures you can build your dictionary this way. This includes a `normal` operations temperature, an `away` setting for vacations, and a `save` mode for when electricity prices are high.
 
 ```yaml
       temperatures:
         - out: -4
           normal: 20
-          spend: 21
           save: 13
           away: 14
 ```
@@ -310,21 +341,15 @@ You define the climate working temperatures based on outdoor conditions. The `te
 Savings are calculated based on a future drop in price, with the given `pricedrop`, calculating backward from the price drop to save electricity as long as the price is higher than the low price + `pricedrop` + 5% increase per hour backward. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
 
 #### Spending Settings
-Spending hours occur before price increases and the temperature is set to the `spend` setting to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting. If you are producing more electricity than you are consuming, the app will try to set spend settings on climate entities.
-
-Hi! Here is the corrected and improved text:
+Spending hours occur before price increases and the temperature is increased by 1 to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting. If you are producing more electricity than you are consuming, the app will try to set spend settings on climate entities.
 
 #### Vacation State
 Turns down temperature to `away` setting. Uses the default vacation switch if left blank.
 
-#### Pausing Automation
-The climate will automate by default but you can define a Home Assistant `input_boolean` helper to turn it off. Note that when the switch is on, it will automate.
-
-#### Indoor Temperature
-It's recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. Set a target with `target_indoor_temp`, and the app will reduce heating if exceeded.
-
 #### Window Sensors
 The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold. You can also specify a temperature threshold with `getting_cold` to only get notifications if a window is open and it is getting cold. This defaults to 18 degrees.
+
+Define a window temperature sensor as `window_temp` to react to sunny days, with `window_offset` as an offset from target temperature. This is default to -3
 
 #### Daylight Savings
 The `daylight_savings` has a start and stop time. The time accepts the start time before midnight and the stop time after midnight. In addition, you can define presence so that it does not apply daylight savings.
@@ -344,13 +369,16 @@ Define either `name` of your heater, or input climate entity with `heater`.
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
       on_for_minimum: 12
-      pricedrop: 0.15
+      pricedrop: 1
       low_price_max_continuous_hours: 3
-      priceincrease: 0.65
+      priceincrease: 1
       #vacation: Will use apps default HA input boolean if not specified.
-      automate: input_boolean.automate_heating
-      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
-      target_indoor_temp: 20
+      indoor_sensor_temp: sensor.indoor_air_temperature
+      target_indoor_input: input_number.HA_input_number
+      window_temp: sensor.window_air_temperature
+      window_offset: -3
+      save_temp: 12
+      away_temp: 13
       windowsensors:
         - binary_sensor.your_window_door_is_open
       getting_cold: 20
@@ -360,16 +388,10 @@ Define either `name` of your heater, or input climate entity with `heater`.
           presence:
             - person.wife
       temperatures:
-        - out: -4
-          normal: 20
-          spend: 21
-          save: 13
-          away: 14
-        - out: 1
-          normal: 19
-          spend: 21
-          save: 12
-          away: 14
+        - out: 3
+          offset: 0.5
+        - out: 7
+          offset: 0
 ```
 
 
@@ -422,6 +444,7 @@ electricity:
   infotext: input_text.information
   options:
     - informEveryChange
+    - pause_charging
 
   # IF you are charging a Tesla connected to a Easee
   easee_tesla:
@@ -495,22 +518,18 @@ electricity:
       temperatures:
         - out: -4
           normal: 20
-          spend: 21
           save: 13
           away: 14
         - out: -3
           normal: 19
-          spend: 21
           save: 12
           away: 14
         - out: 2
           normal: 18
-          spend: 20
           save: 11
           away: 13
         - out: 7
           normal: 16
-          spend: 18
           save: 11
           away: 13
         - out: 11
