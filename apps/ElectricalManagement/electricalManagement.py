@@ -1712,7 +1712,7 @@ class ElectricalUsage(hass.Hass):
                 last_update = self.convert_utc(attr_last_updated)
 
             now: datetime = self.datetime(aware=True)
-            stale_time: timedelta = now - last_update
+            stale_time = now - last_update
             if stale_time > datetime.timedelta(minutes = 2): # Stale for more than two minutes. Reload integration
                 self.log(
                     f"Accumulated consumption has been stale for {stale_time} Reloading integration",
@@ -3869,7 +3869,7 @@ class Car:
             )
             
             now: datetime = self.ADapi.datetime(aware=True)
-            stale_time: timedelta = now - last_update
+            stale_time = now - last_update
             if stale_time < datetime.timedelta(minutes = 12):
                 return False
         return True
@@ -4858,7 +4858,7 @@ class Heater:
             return
 
         if self.increase_now:
-            if not isON:
+            if not isOn:
                 self.ADapi.turn_on(self.heater)
             return
 
@@ -5320,7 +5320,7 @@ class Climate(Heater):
             	doDaytimeSaving
             	and new_temperature > save_temp
             ):
-            	new_temperature = save_temp
+                new_temperature = save_temp
 
 
         # Low price for electricity or solar power
