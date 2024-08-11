@@ -424,7 +424,7 @@ electricity:
   power_consumption: sensor.power_home
   accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
 
-  max_kwh_goal: 5 # 5 is default.
+  max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
   daytax: 0.5648 # 0 is default
   nighttax: 0.4468 # 0 is default
@@ -432,7 +432,6 @@ electricity:
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
   vacation: input_boolean.vacation
-
 
   outside_temperature: sensor.netatmo_out_temperature
   rain_sensor: sensor.netatmo_sensor_rain
@@ -443,8 +442,8 @@ electricity:
     - mobile_app_yourotherphone
   infotext: input_text.information
   options:
-    - informEveryChange
     - pause_charging
+    - notify_overconsumption
 
   # IF you are charging a Tesla connected to a Easee
   easee_tesla:
@@ -461,6 +460,7 @@ electricity:
       finishByHour: input_number.spaceyferdig
       priority: 3
       charge_now: input_boolean.spacey_ladna
+      guest: input_boolean.easeelader_gjest_lader
 
   # If your Tesla is connected to a "dumb" wallconnector. Example on two teslas..
   tesla:
@@ -504,12 +504,14 @@ electricity:
       pricedrop: 0.15
       low_price_max_continuous_hours: 3
       priceincrease: 0.65
-      #vacation: Will use apps default HA input boolean if not specified.
-      automate: input_boolean.automate_heating
       indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
-      target_indoor_temp: 20
+      target_indoor_input: input_number.heating_HA_sensor
+      window_temp: sensor.window_air_temperature
       windowsensors:
         - binary_sensor.your_window_door_is_open
+      window_offset: -3
+      save_temp: 12
+      away_temp: 13
       daytime_savings:
         - start: '07:30:00'
           stop: '22:00:00'
@@ -517,33 +519,19 @@ electricity:
             - person.wife
       temperatures:
         - out: -4
-          normal: 20
-          save: 13
-          away: 14
+          offset: 2
         - out: -3
-          normal: 19
-          save: 12
-          away: 14
+          offset: 1
         - out: 2
-          normal: 18
-          save: 11
-          away: 13
+          offset: 0
         - out: 7
-          normal: 16
-          save: 11
-          away: 13
+          offset: -2
         - out: 11
-          normal: 15
-          save: 10
-          away: 12
+          offset: -3
         - out: 14
-          normal: 13
-          save: 10
-          away: 12
-        - out: 18
-          normal: 12
-          save: 10
-          away: 12
+          offset: -5
+        - out: 17
+          offset: -6
 
   heater_switches:
     - name: hotwater

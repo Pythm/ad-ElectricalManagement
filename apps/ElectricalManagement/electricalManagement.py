@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 import appdaemon.plugins.hass.hassapi as hass
 import datetime
@@ -1340,7 +1340,7 @@ class ElectricalUsage(hass.Hass):
 
             # Set up hot water boilers and electrical heaters
         self.heatersRedusedConsumption:list = [] # Heaters currently turned off/down due to overconsumption
-        self.lastTimeHeaterWasReduced = datetime.datetime.now()
+        self.lastTimeHeaterWasReduced = datetime.datetime.now() - datetime.timedelta(minutes = 5)
 
         heaters = self.args.get('climate', {})
         for heater in heaters:
@@ -2077,9 +2077,10 @@ class ElectricalUsage(hass.Hass):
                     for queue_id in self.queueChargingList:
                         for c in self.chargers:
                             if c.charger_id == queue_id:
+                                ChargingState = c.getChargingState()
                                 if (
-                                    c.getChargingState() == 'Complete'
-                                    or c.getChargingState() == 'Disconnected'
+                                    ChargingState == 'Complete'
+                                    or ChargingState == 'Disconnected'
                                 ):
                                     try:
                                         self.queueChargingList.remove(queue_id)
@@ -2092,7 +2093,7 @@ class ElectricalUsage(hass.Hass):
                                         self.log(f"{c.charger} was not in queueChargingList. Exception: {e}", level = 'DEBUG')
 
                                 elif (
-                                    c.getChargingState() == 'Charging'
+                                    ChargingState == 'Charging'
                                     and not c.isChargingAtMaxAmps()
                                 ):
                                     if not c.Car.SoftwareUpdates():
@@ -2101,8 +2102,8 @@ class ElectricalUsage(hass.Hass):
                                     return
 
                                 elif (
-                                    c.getChargingState() == 'Stopped'
-                                    or c.getChargingState() == 'awaiting_start'   
+                                    ChargingState == 'Stopped'
+                                    or ChargingState == 'awaiting_start'   
                                 ):
                                     if not CHARGE_SCHEDULER.isChargingTime(charger_id = c.charger_id):
                                         try:
@@ -2116,7 +2117,7 @@ class ElectricalUsage(hass.Hass):
                                         return
 
                                 elif (
-                                    c.getChargingState() == 'Charging'
+                                    ChargingState == 'Charging'
                                     and c.isChargingAtMaxAmps()
                                 ):
                                     if (
@@ -3439,8 +3440,8 @@ class Charger:
 
 
     def isChargingAtMaxAmps(self) -> bool:
-        self.updateAmpereCharging()
         if self.getmaxChargingAmps() <= self.ampereCharging:
+            self.updateAmpereCharging()
             return True
         return False
 
@@ -3789,7 +3790,7 @@ class Car:
             ElectricityData = json.load(json_read)
         if not self.vehicle_id in ElectricityData['charger']:
             ElectricityData['charger'].update(
-                {self.vehicle_id : {"CarLimitAmpere" : 6, "MaxkWhCharged" : 5}}
+                {self.vehicle_id : {"CarLimitAmpere" : 120, "MaxkWhCharged" : 5}}
             )
             with open(JSON_PATH, 'w') as json_write:
                 json.dump(ElectricityData, json_write, indent = 4)
