@@ -3436,6 +3436,8 @@ class Charger:
     def getmaxChargingAmps(self) -> int:
         if self.guestCharging:
             return self.maxChargerAmpere
+        elif self.maxChargerAmpere < self.Car.car_limit_max_charging:
+            return self.maxChargerAmpere
         return self.Car.car_limit_max_charging
 
 
