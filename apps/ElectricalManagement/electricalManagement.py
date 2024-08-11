@@ -2985,7 +2985,11 @@ class Scheduler:
                             price = c['price']
 
             global ELECTRICITYPRICE
-            infotxt = f"Charge if price is lower than {ELECTRICITYPRICE.currency} {round(price - ELECTRICITYPRICE.daytax,3)} (day) or {ELECTRICITYPRICE.currency} {round(price - ELECTRICITYPRICE.nighttax,3)} (night)"
+            infotxt = (
+                f"Charge if price is lower than {ELECTRICITYPRICE.currency} {round(price - ELECTRICITYPRICE.daytax,3)} (day) "
+                f"or {ELECTRICITYPRICE.currency} {round(price - ELECTRICITYPRICE.nighttax,3)} (night/weekend)"
+            )
+            send_new_info = True
 
         if send_new_info:
             for r in RECIPIENTS:
@@ -4612,7 +4616,7 @@ class Easee(Charger):
             chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charging_amps, namespace = self.namespace)))
             if (
                 self.Car.car_limit_max_charging != chargingAmpere
-                and chargingAmpere >= 10
+                and chargingAmpere >= 6
             ):
                 self.Car.car_limit_max_charging = chargingAmpere
                 with open(JSON_PATH, 'r') as json_read:
