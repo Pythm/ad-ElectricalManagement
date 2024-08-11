@@ -3698,7 +3698,15 @@ class Charger:
                 self.voltPhase = int(ChargerInfo['voltPhase'])
             else:
                 self.voltPhase = voltPhase
-                if int(ChargerInfo['voltPhase']) != voltPhase:
+                if not 'voltPhase' in ChargerInfo:
+                    ChargerInfo.update(
+                        { "voltPhase" : voltPhase}
+                    )
+                    ElectricityData['charger'][self.charger_id].update(ChargerInfo)
+                    
+                    with open(JSON_PATH, 'w') as json_write:
+                        json.dump(ElectricityData, json_write, indent = 4)
+                elif int(ChargerInfo['voltPhase']) != voltPhase:
                     ChargerInfo.update(
                         { "voltPhase" : voltPhase}
                     )
