@@ -1792,7 +1792,7 @@ class ElectricalUsage(hass.Hass):
                                     f"with {c.kWhRemaining()} kWh remaining before prices increased.",
                                     level = 'INFO'
                                 )
-                            else:
+                            elif runtime.hour != 0:
                                 c.kWhRemaining()
                                 c.findNewChargeTime()
 
@@ -3909,7 +3909,7 @@ class Car:
                     self.ADapi.log(
                         f"Not able to calculate kWh Remaining To Charge based on battery: {battery_pct} and limit: {limit_pct} for {self.carName}. "
                         f"Return existing value: {self.kWhRemainToCharge}. ValueError: {ve}",
-                        level = 'DEBUG'
+                        level = 'INFO' ###'DEBUG'
                     )
                     return self.kWhRemainToCharge
                 except TypeError as te:
@@ -4571,6 +4571,7 @@ class Easee(Charger):
             and old == 'completed'
         ):
             self.Car.kWhRemainToCharge = -1
+            # car is Preheating
 
         elif new == 'charging':
             if not self.hasChargingScheduled():
@@ -4922,7 +4923,7 @@ class Heater:
                 except Exception as e:
                     self.ADapi.log(
                         f"Not able to stop findConsumptionAfterTurnedOn_Handler for {self.heater}. Exception: {e}",
-                        level = "DEBUG"
+                        level = 'DEBUG'
                     )
 
         self.findConsumptionAfterTurnedOn_Handler = None
@@ -5211,10 +5212,16 @@ class Climate(Heater):
             except Exception as e:
                 self.ADapi.log(
                     f"Not able to get new inside temperature from {self.indoor_sensor_temp}. Error: {e}",
-                    level = 'DEBUG')
+                    level = 'DEBUG'
+                )
         if in_temp == -50:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='current_temperature'))
+                self.ADapi.log(
+                    f"{self.heater} Not able to get new inside temperature from {self.indoor_sensor_temp}. "
+                    f"Getting in temp from heater. It is: {in_temp}",
+                    level = 'DEBUG'
+                )
             except (TypeError, AttributeError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline. Error: {te}", level = 'DEBUG')
             except Exception as e:
@@ -5257,7 +5264,7 @@ class Climate(Heater):
                 self.ADapi.log(f"{self.window_temp} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
                 window_temp = self.target_indoor_temp + self.window_offset
-                self.ADapi.log(f"Not able to get temperature from {self.window_temp}. {e}", level = 'WARNING')
+                self.ADapi.log(f"Not able to get temperature from {self.window_temp}. {e}", level = 'DEBUG')
             if window_temp > self.target_indoor_temp + self.window_offset:
                 adjust = math.floor(float(window_temp - (self.target_indoor_temp + self.window_offset)))
 
