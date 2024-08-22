@@ -1344,7 +1344,7 @@ class ElectricalUsage(hass.Hass):
 
         heaters = self.args.get('climate', {})
         for heater in heaters:
-            namespace = e.get('namespace',main_namespace)
+            namespace = heater.get('namespace',main_namespace)
             if 'name' in heater:
                 log_indoor_sens:bool = True
                 sensor_states = self.get_state(entity='sensor',
@@ -1450,7 +1450,7 @@ class ElectricalUsage(hass.Hass):
 
         heater_switches = self.args.get('heater_switches', {})
         for heater_switch in heater_switches:
-            namespace = e.get('namespace',main_namespace)
+            namespace = heater_switch.get('namespace',main_namespace)
             if 'name' in heater_switch:
                 sensor_states = self.get_state(entity='sensor',
                     namespace = namespace)
@@ -1542,7 +1542,7 @@ class ElectricalUsage(hass.Hass):
             """
         machines = self.args.get('appliances', {})
         for appliance in machines:
-            namespace = e.get('namespace',main_namespace)
+            namespace = appliance.get('namespace',main_namespace)
             if 'remote_start' in appliance:
                 remote_start = appliance['remote_start']
                 if 'program' in appliance:
