@@ -4,7 +4,7 @@
 
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 import appdaemon.plugins.hass.hassapi as hass
 import datetime
@@ -1577,6 +1577,8 @@ class ElectricalUsage(hass.Hass):
         self.SolarProducing_ChangeToZero:bool = False
         self.notify_about_overconsumption:bool = False
 
+        self.houseIsOnFire:bool = False
+
         self.findCharingNotInQueue()
 
         runtime = datetime.datetime.now()
@@ -2058,6 +2060,7 @@ class ElectricalUsage(hass.Hass):
         elif (
             projected_kWh_usage + accumulated_kWh < self.max_kwh_usage_pr_hour - self.buffer
             and max_target_kWh_buffer > 0
+            and not self.houseIsOnFire
         ):
             self.notify_about_overconsumption = False
             available_Wh:float = round((self.max_kwh_usage_pr_hour - self.buffer + (max_target_kWh_buffer * (60 / remaining_minute)))*1000 - (current_consumption) , 2)
@@ -2541,6 +2544,7 @@ class ElectricalUsage(hass.Hass):
             To call from another app use: self.fire_event("MODE_CHANGE", mode = 'fire')
         """
         if data['mode'] == 'fire':
+            self.houseIsOnFire = True
             for c in self.chargers:
                 if (
                     c.Car.getLocation() == 'home'
@@ -2550,6 +2554,12 @@ class ElectricalUsage(hass.Hass):
 
             for heater in self.heaters:
                 self.turn_off(heater.heater)
+
+        elif data['mode'] == 'false_alarm':
+            # Fire alarm stopped
+            self.houseIsOnFire = False
+            for heater in self.heaters:
+                self.turn_on(heater.heater)
 
 
 class Scheduler:
@@ -2730,7 +2740,6 @@ class Scheduler:
     ) -> bool:
         """ Adds charger to queue and sets charging time
         """
-        global RECIPIENTS
         global ELECTRICITYPRICE
 
         if kWhRemaining <= 0:
@@ -2961,6 +2970,8 @@ class Scheduler:
                         or c['informedStop'] != c['estimateStop']
                     ):
                         send_new_info = True
+                else:
+                    send_new_info = True
 
                 if 'chargingStart' in c:
                     if c['chargingStart'] != None:
@@ -2999,10 +3010,10 @@ class Scheduler:
                     title = f"🔋 ChargeQueue",
                     name = r
                 )
-            if self.infotext:
-                self.ADapi.set_state(self.infotext,
-                    state = infotxt
-                )
+        if self.infotext:
+            self.ADapi.set_state(self.infotext,
+                state = infotxt
+            )
 
 
 class Charger:
@@ -3280,7 +3291,7 @@ class Charger:
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
                     f"{self.charger} battery state error {battery_state} when setting new charge limit: {new}. Error: {ve}",
-                    level = 'INFO' #'DEBUG'
+                    level = 'DEBUG'
                 )
                 return
             if battery_state > float(new):
@@ -3909,7 +3920,7 @@ class Car:
                     self.ADapi.log(
                         f"Not able to calculate kWh Remaining To Charge based on battery: {battery_pct} and limit: {limit_pct} for {self.carName}. "
                         f"Return existing value: {self.kWhRemainToCharge}. ValueError: {ve}",
-                        level = 'INFO' ###'DEBUG'
+                        level = 'DEBUG'
                     )
                     return self.kWhRemainToCharge
                 except TypeError as te:
@@ -3917,7 +3928,7 @@ class Car:
                     self.ADapi.log(
                         f"Not able to calculate kWh Remaining To Charge based on battery: {battery_pct} and limit: {limit_pct} for {self.carName}. "
                         f"Return existing value: {self.kWhRemainToCharge}. TypeError: {te}",
-                        level = 'INFO'
+                        level = 'DEBUG'
                     )
                     return self.kWhRemainToCharge
                 except Exception as e:
@@ -4513,8 +4524,8 @@ class Easee(Charger):
         if phases == 1:
             self.min_ampere = 6
         elif self.voltPhase == 266:
-            self.min_ampere = 6 #11
-        else:
+            self.min_ampere = 6 # 11 if locked to 3 phase on 230v IT net
+        else: # TODO Find and change minimum ampere on 400v net.
             self.min_ampere = 6
 
         api.listen_state(self.statusChange, charger_sensor, namespace = namespace)

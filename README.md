@@ -149,6 +149,16 @@ If you have not configured any namespace for your HASS plugin in your 'appdaemon
 > The app is designed to control electricity usage at your primary residence and will only adjust charging amps on chargers/cars that are  within your home location. If you want to manage electricity consumption in other locations, I recommend setting up a separate Home Assistant and AppDaemon instance for each location.
 
 
+### Mode change events
+This app listens to event "MODE_CHANGE" in Home Assistant. It reacts to "fire" by turning off all heaters and stopping charging, and "false_alarm" to revert back to normal operations.
+> The use of events in Appdaemon and Home Assistant is well documented in [Appdaemon docs - Events](https://appdaemon.readthedocs.io/en/latest/APPGUIDE.html#events)
+
+To set mode from another appdaemon app simply use:
+```python
+self.fire_event("MODE_CHANGE", mode = 'your_mode_name')
+```
+
+
 ## Charging
 The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature. If an SOC sensor or battery size isn't provided, it will be based on the maximum charged during one session on the charger.
 
