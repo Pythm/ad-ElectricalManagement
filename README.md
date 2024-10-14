@@ -220,7 +220,7 @@ In addition to priority and the Home Assistant helpers described above, you can 
 ### Configuring Tesla
 
 > :warning: **WARNING**
-> It is necessary to restart probably both Home Assistant and Appdaemon, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
+> It is necessary to restart Home Assistant, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
 
 Input the name of your Tesla using the `charger` option. Check logs for any errors and provide missing sensors.
 
