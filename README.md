@@ -553,9 +553,12 @@ electricity:
 
   appliances:
     - remote_start: binary_sensor.oppvaskmaskin_remote_start
-      program: switch.oppvaskmaskin_program_nightwash
-      running_time: 4
-      finishByHour: 6
+      day:
+        program: switch.oppvaskmaskin_program_eco50
+        running_time: 3
+      night:
+        program: switch.oppvaskmaskin_program_nightwash
+        running_time: 4
 
 ```
 
