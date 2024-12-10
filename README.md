@@ -108,7 +108,7 @@ The app checks power consumptions and reacts to prevent using more than defined 
 
 
 #### Notifications and information
-Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed.
+Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed if you configure windows with heaters.
 
 You can also create and configure an Home Assistant input_text with `infotext` to display currently planned chargetime in Home Assistant or some external displays.
 
@@ -121,6 +121,16 @@ You can also create and configure an Home Assistant input_text with `infotext` t
     - notify_overconsumption
     - pause_charging
 ```
+
+You can also configure electricalManagement to use your own Notification app instead with `notify_app`. You'll need to have a function in your app to receive. ClimateCommander sends one notification pr notify_receiver entry.
+```python
+    def send_notification(self,
+        message:str,
+        message_title:str,
+        message_recipient:str
+    ) -> None:
+```
+Search for "Test your notification app" in .py file and uncomment to test your own notification app.
 
 ### Weather Sensors
 The app relies on the outside temperature to log and calculate electricity usage. If no `outside_temperature` sensor is defined, the app will attempt to retrieve data from the [Met.no](https://www.home-assistant.io/integrations/met/) integration. Climate entities set heating based on the outside temperature.
