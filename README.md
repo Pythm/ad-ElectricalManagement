@@ -6,7 +6,7 @@ The purpose of this app is to help reduce your electricity bill by:
 
 # Breaking configuration
 From the release 0.2.0 you now configure cars (including onboard charing) as `cars` and connected chargers as `chargers`.
-Check chapter on how to set up charger or car
+[Check chapter on how to set up charger and car.](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#charging)
 
 
 ## What platforms does it support?
@@ -313,9 +313,9 @@ Note that this is not tested. Please report any unvanted behaviour.
 # Climate
 Here you configure climate entities that you want to control based on outside temperature and electricity price.
 
-> For HVAC and other climate entities that are not very power consuming, you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is based around the same logic with the outside temperature, but more automated to keep a constant inside temperature.
+> For HVAC and other climate entities that are not very power consuming, you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is written to keep a constant inside temperature.
 
-Climate entities are defined under `climate` and set the temperature based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
+Climate entities are defined under `climate` and you configure the temperature it should heat to, based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
 > [!IMPORTANT]
 > If no `consumptionSensor` or `kWhconsumptionSensor` is found or configured, the app will log with a warning to your AppDaemon log.
@@ -324,6 +324,7 @@ If the heater does not have a consumption sensor, you can input its `power` in w
 
 > [!IMPORTANT]
 > If there is no kWh sensor for the heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your `power_consumption` sensor, but this does not take into account if the heater has been turned down for longer periods of time. This might affect calculated charging time.
+
 
 ### Temperatures
 The climate is programmed to react to outdoor conditions configured with [Weather Sensors](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#weather-sensors). It's also recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. With that you can set a target, either with `target_indoor_temp` as an integer, or `target_indoor_input` as an Home Assistant input_number helper.
@@ -359,21 +360,24 @@ If you like to have more control over the save and away temperatures you can bui
 > To create a comprehensive temperature profile, start from your current indoor temperature and add a new dictionary entry for each additional degree adjustment required based on the outdoor temperature.
 
 #### Savings Settings
-Savings are calculated based on a future drop in price, with the given `pricedrop`, calculating backward from the price drop to save electricity as long as the price is higher than the low price + `pricedrop` + 5% increase per hour backward. Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You also define a `on_for_minimum` for how many hours per day the entity needs to heat normally. This defaults to 12 hours.
+Savings are calculated based on a future drop in price, with the given `pricedrop`, calculating backward from the price drop to save electricity as long as the price is higher than the low price + `pricedrop` + `pricedifference_increase` increase per hour backward. 1 is no increase so to get 7% increse in pricedifference pr hour configure with 1.07.
+
+Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You can also define a `on_for_minimum` that checks drop in price against low prices to ensure that it does not save for multiple hours without beeing able to heat up before prices goes up again.
 
 #### Spending Settings
-Spending hours occur before price increases and the temperature is increased by 1 to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting. If you are producing more electricity than you are consuming, the app will try to set spend settings on climate entities.
+Spending hours occur before price increases and the temperature is increased to increase magazine energy. The amount per hour price increase to trigger this setting is defined with `priceincrease`. Additionally, `low_price_max_continuous_hours` defines how many hours before price increase the magazine needs to fill up with spend setting. If you are producing more electricity than you are consuming, the app will try to set spend settings on climate entities.
 
 #### Vacation State
 Turns down temperature to `away` setting. Uses the default vacation switch if left blank.
 
 #### Window Sensors
-The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold. You can also specify a temperature threshold with `getting_cold` to only get notifications if a window is open and it is getting cold. This defaults to 18 degrees.
+The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold. You can also specify a temperature threshold with `getting_cold` to only get notifications if a window is open and the temperature outside is below getting cold. This defaults to 18 degrees.
 
-Define a window temperature sensor as `window_temp` to react to sunny days, with `window_offset` as an offset from target temperature. This is default to -3
+Define a window temperature sensor as `window_temp` to react quicker to sunny days and turn down heating before it gets to hot, with `window_offset` as an offset from target temperature. This is default to -3
 
 #### Daylight Savings
 The `daylight_savings` has a start and stop time. The time accepts the start time before midnight and the stop time after midnight. In addition, you can define presence so that it does not apply daylight savings.
+
 
 #### Recipients
 Define custom recipients per climate or use recipients defined in the main configuration.
@@ -391,15 +395,28 @@ Define either `name` of your heater, or input climate entity with `heater`.
       max_continuous_hours: 2
       on_for_minimum: 12
       pricedrop: 1
-      low_price_max_continuous_hours: 3
-      priceincrease: 1
+      pricedifference_increase: 1.07
+
       #vacation: Will use apps default HA input boolean if not specified.
+      automate: input_boolean.automate_heater
+      #recipient: Define other recipients that configured in main configuration.
+
       indoor_sensor_temp: sensor.indoor_air_temperature
-      target_indoor_input: input_number.HA_input_number
       window_temp: sensor.window_air_temperature
       window_offset: -3
+      target_indoor_input: input_number.HA_input_number
+      target_indoor_temp: 23
+
+      save_temp_offset: -3
       save_temp: 12
       away_temp: 13
+
+      rain_level: 3
+      anemometer_speed: 40
+
+      low_price_max_continuous_hours: 3
+      priceincrease: 1
+
       windowsensors:
         - binary_sensor.your_window_door_is_open
       getting_cold: 20
@@ -426,9 +443,15 @@ Define either `name` of your heater, or input switch entity with `switch`
     - name: hotwater
     #- switch: switch.hotwater
       consumptionSensor: sensor.hotwater_electric_consumption_w
-      pricedrop: 0.3
+      kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8
       on_for_minimum: 8
+      pricedrop: 0.3
+      pricedifference_increase: 1.07
+
+      #vacation: Will use apps default HA input boolean if not specified.
+      automate: input_boolean.automate_heater
+      #recipient: Define other recipients that configured in main configuration.
 ```
 
 
@@ -447,16 +470,18 @@ electricity:
 
   max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
+
   daytax: 0.5648 # 0 is default
   nighttax: 0.4468 # 0 is default
   workday: binary_sensor.workday_sensor
+
   power_support_above: 0.9125 # Inkl vat
   support_amount: 0.9 # 90%
-  vacation: input_boolean.vacation
 
-  outside_temperature: sensor.netatmo_out_temperature
-  rain_sensor: sensor.netatmo_sensor_rain
-  anemometer: sensor.netatmo_anemometer_wind_strength
+  startBeforePrice: 0.01
+  stopAtPriceIncrease: 0.3
+
+  vacation: input_boolean.vacation
 
   notify_receiver:
     - mobile_app_yourphone
@@ -466,24 +491,13 @@ electricity:
     - pause_charging
     - notify_overconsumption
 
-  # IF you are charging a Tesla connected to a Easee
-  easee_tesla:
-    - charger: leia
-      reason_for_no_current: sensor.leia_arsak_til_at_det_ikke_lades
-      current: sensor.leia_strom
-      charger_power: sensor.leia_effekt
-      voltage: sensor.leia_spenning
-      max_charger_limit: sensor.leia_maks_grense_for_lader
-      session_energy: sensor.leia_energi_ladesesjon
-      car: spacey
-      pref_charge_limit: 90
-      battery_size: 100
-      finishByHour: input_number.spaceyferdig
-      priority: 3
-      charge_now: input_boolean.spacey_ladna
-      guest: input_boolean.easeelader_gjest_lader
+  outside_temperature: sensor.netatmo_out_temperature
+  rain_sensor: sensor.netatmo_sensor_rain
+  rain_level: 3
+  anemometer: sensor.netatmo_anemometer_wind_strength
+  anemometer_speed: 40
 
-  # If your Tesla is connected to a "dumb" wallconnector. Example on two teslas..
+  # Cars and Chargers
   tesla:
     - charger: yourTesla
       pref_charge_limit: 90
@@ -498,7 +512,6 @@ electricity:
       priority: 4
       charge_now: input_boolean.yourOtherTesla_charge_Now
 
-  # If you have a vehicle connected to a Easee for charging.
   easee:
     - charger: nameOfCharger
       charger_status: sensor.nameOfCharger_status
@@ -507,14 +520,11 @@ electricity:
       charger_power: sensor.nameOfCharger_effekt
       voltage: sensor.nameOfCharger_spenning
       max_charger_limit: sensor.nameOfCharger_maks_grense_for_lader
-      online_sensor: binary_sensor.nameOfCharger_online
       session_energy: sensor.nameOfCharger_energi_ladesesjon
-      namespace: hass_leil
-      finishByHour: input_number.easeelader_finishChargingAt
-      priority: 2
-      charge_now: input_boolean.easeelader_charge_Now
+      idle_current: switch.nameOfCharger_ventestrom
       guest: input_boolean.easeelader_guest_using
 
+  # Climate
   climate:
     - name: floor_thermostat
     #- heater: climate.floor_thermostat
@@ -522,45 +532,56 @@ electricity:
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
       on_for_minimum: 12
-      pricedrop: 0.15
-      low_price_max_continuous_hours: 3
-      priceincrease: 0.65
-      indoor_sensor_temp: sensor.bod_fryseskap_air_temperature
-      target_indoor_input: input_number.heating_HA_sensor
+      pricedrop: 1
+      pricedifference_increase: 1.07
+
+      #vacation: Will use apps default HA input boolean if not specified.
+      automate: input_boolean.automate_heater
+      #recipient: Define other recipients that configured in main configuration.
+
+      indoor_sensor_temp: sensor.indoor_air_temperature
       window_temp: sensor.window_air_temperature
-      windowsensors:
-        - binary_sensor.your_window_door_is_open
       window_offset: -3
+      target_indoor_input: input_number.HA_input_number
+      target_indoor_temp: 23
+
+      save_temp_offset: -3
       save_temp: 12
       away_temp: 13
+
+      rain_level: 3
+      anemometer_speed: 40
+
+      low_price_max_continuous_hours: 3
+      priceincrease: 1
+
+      windowsensors:
+        - binary_sensor.your_window_door_is_open
+      getting_cold: 20
       daytime_savings:
         - start: '07:30:00'
           stop: '22:00:00'
           presence:
             - person.wife
       temperatures:
-        - out: -4
-          offset: 2
-        - out: -3
-          offset: 1
-        - out: 2
-          offset: 0
+        - out: 3
+          offset: 0.5
         - out: 7
-          offset: -2
-        - out: 11
-          offset: -3
-        - out: 14
-          offset: -5
-        - out: 17
-          offset: -6
+          offset: 0
 
   heater_switches:
     - name: hotwater
     #- switch: switch.hotwater
       consumptionSensor: sensor.hotwater_electric_consumption_w
-      pricedrop: 0.3
+      kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8
       on_for_minimum: 8
+      pricedrop: 0.3
+      pricedifference_increase: 1.07
+
+      #vacation: Will use apps default HA input boolean if not specified.
+      automate: input_boolean.automate_heater
+      #recipient: Define other recipients that configured in main configuration.
 
   appliances:
     - remote_start: binary_sensor.oppvaskmaskin_remote_start
