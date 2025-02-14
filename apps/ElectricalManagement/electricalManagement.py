@@ -1249,7 +1249,7 @@ class ElectricalUsage(ad.ADBase):
                 consumptionSensor = heater['consumptionSensor'],
                 kWhconsumptionSensor = heater['kWhconsumptionSensor'],
                 max_continuous_hours = heater.get('max_continuous_hours', 2),
-                on_for_minimum = heater.get('on_for_minimum', 12),
+                on_for_minimum = heater.get('on_for_minimum', 6),
                 pricedrop = heater.get('pricedrop', 1),
                 pricedifference_increase = heater.get('pricedifference_increase', 1.07),
                 namespace = heater.get('namespace', self.HASS_namespace),
