@@ -4,6 +4,9 @@ The purpose of this app is to help reduce your electricity bill by:
 - Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
 - Turning up/down heating sources and on/off hot water boilers based on electricity prices.
 
+# Breaking configuration
+From the release 0.2.0 you now configure cars (including onboard charing) as `cars` and connected chargers as `chargers`.
+
 
 ## What platforms does it support?
 This app is designed to work with [AppDaemon](https://github.com/AppDaemon/appdaemon) and [Home Assistant](https://www.home-assistant.io/).
