@@ -3,7 +3,7 @@
     @Pythm / https://github.com/Pythm
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 import adbase as ad
 import datetime
@@ -1164,6 +1164,7 @@ class ElectricalUsage(ad.ADBase):
 
         heaters = self.args.get('climate', {})
         for heater in heaters:
+            validConsumptionSensor: bool = True
             namespace = heater.get('namespace',self.HASS_namespace)
             if 'name' in heater:
                 log_indoor_sens:bool = True
@@ -1207,6 +1208,7 @@ class ElectricalUsage(ad.ADBase):
                 continue
 
             if not 'consumptionSensor' in heater:
+                validConsumptionSensor = False
                 heatername = (str(heater['heater'])).split('.')
                 heater['consumptionSensor'] = 'input_number.' + heatername[1] + '_power'
                 if not self.ADapi.entity_exists(heater['consumptionSensor'], namespace = namespace):
@@ -1247,6 +1249,7 @@ class ElectricalUsage(ad.ADBase):
             climate = Climate(api = self.ADapi,
                 heater = heater['heater'],
                 consumptionSensor = heater['consumptionSensor'],
+                validConsumptionSensor = validConsumptionSensor,
                 kWhconsumptionSensor = heater['kWhconsumptionSensor'],
                 max_continuous_hours = heater.get('max_continuous_hours', 2),
                 on_for_minimum = heater.get('on_for_minimum', 6),
@@ -1278,6 +1281,7 @@ class ElectricalUsage(ad.ADBase):
 
         heater_switches = self.args.get('heater_switches', {})
         for heater_switch in heater_switches:
+            validConsumptionSensor:bool = True
             namespace = heater_switch.get('namespace',self.HASS_namespace)
             if 'name' in heater_switch:
                 sensor_states = self.ADapi.get_state(entity='sensor',
@@ -1308,6 +1312,7 @@ class ElectricalUsage(ad.ADBase):
                 continue
 
             if not 'consumptionSensor' in heater_switch:
+                validConsumptionSensor = False
                 heatername = (str(heater_switch['switch'])).split('.')
                 heater_switch['consumptionSensor'] = 'input_number.' + heatername[1] + '_power'
                 if not self.ADapi.entity_exists(heater_switch['consumptionSensor'], namespace = namespace):
@@ -1346,6 +1351,7 @@ class ElectricalUsage(ad.ADBase):
             on_off_switch = On_off_switch(api = self.ADapi,
                 heater = heater_switch['switch'],
                 consumptionSensor = heater_switch['consumptionSensor'],
+                validConsumptionSensor = validConsumptionSensor,
                 kWhconsumptionSensor = heater_switch['kWhconsumptionSensor'],
                 max_continuous_hours = heater_switch.get('max_continuous_hours',8),
                 on_for_minimum = heater_switch.get('on_for_minimum',6),
@@ -1405,6 +1411,8 @@ class ElectricalUsage(ad.ADBase):
         self.totalWattAllHeaters:float = 0
 
         self.houseIsOnFire:bool = False
+
+        self.checkIdleConsumption_Handler = None
 
         runtime = datetime.datetime.now()
         addseconds = (round((runtime.minute*60 + runtime.second)/60)+1)*60
@@ -1487,6 +1495,18 @@ class ElectricalUsage(ad.ADBase):
             for c in self.cars:
                 if c.getLocation() == 'home':
                     self.ADapi.run_in(c.findNewChargeTimeAt, 300)
+            
+            if self.checkIdleConsumption_Handler != None:
+                if self.ADapi.timer_running(self.checkIdleConsumption_Handler):
+                    try:
+                        self.ADapi.cancel_timer(self.checkIdleConsumption_Handler)
+                    except Exception as e:
+                        self.ADapi.log(
+                            f"Was not able to stop existing handler to log consumption. {e}",
+                            level = "DEBUG"
+                        )
+            if self.ADapi.get_state(self.away_state) == 'off':
+                self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, '04:30:00')
 
 
     def checkElectricalUsage(self, kwargs) -> None:
@@ -1540,11 +1560,12 @@ class ElectricalUsage(ad.ADBase):
                 )
 
             for heater in self.heaters:
-                try:
-                    current_consumption += float(self.ADapi.get_state(heater.consumptionSensor,
-                        namespace = heater.namespace))
-                except Exception:
-                    pass
+                if heater.validConsumptionSensor:
+                    try:
+                        current_consumption += float(self.ADapi.get_state(heater.consumptionSensor,
+                            namespace = heater.namespace))
+                    except Exception:
+                        pass
             for c in self.cars:
                 if (
                     c.getLocation() == 'home'
@@ -1724,7 +1745,6 @@ class ElectricalUsage(ad.ADBase):
             if available_Wh < -2000:
                 self.findCharingNotInQueue()
 
-
             if self.queueChargingList:
                 reduce_Wh, available_Wh = self.getHeatersReducedPreviousConsumption(available_Wh)
 
@@ -1743,7 +1763,14 @@ class ElectricalUsage(ad.ADBase):
                     ):
                         self.heatersRedusedConsumption.append(heater)
                         heater.setSaveState()
-                        available_Wh += heater.prev_consumption
+                        if (
+                            self.ADapi.get_state(heater.heater,
+                                attribute = 'hvac_action',
+                                namespace = heater.namespace
+                             ) == 'heating'
+                            or heater.validConsumptionSensor
+                        ):
+                            available_Wh += heater.prev_consumption
                 else:
                     return
 
@@ -1892,7 +1919,6 @@ class ElectricalUsage(ad.ADBase):
                                     self.ADapi.log(f"{c.carName} was not in solarChargingList. Exception: {e}", level = 'DEBUG')
                 return
 
-
             # Set spend in heaters
             for heater in self.heaters:
                 if (
@@ -1902,7 +1928,6 @@ class ElectricalUsage(ad.ADBase):
                 ):
                     heater.setIncreaseState()
                     overproduction_Wh -= heater.normal_power
-
 
         elif (
             (accumulated_kWh > production_kWh
@@ -2000,7 +2025,8 @@ class ElectricalUsage(ad.ADBase):
                                             and self.ADapi.now_is_between('23:00:00', '06:00:00')
                                             and self.ADapi.get_state(self.away_state) == 'off'
                                         ):
-                                            self.logIdleConsumption()
+                                            if CHARGE_SCHEDULER.findNextChargerToStart() == None:
+                                                self.ADapi.run_in(self.logIdleConsumption, 30)
                                     except Exception as e:
                                         self.ADapi.log(f"{c.carName} was not in queueChargingList. Exception: {e}", level = 'DEBUG')
 
@@ -2122,6 +2148,17 @@ class ElectricalUsage(ad.ADBase):
                             c.connectedCharger = c.onboardCharger
                             if c.connectedCharger.Car == None:
                                 c.connectedCharger.Car = c
+
+                    if self.checkIdleConsumption_Handler != None:
+                        if self.ADapi.timer_running(self.checkIdleConsumption_Handler):
+                            try:
+                                self.ADapi.cancel_timer(self.checkIdleConsumption_Handler)
+                            except Exception as e:
+                                self.ADapi.log(
+                                    f"Was not able to stop existing handler to log consumption. {e}",
+                                    level = "DEBUG"
+                                )
+                        self.checkIdleConsumption_Handler = None
 
 
     def reduceChargingAmpere(self, available_Wh: float, reduce_Wh: float) -> float:
@@ -2248,6 +2285,14 @@ class ElectricalUsage(ad.ADBase):
                     heater.findConsumptionAfterTurnedOn_Handler = self.ADapi.run_at(heater.findConsumptionAfterTurnedOn, runAt)
 
 
+    # Function to find heater configuration by its name
+    def check_if_heaterName_is_in_heaters(self, heater_name:str) -> bool:
+        for heater in self.heaters:
+            if heater_name == heater.heater:
+                return True
+        return False
+
+
     def calculateIdleConsumption(self, kwargs) -> None:
         """ Calculates expected available watts for each hour to calculate chargetime based on outside temperature and how many hours heaters has been off.
             The 'idleConsumption' consists of two watt measurements.
@@ -2263,43 +2308,56 @@ class ElectricalUsage(ad.ADBase):
             ElectricityData = json.load(json_read)
 
         if self.totalWattAllHeaters == 0:
+            heaters_to_remove = []
             for heaterName in ElectricityData['consumption']:
                 if heaterName != 'idleConsumption':
-                    if ElectricityData['consumption'][heaterName]['power']:
+                    if 'power' in ElectricityData['consumption'][heaterName]:
                         self.totalWattAllHeaters += ElectricityData['consumption'][heaterName]['power']
+                    if not self.check_if_heaterName_is_in_heaters(heater_name = heaterName):
+                        heaters_to_remove.append(heaterName)
+            if heaters_to_remove:
+                # Remove old/uncofigured heaters from your JSON data
+                updatedListWithCurrentHeaters:dict = {}
+                for entry in ElectricityData['consumption']:
+                    if entry not in heaters_to_remove:
+                        updatedListWithCurrentHeaters.update({entry : ElectricityData['consumption'][entry]})
+                ElectricityData['consumption'] = updatedListWithCurrentHeaters
+                with open(JSON_PATH, 'w') as json_write:
+                    json.dump(ElectricityData, json_write, indent = 4)
 
         available_Wh_toCharge:list = [self.max_kwh_usage_pr_hour*1000] * 48
         idleHeaterPercentageUsage:float = 0
         turnsBackOn:int = 0
 
-        out_temp_str = str(math.floor(OUT_TEMP / 2.) * 2)
-        try:
-            closest_temp = ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]
-        except Exception:
-            temp_diff:int = 100
-            closest_temp:int
-            for temps in ElectricityData['consumption']['idleConsumption']['ConsumptionData']:
-                if OUT_TEMP > float(temps):
-                    if temp_diff < OUT_TEMP - float(temps):
-                        continue
-                    temp_diff = OUT_TEMP - float(temps)
-                    closest_temp = temps
-                else:
-                    if temp_diff < float(temps) - OUT_TEMP:
-                        continue
-                    temp_diff = float(temps) - OUT_TEMP
-                    closest_temp = temps
-            out_temp_str = str(closest_temp)
+        if ElectricityData['consumption']['idleConsumption']['ConsumptionData']:
+            out_temp_str = str(math.floor(OUT_TEMP / 2.) * 2)
+            try:
+                closest_temp = ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]
+            except Exception:
+                temp_diff:int = 100
+                closest_temp:int
+                for temps in ElectricityData['consumption']['idleConsumption']['ConsumptionData']:
+                    if OUT_TEMP > float(temps):
+                        if temp_diff < OUT_TEMP - float(temps):
+                            continue
+                        temp_diff = OUT_TEMP - float(temps)
+                        closest_temp = temps
+                    else:
+                        if temp_diff < float(temps) - OUT_TEMP:
+                            continue
+                        temp_diff = float(temps) - OUT_TEMP
+                        closest_temp = temps
+                out_temp_str = str(closest_temp)
 
-        reduceAvgHeaterwatt = float(ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]['HeaterConsumption'])
-        reduceAvgIdlewatt = float(ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]['Consumption'])
+            reduceAvgHeaterwatt = float(ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]['HeaterConsumption'])
+            reduceAvgIdlewatt = float(ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]['Consumption'])
 
-        for watt in range(len(available_Wh_toCharge)):
-            reducewatt = available_Wh_toCharge[watt]
-            reducewatt -= reduceAvgHeaterwatt
-            reducewatt -= reduceAvgIdlewatt
-            
-            available_Wh_toCharge[watt] = reducewatt
+            for watt in range(len(available_Wh_toCharge)):
+                reducewatt = available_Wh_toCharge[watt]
+                reducewatt -= reduceAvgHeaterwatt
+                reducewatt -= reduceAvgIdlewatt
+                
+                available_Wh_toCharge[watt] = reducewatt
 
 
         for heaterName in ElectricityData['consumption']:
@@ -2381,7 +2439,7 @@ class ElectricalUsage(ad.ADBase):
         CHARGE_SCHEDULER.availableWatt = available_Wh_toCharge
 
 
-    def logIdleConsumption(self) -> None:
+    def logIdleConsumption(self, kwargs) -> None:
         """ Calculates average idle consumption and heater consumption and writes to persistent storage based on outside temperature
         """
         global JSON_PATH
@@ -2390,15 +2448,15 @@ class ElectricalUsage(ad.ADBase):
         current_consumption = float(self.ADapi.get_state(self.current_consumption))
         heater_consumption:float = 0.0
         for heater in self.heaters:
-            heater_consumption += float(self.ADapi.get_state(heater.consumptionSensor,
-                namespace = heater.namespace)
-            )
+            if heater.validConsumptionSensor:
+                heater_consumption += float(self.ADapi.get_state(heater.consumptionSensor,
+                    namespace = heater.namespace)
+                )
         idle_consumption = current_consumption - heater_consumption
         if idle_consumption > 10:
             with open(JSON_PATH, 'r') as json_read:
                 ElectricityData = json.load(json_read)
 
-            consumptionData = ElectricityData['consumption']['idleConsumption']['ConsumptionData']
             out_temp_str = str(math.floor(OUT_TEMP / 2.) * 2)
 
 
@@ -4198,7 +4256,7 @@ class Car:
 
 
     def car_battery_soc(self) -> int:
-        """ Returns battery State of charge. FIXME: Old state_of_charge function
+        """ Returns battery State of charge.
         """
         SOC = -1
         if self.battery_sensor:
@@ -5171,6 +5229,7 @@ class Heater:
         api,
         heater,
         consumptionSensor,
+        validConsumptionSensor:bool,
         kWhconsumptionSensor,
         max_continuous_hours:int,
         on_for_minimum:int,
@@ -5225,6 +5284,7 @@ class Heater:
 
             # Consumption sensors and setups
         self.consumptionSensor = consumptionSensor
+        self.validConsumptionSensor:bool = validConsumptionSensor
         self.kWhconsumptionSensor = kWhconsumptionSensor
         self.prev_consumption:int = 0
         self.max_continuous_hours:int = max_continuous_hours
@@ -5663,6 +5723,7 @@ class Climate(Heater):
         api,
         heater,
         consumptionSensor,
+        validConsumptionSensor:bool,
         kWhconsumptionSensor,
         max_continuous_hours:int,
         on_for_minimum:int,
@@ -5716,6 +5777,7 @@ class Climate(Heater):
             api = api,
             heater = heater,
             consumptionSensor = consumptionSensor,
+            validConsumptionSensor = validConsumptionSensor,
             kWhconsumptionSensor = kWhconsumptionSensor,
             max_continuous_hours = max_continuous_hours,
             on_for_minimum = on_for_minimum,
@@ -6076,6 +6138,7 @@ class On_off_switch(Heater):
         api,
         heater,
         consumptionSensor,
+        validConsumptionSensor:bool,
         kWhconsumptionSensor,
         max_continuous_hours:int,
         on_for_minimum:int,
@@ -6093,6 +6156,7 @@ class On_off_switch(Heater):
             api = api,
             heater = heater,
             consumptionSensor = consumptionSensor,
+            validConsumptionSensor = validConsumptionSensor,
             kWhconsumptionSensor = kWhconsumptionSensor,
             max_continuous_hours = max_continuous_hours,
             on_for_minimum = on_for_minimum,
@@ -6193,7 +6257,6 @@ class Appliances:
                         message_recipient = r,
                         also_if_not_home = False
                     )
-
             else:
                 self.ADapi.run_in(self.startWashing, 10,
                     program = self.dayprogram['program']
@@ -6251,7 +6314,7 @@ class Appliances:
                 except Exception as e:
                     self.ADapi.log(f"Not possible to stop timer for appliance. {e}", level = 'DEBUG')
             self.handler = None
-                    
+
     def awayStateListen(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch to prevent application to start when on vacation.
         """
