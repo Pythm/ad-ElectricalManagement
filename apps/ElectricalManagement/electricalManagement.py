@@ -3,7 +3,7 @@
     @Pythm / https://github.com/Pythm
 """
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 import adbase as ad
 import datetime
