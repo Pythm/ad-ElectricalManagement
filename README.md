@@ -143,7 +143,7 @@ You can also create and configure an Home Assistant input_text with `infotext` t
     - pause_charging
 ```
 
-You can also configure electricalManagement to use your own Notification app instead with `notify_app`. You'll need to have a function in your app to receive. App sends one notification pr notify_receiver entry with kwargs: message, message_title, message_recipient and also_if_not_home. More kwargs can be added later or on request.
+You can also configure electricalManagement to use your own Notification app instead with `notify_app`. You'll need to have a function in your app to receive. App sends one call with kwargs: message, message_title, message_recipient and also_if_not_home. Data might contain tag to replace old notifications. More kwargs can be added later or on request.
 
 ```python
     def send_notification(self, **kwargs) -> None:
@@ -153,17 +153,24 @@ You can also configure electricalManagement to use your own Notification app ins
         message_title:str = kwargs.get('message_title', 'Home Assistant')
         message_recipient:str = kwargs.get('message_recipient', True)
         also_if_not_home:bool = kwargs.get('also_if_not_home', False)
+        data:dict = kwargs:get('data', {})
 
-        self.ADapi.call_service(f'notify/{message_recipient}',
-            title = message_title,
-            message = message,
-            namespace = self.namespace
-        )
+        for re in message_recipient:
+            self.ADapi.call_service(f'notify/{re}',
+                title = message_title,
+                message = message,
+                data = data,
+                namespace = self.namespace
+            )
 ```
 
 
 ### Weather Sensors
-The app relies on the outside temperature to log and calculate electricity usage. If no `outside_temperature` sensor is defined, the app will attempt to retrieve data from the [Met.no](https://www.home-assistant.io/integrations/met/) integration or other weather sensor in HA. Climate entities set heating based on the outside temperature.
+I recommend setting up the [ad-Weather](https://github.com/Pythm/ad-Weather) application. This tool consolidates all your weather sensors into one application, and it publishes an event to other applications whenever there is a sensor update.
+
+Please note that any weather sensors integrated with climateCommander will take precedence over the ad-Weather app.
+
+The app relies on the outside temperature to log and calculate electricity usage. Climate entities set heating based on the outside temperature.
 
 In addition, you can configure rain and anemometer sensors. These are used by climate entities where you can define a rain amount `rain_level` (Defaults to 3) and wind speed `anemometer_speed` (Defaults to 40) to increase heating.
 
