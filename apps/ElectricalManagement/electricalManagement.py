@@ -1798,7 +1798,7 @@ class ElectricalUsage(ad.ADBase):
             ):
                 if self.pause_charging:
                     for queue_id in  reversed(self.queueChargingList):
-                        for c in self.cars:
+                        for c in self.chargers:
                             if c.Car is not None:
                                 if c.Car.vehicle_id == queue_id:
                                     if c.getCarChargerState() == 'Charging':
@@ -5471,6 +5471,7 @@ class Heater:
                     namespace = self.namespace,
                     constrain_state=lambda x: float(x) < 20
                 )
+                return
 
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
