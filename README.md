@@ -5,6 +5,42 @@ The purpose of this app is to help reduce your electricity bill by:
 - Turning up/down heating sources and on/off hot water boilers based on electricity prices.
 
 # Breaking configuration
+As of the release 0.3.0 the calculations for electricity prices is now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) or write your own to suit your needs. Configure that app and add it to ElectricalManagement with `electricalPriceApp` like this: 
+```yaml
+electricalPriceApp: electricalPriceCalc # (name of your app)
+```
+The separation is to make it easier going forward, both using the functions in other apps and for you to adjusting the logic to suit other usecases. There are some big changes like support for Nordpool prices every 15 minutes, and datetime objects is now timezone aware.
+
+This app uses following functions from the app:
+
+```Python
+    def find_times_to_save(self,
+                           pricedrop: float,
+                           max_continuous_hours: int,
+                           on_for_minimum: int,
+                           pricedifference_increase: float,
+                           reset_continuous_hours: bool,
+                           prev_peak_hours: list
+                           ) -> list:
+        """Finds peak variations in electricity price for saving purposes and returns list with datetime objects;
+           'start', 'end' and 'duration' as a timedelta object for how long the electricity has been off.
+        """
+
+    def find_times_to_spend(self,
+                            priceincrease:float
+                            ) -> list:
+        """ Finds low price variations in electricity price for spending purposes and returns list with datetime objects.
+        """
+
+    def get_Continuous_Cheapest_Time(self,
+                                     hoursTotal:float,
+                                     calculateBeforeNextDayPrices:bool,
+                                     finishByHour:int
+                                     ) -> Tuple[datetime, datetime, float]:
+        """ Returns starttime, endtime and price for cheapest continuous hours with different results depenting on time the call was made.
+        """
+```
+
 From the release 0.2.0 you now configure cars (including onboard charing) as `cars` and connected chargers as `chargers`.
 [Check chapter on how to set up charger and car.](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#charging)
 
@@ -18,7 +54,7 @@ AppDaemon is a loosely coupled, multi-threaded, sandboxed Python execution envir
 
 
 ## How does it work?
-The app calculates the optimal charging time for your electric car based on your historical electricity consumption where it takes into account factors like weather conditions, in addition to current rates, and future prices from the [Nordpool custom components](https://github.com/custom-components/nordpool).
+The app calculates the optimal charging time for your electric car based on your historical electricity consumption where it takes into account factors like weather conditions, in addition to current rates, and future prices.
 
 For heating sources and hot water boilers, the app uses similar calculations to determine when to turn them on/off/down based on the lowest possible electricity rates while still ensuring comfort needs are met. It can also turn up heating sources before a price increase. The app continuously monitors your energy consumption and adjusts settings accordingly, helping you avoid peak hours when electricity rates are higher and maximize savings during off-peak hours.
 
@@ -35,15 +71,9 @@ If you have solar or other electricity production, add a production sensor and a
 
 
 ## Dependencies:
-To use this app, install the following integrations:
-From Home Assistant:
-- Workday sensor: [Home Assistant Workday integration](https://www.home-assistant.io/integrations/workday/)
+To use this app, install the following depending on your setup:
 
 The app uses the Met.no for outside temperature if you do not configure `outside_temperature`: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
-
-Install the following components via HACS:
-- Nordpool sensor: [Nordpool custom components](https://github.com/custom-components/nordpool)
-
 
 You only need the following optional components if they are configured in your setup. Currently supported directly in app:
 - Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
@@ -277,7 +307,7 @@ Priority settings for cars include:
 ### Configuring Tesla
 
 > :warning: **WARNING**
-> It is necessary to restart Home Assistant, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
+> It is necessary to restart the Tesla integration, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
 
 Input the name of your Tesla using the `charger` option. Check logs for any errors and provide missing sensors.
 
