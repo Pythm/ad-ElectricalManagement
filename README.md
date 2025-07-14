@@ -4,12 +4,12 @@ The purpose of this app is to help reduce your electricity bill by:
 - Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
 - Turning up/down heating sources and on/off hot water boilers based on electricity prices.
 
-# Breaking configuration
+# Breaking configurations
 As of the release 0.3.0 the calculations for electricity prices is now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) or write your own to suit your needs. Configure that app and add it to ElectricalManagement with `electricalPriceApp` like this: 
 ```yaml
 electricalPriceApp: electricalPriceCalc # (name of your app)
 ```
-The separation is to make it easier going forward, both using the functions in other apps and for you to adjusting the logic to suit other usecases. There are some big changes like support for Nordpool prices every 15 minutes, and datetime objects is now timezone aware.
+The separation is to make it easier to maintain and continue development. There are some big changes under the hood also like support for Nordpool prices every 15 minutes, and datetime objects is now timezone aware.
 
 This app uses following functions from the app:
 
@@ -44,6 +44,8 @@ This app uses following functions from the app:
 From the release 0.2.0 you now configure cars (including onboard charing) as `cars` and connected chargers as `chargers`.
 [Check chapter on how to set up charger and car.](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#charging)
 
+### Planned changes
+I will also make changes to [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) so that you configure your heaters there and import the apps to set save and spend hours from here.
 
 ## What platforms does it support?
 This app is designed to work with [AppDaemon](https://github.com/AppDaemon/appdaemon) and [Home Assistant](https://www.home-assistant.io/).
@@ -67,14 +69,10 @@ For heating sources and hot water boilers, the app uses similar calculations to 
 > [!TIP]
 > If you live in a country where there is no tariff on higher usage, set `max_kwh_goal` to the same size as your main fuse in kWh. It defaults to 15.
 
-If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production. I do not have solar panels installed and this feature is only tested with manual input of test data. Please report any unexpected behavior.
+If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production. I do not have solar panels installed and this feature is only tested with manual input of test data. Please consider this untested and report any unexpected behavior.
 
 
 ## Dependencies:
-To use this app, install the following depending on your setup:
-
-The app uses the Met.no for outside temperature if you do not configure `outside_temperature`: [Met.no Home Assistant integration](https://www.home-assistant.io/integrations/met/)
-
 You only need the following optional components if they are configured in your setup. Currently supported directly in app:
 - Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
 - Easee EV charger component for Home Assistant: [HACS Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
@@ -90,7 +88,7 @@ electricity:
   module: electricalManagement
   class: ElectricalUsage 
   json_path: /conf/apps/ElectricalManagement/ElectricityData.json
-  nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
+  electricalPriceApp: electricalPriceCalc # Your ElectricalPriceCalc app
   power_consumption: sensor.power_home
   accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
 ```
@@ -119,22 +117,11 @@ Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size 
 > [!IMPORTANT]
 > The maximum usage limit per hour, `max_kwh_goal`, is by default 15 kWh. If the average of the 3 highest consumption hours exceeds this limit, it will increase by 5 kWh. If the limit is set too low, it may reduce heating, turn off switches, and change the charge current. Please define a proper value for `max_kwh_goal` according to your normal electricity usage.
 
-Add tax per kWh from your electricity grid provider with `daytax` and `nighttax`. Night tax applies from 22:00 to 06:00 on workdays and all day on weekends. The app will also look for 'binary_sensor.workday_sensor' and set night tax on holidays. If your [Workday Sensor](https://www.home-assistant.io/integrations/workday/) has another entity ID, you can configure it with `workday`.
-
-In Norway, we receive 90% electricity support (Strømstøtte) on electricity prices above 0.70 kr exclusive / 0.9125 kr inclusive VAT (MVA) calculated per hour. Define `power_support_above` and `support_amount` to have calculations take the support into account. Do not define if not applicable.
-
-The app calculates the optimal charging price and schedule based on this data, ensuring a coherent time frame from start to finish. Vehicles will charge when the price is cheaper than the calculated rate. Additionally, you can customize the charging behavior by specifying a price difference between the calculated charging period with startBeforePrice (default 0.01) to start earlier if prices are still low, ensuring enough time to charge even with limited data for maximum kWh usage per hour. You can also force stop charging with stopAtPriceIncrease (default 0.3) if the charging isn't completed within the calculated time.
+The app calculates the optimal charging price and schedule based on data from [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc), ensuring a coherent time frame from start to finish. Vehicles will charge when the price is cheaper than the calculated rate. Additionally, you can customize the charging behavior by specifying a price difference between the calculated charging period with startBeforePrice (default 0.01) to start earlier if prices are still low, ensuring enough time to charge even with limited data for maximum kWh usage per hour. You can also force stop charging with stopAtPriceIncrease (default 0.3) if the charging isn't completed within the calculated time.
 
 ```yaml
   max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
-
-  daytax: 0.5648 # 0 is default
-  nighttax: 0.4468 # 0 is default
-  workday: binary_sensor.workday_sensor
-
-  power_support_above: 0.9125 # Inkl vat
-  support_amount: 0.9 # 90%
 
   startBeforePrice: 0.01
   stopAtPriceIncrease: 0.3
@@ -198,17 +185,17 @@ You can also configure electricalManagement to use your own Notification app ins
 ### Weather Sensors
 I recommend setting up the [ad-Weather](https://github.com/Pythm/ad-Weather) application. This tool consolidates all your weather sensors into one application, and it publishes an event to other applications whenever there is a sensor update.
 
-Please note that any weather sensors integrated with climateCommander will take precedence over the ad-Weather app.
+Please note that any weather sensors integrated with electricalManagement will take precedence over the ad-Weather app.
 
 The app relies on the outside temperature to log and calculate electricity usage. Climate entities set heating based on the outside temperature.
 
 In addition, you can configure rain and anemometer sensors. These are used by climate entities where you can define a rain amount `rain_level` (Defaults to 3) and wind speed `anemometer_speed` (Defaults to 40) to increase heating.
 
 ```yaml
-  outside_temperature: sensor.netatmo_out_temperature
-  rain_sensor: sensor.netatmo_sensor_rain
+  outside_temperature: sensor.out_temperature
+  rain_sensor: sensor.sensor_rain
   rain_level: 3
-  anemometer: sensor.netatmo_anemometer_wind_strength
+  anemometer: sensor.anemometer_wind_strength
   anemometer_speed: 40
 ```
 
@@ -508,13 +495,6 @@ electricity:
   max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
 
-  daytax: 0.5648 # 0 is default
-  nighttax: 0.4468 # 0 is default
-  workday: binary_sensor.workday_sensor
-
-  power_support_above: 0.9125 # Inkl vat
-  support_amount: 0.9 # 90%
-
   startBeforePrice: 0.01
   stopAtPriceIncrease: 0.3
 
@@ -529,10 +509,6 @@ electricity:
     - notify_overconsumption
 
   outside_temperature: sensor.netatmo_out_temperature
-  rain_sensor: sensor.netatmo_sensor_rain
-  rain_level: 3
-  anemometer: sensor.netatmo_anemometer_wind_strength
-  anemometer_speed: 40
 
   # Cars and Chargers
   tesla:
@@ -551,7 +527,6 @@ electricity:
 
   easee:
     - charger: nameOfCharger
-      charger_status: sensor.nameOfCharger_status
       reason_for_no_current: sensor.nameOfCharger_arsak_til_at_det_ikke_lades
       current: sensor.nameOfCharger_strom
       charger_power: sensor.nameOfCharger_effekt
@@ -619,15 +594,6 @@ electricity:
       #vacation: Will use apps default HA input boolean if not specified.
       automate: input_boolean.automate_heater
       #recipient: Define other recipients that configured in main configuration.
-
-  appliances:
-    - remote_start: binary_sensor.oppvaskmaskin_remote_start
-      day:
-        program: switch.oppvaskmaskin_program_eco50
-        running_time: 3
-      night:
-        program: switch.oppvaskmaskin_program_nightwash
-        running_time: 4
 
 ```
 
