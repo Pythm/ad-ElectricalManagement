@@ -216,13 +216,15 @@ If you have not configured any namespace for your HASS plugin in your 'appdaemon
 
 
 ### Mode change events
-This app listens to event "MODE_CHANGE" in Home Assistant. It reacts to mode "fire" by turning off all heaters and stopping charging, and "false_alarm" to revert back to normal operations.
+This app listens to event "MODE_CHANGE" in Home Assistant. It reacts to mode "fire" by turning off all heaters and stopping charging, and "false-alarm" to revert back to normal operations.
 > The use of events in Appdaemon and Home Assistant is well documented in [Appdaemon docs - Events](https://appdaemon.readthedocs.io/en/latest/APPGUIDE.html#events)
 
 To set mode from another appdaemon app simply use:
 ```python
 self.fire_event("MODE_CHANGE", mode = 'your_mode_name')
 ```
+> [!TIP]
+> ElectricalManagement now supports the same translation on Modes as Lightwand. Check out the documentation for Lightwand in the [translation section](https://github.com/Pythm/ad-Lightwand?tab=readme-ov-file#translating-or-changing-modes) to listen for another event than "MODE_CHANGE" or use your own names for the pre defined mode names and change "fire" and "false-alarm" to comply with rest of your smart home.
 
 
 # Charging

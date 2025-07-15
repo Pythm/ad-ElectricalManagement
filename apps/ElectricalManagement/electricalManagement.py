@@ -21,6 +21,10 @@ OUT_TEMP:float = 10.0
 RAIN_AMOUNT:float = 0.0
 WIND_AMOUNT:float = 0.0
 
+# Translations from json for 'MODE_CHANGE' events
+FIRE_TRANSLATE:str = 'fire'
+FALSE_ALARM_TRANSLATE:str = 'false-alarm'
+
 class ElectricalUsage(ad.ADBase):
     """ Main class of ElectricalManagement
 
@@ -31,6 +35,21 @@ class ElectricalUsage(ad.ADBase):
         self.ADapi = self.get_ad_api()
             # Set a master namespace for all entities unless specified per entity
         self.HASS_namespace:str = self.args.get('main_namespace', 'default')
+        event_listen_str:str = 'MODE_CHANGE'
+
+        language = self.args.get('lightwand_language', 'en')
+        language_file = self.args.get('language_file', '/conf/apps/Lightwand/translations.json')
+        try:
+            with open(language_file) as lang:
+                translations = json.load(lang)
+        except FileNotFoundError:
+            self.ADapi.log("Translation file not found", level = 'DEBUG')
+        else:
+            event_listen_str = translations[language]['MODE_CHANGE']
+            global FIRE_TRANSLATE
+            FIRE_TRANSLATE = translations[language]['fire']
+            global FALSE_ALARM_TRANSLATE
+            FALSE_ALARM_TRANSLATE = translations[language]['false-alarm']
 
         self.chargers:list = []
         self.cars:list = []
@@ -707,7 +726,7 @@ class ElectricalUsage(ad.ADBase):
         self.ADapi.run_daily(self.get_new_prices, "13:00:05")
         self.ADapi.run_in(self.get_new_prices, 60) ###
 
-        self.ADapi.listen_event(self.mode_event, "MODE_CHANGE",
+        self.ADapi.listen_event(self.mode_event, event_listen_str,
             namespace = self.HASS_namespace
         )
 
@@ -1836,10 +1855,10 @@ class ElectricalUsage(ad.ADBase):
     def mode_event(self, event_name, data, kwargs) -> None:
         """ Listens to same mode event that I have used in Lightwand: https://github.com/Pythm/ad-Lightwand
             If mode name equals 'fire' it will turn off all charging and heating.
-            To call from another app use: self.fire_event("MODE_CHANGE", mode = 'fire')
-            Set back to normal with mode 'false_alarm'.
+            To call from another app use: self.fire_event('MODE_CHANGE', mode = 'fire')
+            Set back to normal with mode 'false-alarm'.
         """
-        if data['mode'] == 'fire':
+        if data['mode'] == FIRE_TRANSLATE:
             self.houseIsOnFire = True
             for c in self.cars:
                 if (
@@ -1855,7 +1874,7 @@ class ElectricalUsage(ad.ADBase):
                 heater.turn_off_heater()
 
 
-        elif data['mode'] == 'false_alarm':
+        elif data['mode'] == FALSE_ALARM_TRANSLATE:
             # Fire alarm stopped
             self.houseIsOnFire = False
             for heater in self.heaters:
@@ -2218,8 +2237,10 @@ class Scheduler:
             original_index = index_now + i
             prev_item = ELECTRICITYPRICE.elpricestoday[original_index - 1] if original_index > 0 else None
             next_item = ELECTRICITYPRICE.elpricestoday[original_index + 1] if original_index < len(ELECTRICITYPRICE.elpricestoday) - 1 else None
-            self.ADapi.log(f"Checking index {i} = time: {original_index['start']} for {startHourPrice < next_item['value'] - (self.stopAtPriceIncrease * 1.3)}") ###
-            self.ADapi.log(f"Check timedelta not above one hour: {ChargingAt} - {next_item['start']}: {ChargingAt - next_item['start'] < datetime.timedelta(hours = 1)}") ###
+            self.ADapi.log(
+                f"Checking index {i} = time: {original_index['start']} for {startHourPrice < next_item['value'] - (self.stopAtPriceIncrease * 1.3)} \n"
+                f"Check timedelta not above one hour: {ChargingAt} - {next_item['start']}: {ChargingAt - next_item['start'] < datetime.timedelta(hours = 1)}"
+            ) ###
             if ChargingAt - next_item['start'] < datetime.timedelta(hours = 1):
                 if (
                     price < startHourPrice - (self.stopAtPriceIncrease * 1.5)
@@ -2689,15 +2710,10 @@ class Charger:
             and self.session_energy != None
         ):
             if (
-                float(self.ADapi.get_state(self.session_energy, namespace = self.namespace)) < 2
+                float(self.ADapi.get_state(self.session_energy, namespace = self.namespace)) < 4
                 and self.Car.battery_sensor != None
             ):
                 self.pct_start_charge = float(self.ADapi.get_state(self.Car.battery_sensor, namespace = self.namespace))
-            else: ###
-                self.ADapi.log(
-                    f"Failed to set pct at start charge: {self.pct_start_charge}."
-                    f" Session: {self.ADapi.get_state(self.session_energy, namespace = self.namespace)}"
-                ) ###
 
         stack = inspect.stack() # Check if called from child
         if stack[1].function == 'startCharging':
@@ -2749,7 +2765,7 @@ class Charger:
         """ Check if charger was able to start.
         """
         if not self.getChargingState() in ['Charging', 'Complete', 'Disconnected']:
-            self.ADapi.log(f"Charingstate match in check if charging: {self.getChargingState()}") ###
+            self.ADapi.log(f"Charingstate match in check if charging started: {self.getChargingState()}") ###
             if self.ADapi.timer_running(self.checkCharging_handler):
                 try:
                     self.ADapi.cancel_timer(self.checkCharging_handler)
@@ -2866,10 +2882,10 @@ class Charger:
                                     ) ###
                                     self.Car.battery_size = avg
                                     
-                                elif pctCharged > 1 and self.Car.battery_size == 100: ###
+                                elif pctCharged > 3 and self.Car.battery_size == 100:
                                     self.ADapi.log(
                                         f"pct Charged for {self.Car.carName} is {pctCharged}. kWh: {session}. Est battery size: {(session / pctCharged)*100} "
-                                        "Registrating first new size."
+                                        "Using this until better data is available."
                                     ) ###
                                     self.Car.battery_size = (session / pctCharged)*100
                                 else:
@@ -4567,8 +4583,12 @@ class Heater:
                 calculateBeforeNextDayPrices = False,
 		        finishByHour = 24
             )
-            self.ADapi.run_at(self.heater_setNewValues, self.HeatAt)
-            self.ADapi.run_at(self.heater_setNewValues, self.EndAt)
+            if self.HeatAt is not None:
+                if self.HeatAt > self.ADapi.datetime(aware=True):
+                    self.ADapi.run_at(self.heater_setNewValues, self.HeatAt)
+            if self.EndAt is not None:
+                if self.EndAt > self.ADapi.datetime(aware=True):
+                    self.ADapi.run_at(self.heater_setNewValues, self.EndAt)
 
         elif not self.away_state:
             self.HeatAt = None
