@@ -2111,23 +2111,17 @@ class Scheduler:
             return item['finishByHour']
         for c in sorted(self.chargingQueue, key=by_value):
 
-            ChargingAt, c['estimateStop'], c['price'] = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
+            ChargingAt, c['estimateStop'], c['chargingStop'], c['price'] = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
                 hoursTotal = c['estHourCharge'],
                 calculateBeforeNextDayPrices = False,
-                finishByHour = c['finishByHour']
+                finishByHour = c['finishByHour'],
+                startBeforePrice = self.startBeforePrice, 
+                stopAtPriceIncrease = self.stopAtPriceIncrease
             )
             if (
                 ChargingAt is not None
                 and c['estimateStop'] is not None
             ):
-                self.ADapi.log(f"Start at: {c['chargingStart']} and eta stop: {c['estimateStop']}") ###
-                c['chargingStart'] = self.CheckChargingStartTime(
-                    ChargingAt = ChargingAt,
-                    price = c['price']
-                )
-                c['estimateStop'] = c['chargingStart'] + datetime.timedelta(hours = c['estHourCharge'])
-                self.ADapi.log(f"Eta stop updated to: {c['estimateStop']}") ###
-
                 if prev_Stop == None:
                     prev_id = c['vehicle_id']
                     prev_Stop = c['estimateStop']
@@ -2156,17 +2150,6 @@ class Scheduler:
             simultaneousChargeComplete.extend(simultaneousCharge)
             simultaneousCharge = []
 
-        for c in self.chargingQueue:
-            if (
-                c['vehicle_id'] not in simultaneousChargeComplete
-                and 'chargingStart' in c
-                and 'estimateStop' in c
-            ):
-                if c['estimateStop'] is not None and c['estimateStop'] is not None:
-                    c['chargingStop'] = self.extendChargingTime(
-                        EndAt =  c['estimateStop'],
-                        price = c['price']
-                    )
         return self.isChargingTime(vehicle_id = vehicle_id)
 
     def calcSimultaneousCharge(self, simultaneousCharge:list):
@@ -2180,86 +2163,29 @@ class Scheduler:
                 kWhToCharge += c['kWhRemaining']
                 totalW_AllChargers += c['maxAmps'] * c['voltPhase']
                 if c['finishByHour'] > finishByHour:
-                    finishByHour = c['finishByHour']
+                    if finishByHour == 0:
+                        finishByHour = c['finishByHour']
+                    else:
+                        finishByHour += c['estHourCharge']
 
         hoursToCharge = self.calculateChargingTimes(
             kWhRemaining = kWhToCharge,
             totalW_AllChargers = totalW_AllChargers
         )
-        ChargingAt, estimateStop, price = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
+        ChargingAt, estimateStop, ChargingStop, price = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
             hoursTotal = hoursToCharge,
             calculateBeforeNextDayPrices = False,
-            finishByHour = finishByHour
+            finishByHour = finishByHour,
+            startBeforePrice = self.startBeforePrice, 
+            stopAtPriceIncrease = self.stopAtPriceIncrease
         )
         if estimateStop is not None:
-            charging_Start = self.CheckChargingStartTime(
-                    ChargingAt = ChargingAt,
-                    price = price
-                )
-            estimateStop = charging_Start + datetime.timedelta(hours = hoursToCharge)
-            self.ADapi.log(f"Eta stop updated to: {estimateStop}") ###
-
-            charging_Stop = self.extendChargingTime(
-                EndAt = estimateStop,
-                price = price
-            )
             for c in self.chargingQueue:
                 if c['vehicle_id'] in simultaneousCharge:
-                    c['chargingStart'] = charging_Start
+                    c['chargingStart'] = ChargingAt
                     c['estimateStop'] = estimateStop
-                    c['chargingStop'] = charging_Stop
-
-    def extendChargingTime(self, EndAt, price) -> datetime:
-        """ Extends charging time after estimated finish as long as price is lower than stopAtPriceIncrease
-        """
-        end_times = [item['end'] for item in ELECTRICITYPRICE.elpricestoday]
-        index_end = bisect.bisect_left(end_times, EndAt)
-
-        for i, current in enumerate(ELECTRICITYPRICE.elpricestoday[index_end:]):
-            original_index = index_end + i
-            next_item = ELECTRICITYPRICE.elpricestoday[original_index + 1] if original_index < len(ELECTRICITYPRICE.elpricestoday) - 1 else None
-
-            if next_item is None:
-                return current['end']
-            if price + self.stopAtPriceIncrease < next_item['value']:
-                return current['end']
-        return EndAt
-
-    def CheckChargingStartTime(self, ChargingAt, price) -> datetime:
-        """ Check if charging should be postponed one hour or start earlier due to price.
-        """
-        startHourPrice = ELECTRICITYPRICE.electricity_price_now(ChargingAt)
-        checkTime = self.ADapi.datetime(aware=True).replace(minute = 0, second = 0, microsecond = 0)
-        start_times = [item['start'] for item in ELECTRICITYPRICE.elpricestoday]
-        index_now = bisect.bisect_left(start_times, ChargingAt)
-        stop_index = bisect.bisect_left(start_times, checkTime)
-        for i, current in enumerate(reversed(ELECTRICITYPRICE.elpricestoday[index_now:stop_index])):
-            original_index = index_now + i
-            prev_item = ELECTRICITYPRICE.elpricestoday[original_index - 1] if original_index > 0 else None
-            next_item = ELECTRICITYPRICE.elpricestoday[original_index + 1] if original_index < len(ELECTRICITYPRICE.elpricestoday) - 1 else None
-            self.ADapi.log(
-                f"Checking index {i} = time: {original_index['start']} for {startHourPrice < next_item['value'] - (self.stopAtPriceIncrease * 1.3)} \n"
-                f"Check timedelta not above one hour: {ChargingAt} - {next_item['start']}: {ChargingAt - next_item['start'] < datetime.timedelta(hours = 1)}"
-            ) ###
-            if ChargingAt - next_item['start'] < datetime.timedelta(hours = 1):
-                if (
-                    price < startHourPrice - (self.stopAtPriceIncrease * 1.5)
-                    and startHourPrice < next_item['value'] - (self.stopAtPriceIncrease * 1.3)
-                ):
-                    return next_item['start']
-
-            if prev_item is None:
-                return current['start']
-
-            self.ADapi.log(f"Checking index {i} = time: {original_index['start']} for {startHourPrice < next_item['value'] - (self.stopAtPriceIncrease * 1.3)}") ###
-            if (
-                startHourPrice + self.startBeforePrice < prev_item['value']
-                or price + (self.startBeforePrice * 2) < prev_item['value']
-            ):
-                return current['start']
-
-        self.ADapi.log(f"CheckChargingStartTime ended...") ###
-        return ChargingAt
+                    c['chargingStop'] = ChargingStop
+                    c['price'] = price
 
     def notifyChargeTime(self, kwargs):
         """ Sends notifications and updates infotext with charging times and prices.
@@ -4575,13 +4501,15 @@ class Heater:
         )
         if (
             self.away_state
-            and (self.HeatAt == None
+            and (self.HeatAt is None
             or ELECTRICITYPRICE.tomorrow_valid)
         ):
-            self.HeatAt, self.EndAt, self.price = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
+            self.HeatAt, est_end, self.EndAt, self.price = ELECTRICITYPRICE.get_Continuous_Cheapest_Time(
                 hoursTotal = 2,
-                calculateBeforeNextDayPrices = False,
-		        finishByHour = 24
+                calculateBeforeNextDayPrices = not ELECTRICITYPRICE.tomorrow_valid,
+		        finishByHour = 24,
+                startBeforePrice = 0.02, 
+                stopAtPriceIncrease = 0.01
             )
             if self.HeatAt is not None:
                 if self.HeatAt > self.ADapi.datetime(aware=True):
