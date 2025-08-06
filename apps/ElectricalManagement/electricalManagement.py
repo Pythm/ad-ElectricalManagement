@@ -1737,7 +1737,7 @@ class ElectricalUsage(ad.ADBase):
             ): # Avoid setting high consumption
                 newData = {"Consumption" : round(idle_consumption,2),"HeaterConsumption" : round(heater_consumption,2), "Counter" : 1}
                 ElectricityData['consumption']['idleConsumption']['ConsumptionData'].update({out_temp_str : newData})
-        else:
+        elif out_temp_str in ElectricityData['consumption']['idleConsumption']['ConsumptionData']:
             consumptionData = ElectricityData['consumption']['idleConsumption']['ConsumptionData'][out_temp_str]
             if (
                 idle_consumption < consumptionData['Consumption'] + 1000
@@ -2088,8 +2088,9 @@ class Scheduler:
                         and c['finishByHour'] == finishByHour
                     ):
                         if 'chargingStart' in c:
-                            if self.ADapi.datetime(aware=True) < c['chargingStart']:
-                                return self.isChargingTime(vehicle_id = c['vehicle_id'])
+                            if c['chargingStart'] is not None:
+                                if self.ADapi.datetime(aware=True) < c['chargingStart']:
+                                    return self.isChargingTime(vehicle_id = c['vehicle_id'])
                     else:
                         c['kWhRemaining'] = kWhRemaining
                         c['finishByHour'] = finishByHour
@@ -2269,12 +2270,12 @@ class Scheduler:
                 also_if_not_home = True,
                 data = data
             )
-        if self.infotext:
-            self.ADapi.call_service('input_text/set_value',
-                value = infotxt,
-                entity_id = self.infotext,
-                namespace = self.namespace
-            )
+            if self.infotext:
+                self.ADapi.call_service('input_text/set_value',
+                    value = infotxt,
+                    entity_id = self.infotext,
+                    namespace = self.namespace
+                )
 
 class Charger:
     """ Charger parent class
@@ -2550,15 +2551,18 @@ class Charger:
     def getmaxChargingAmps(self) -> int:
         """ Returns the maximum ampere the car/charger can get/deliver.
         """
-        if self.Car is not None:
-            if self.Car.car_limit_max_charging == 0:
-                if self.maxChargerAmpere == 0:
-                    self.Car.car_limit_max_charging = self.maxChargerAmpere_from_data
-                else:
-                    self.Car.car_limit_max_charging = self.maxChargerAmpere
+        match (self.Car is not None, self.Car.car_limit_max_charging == 0, self.maxChargerAmpere == 0, self.maxChargerAmpere_from_data is not None):
+            case (True, True, True, True):
+                self.Car.car_limit_max_charging = self.maxChargerAmpere_from_data
+            case (True, True, True, False):
+                self.Car.car_limit_max_charging = 32
+                self.maxChargerAmpere = 32
+            case (True, True, False, _):
+                self.Car.car_limit_max_charging = self.maxChargerAmpere
 
-            if self.maxChargerAmpere > self.Car.car_limit_max_charging:
-                return self.Car.car_limit_max_charging
+        if self.Car is not None and self.maxChargerAmpere > self.Car.car_limit_max_charging:
+            return self.Car.car_limit_max_charging
+
         return self.maxChargerAmpere
 
     def isChargingAtMaxAmps(self) -> bool:
@@ -2603,7 +2607,7 @@ class Charger:
         max_available_amps = self.getmaxChargingAmps()
         if charging_amp_set > max_available_amps:
             charging_amp_set = max_available_amps
-            self.ADapi.log(f"Set charge limited by max avail amps: {max_available_amps}") ###
+            self.ADapi.log(f"Set charge limited by max avail amps: {max_available_amps} for {self.charger}") ###
         elif charging_amp_set < self.min_ampere:
             charging_amp_set = self.min_ampere
 
@@ -2673,6 +2677,7 @@ class Charger:
         """
         if self.Car is not None:
             if self.Car.dontStopMeNow():
+                self.ADapi.log(f"Dont stop me now for {self.charger} with car {self.Car.carName}") ###
                 return False
         if (
             (self.getChargingState() == 'Charging'
@@ -2693,6 +2698,10 @@ class Charger:
 
             stack = inspect.stack() # Check if called from child
             if stack[1].function == 'stopCharging':
+                if self.Car is not None: ###
+                    self.ADapi.log(f"stopCharging was called for {self.charger} with car {self.Car.carName}") ###
+                else: ###
+                    self.ADapi.log(f"stopCharging was called for {self.charger} with car None") ###
                 return True
             else:
                 self.ADapi.call_service('switch/turn_off',
@@ -3628,10 +3637,14 @@ class Tesla_charger(Charger):
             ):
                 if self.ADapi.get_state(self.charging_amps, namespace = self.namespace) != 'unavailable':
                     try:
-                        self.maxChargerAmpere = math.ceil(float(self.ADapi.get_state(self.charging_amps,
+                        maxAmpere = math.ceil(float(self.ADapi.get_state(self.charging_amps,
                             namespace = self.namespace,
                             attribute = 'max'))
                         )
+                        if maxAmpere > 9:
+                            self.maxChargerAmpere = maxAmpere
+                        else:
+                            self.ADapi.log(f"maxAmpere for {maxAmpere} not set for {self.charger}")
                     except (ValueError, TypeError) as ve:
                         self.ADapi.log(
                             f"{self.charger} Could not get maxChargingAmps. ValueError: {ve}",
@@ -3674,11 +3687,6 @@ class Tesla_charger(Charger):
                         volts = self.volts,
                         phases = self.phases
                     )
-
-    def getmaxChargingAmps(self) -> int:
-        """ Returns the maximum ampere the car/charger can get/deliver.
-        """
-        return self.maxChargerAmpere
 
     def setChargingAmps(self, charging_amp_set:int = 16) -> int:
         """ Function to set ampere charging to received value.
