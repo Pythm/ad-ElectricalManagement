@@ -187,7 +187,7 @@ class ElectricalUsage(ad.ADBase):
                             "car" : {},
                             "consumption" : {"idleConsumption" : {"ConsumptionData" : {}}}}
             with open(JSON_PATH, 'w') as json_write:
-                json.dump(ElectricityData, json_write, indent = 4)
+                json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
             self.ADapi.log(
                 f"Json file created at {JSON_PATH}",
                 level = 'INFO'
@@ -811,6 +811,9 @@ class ElectricalUsage(ad.ADBase):
                 self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, '04:30:00')
             else:
                 self.checkIdleConsumption_Handler = None
+        elif self.ADapi.now_is_between('13:00:00', '23:00:00'):
+            self.ADapi.log(f"Tomorrow not valid when get_new_prices") ###
+            self.ADapi.run_in(self.get_new_prices, 300)
 
     def _run_find_consumption_after_turned_back_on(self, kwargs):
         for heater in self.heaters:
@@ -1009,9 +1012,9 @@ class ElectricalUsage(ad.ADBase):
                                     f"with {c.kWhRemaining()} kWh remaining before prices increased.",
                                     level = 'INFO'
                                 )
-                            elif runtime.hour != 0:
-                                c.kWhRemaining()
-                                c.findNewChargeTime()
+                                if runtime.hour != 0:
+                                    c.kWhRemaining()
+                                    c.findNewChargeTime()
 
             for heater in reversed(self.heatersRedusedConsumption):
                 heater.isOverconsumption = False
@@ -1075,7 +1078,10 @@ class ElectricalUsage(ad.ADBase):
                     for queue_id in  reversed(self.queueChargingList):
                         for c in self.chargers:
                             if c.Car is not None:
-                                if c.Car.vehicle_id == queue_id:
+                                if (
+                                    c.Car.connectedCharger is c
+                                    and c.Car.vehicle_id == queue_id
+                                ):
                                     if c.getChargingState() == 'Charging':
                                         available_Wh += c.ampereCharging * c.voltPhase
                                         c.stopCharging()
@@ -1243,7 +1249,10 @@ class ElectricalUsage(ad.ADBase):
             for queue_id in reversed(self.solarChargingList):
                 for c in self.chargers:
                     if c.Car is not None:
-                        if c.Car.vehicle_id == queue_id:
+                        if (
+                            c.Car.connectedCharger is c
+                            and c.Car.vehicle_id == queue_id
+                        ):
                             if c.ampereCharging == 0:
                                 c.ampereCharging = math.floor(float(self.ADapi.get_state(c.charging_amps,
                                     namespace = c.namespace))
@@ -1590,7 +1599,7 @@ class ElectricalUsage(ad.ADBase):
                         updatedListWithCurrentHeaters.update({entry : ElectricityData['consumption'][entry]})
                 ElectricityData['consumption'] = updatedListWithCurrentHeaters
                 with open(JSON_PATH, 'w') as json_write:
-                    json.dump(ElectricityData, json_write, indent = 4)
+                    json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
 
         available_Wh_toCharge:list = []
         save_endHour = self.ADapi.datetime(aware=True).replace(minute = 0, second = 0, microsecond = 0)
@@ -1752,7 +1761,7 @@ class ElectricalUsage(ad.ADBase):
                 ElectricityData['consumption']['idleConsumption']['ConsumptionData'].update({out_temp_str : newData})
 
         with open(JSON_PATH, 'w') as json_write:
-            json.dump(ElectricityData, json_write, indent = 4)
+            json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
 
     def logHighUsage(self) -> None:
         """ Writes top three max kWh usage pr hour to persistent storage
@@ -1802,7 +1811,7 @@ class ElectricalUsage(ad.ADBase):
             )
 
         with open(JSON_PATH, 'w') as json_write:
-            json.dump(ElectricityData, json_write, indent = 4)
+            json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
 
     def resetHighUsage(self) -> None:
         """ Resets max usage pr hour for new month
@@ -1814,7 +1823,7 @@ class ElectricalUsage(ad.ADBase):
         ElectricityData['MaxUsage']['topUsage'] = [0,0,float(self.ADapi.get_state(self.accumulated_consumption_current_hour))]
 
         with open(JSON_PATH, 'w') as json_write:
-            json.dump(ElectricityData, json_write, indent = 4)
+            json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
 
         # Set proper value when weather sensors is updated
     def weather_event(self, event_name, data, kwargs) -> None:
@@ -1962,7 +1971,7 @@ class Scheduler:
     def isChargingTime(self, vehicle_id:str = None) -> bool:
         """ Helpers used to return data. Returns True if it it chargingtime
         """
-        price = 0
+        price:float = 0
         for c in self.chargingQueue:
             if (
                 vehicle_id == None
@@ -1980,7 +1989,8 @@ class Scheduler:
                             return True
 
                     if 'price' in c:
-                        price = c['price']
+                        if c['price'] > price:
+                            price = c['price']
         if (
             self.ADapi.now_is_between('07:00:00', '14:00:00')
             and not ELECTRICITYPRICE.tomorrow_valid
@@ -1990,12 +2000,12 @@ class Scheduler:
             # TODO: A better logic to charge if price is lower than usual before tomorrow prices is available from Nordpool.
 
             calculatePrice:bool = False
-            price:float = 0
             for c in self.chargingQueue:
-                if not 'price' in c:
+                if not 'price' in c and price == 0:
                     calculatePrice = True
                 else:
-                    price = c['price']
+                    if c['price'] > price:
+                        price = c['price']
 
             if calculatePrice:
                 kWhToCharge = 0
@@ -2270,12 +2280,14 @@ class Scheduler:
                 also_if_not_home = True,
                 data = data
             )
+            self.ADapi.log(f"Notified apps with: {infotxt}") ###
             if self.infotext:
                 self.ADapi.call_service('input_text/set_value',
                     value = infotxt,
                     entity_id = self.infotext,
                     namespace = self.namespace
                 )
+                self.ADapi.log(f"Updated {self.infotext} with: {infotxt}") ###
 
 class Charger:
     """ Charger parent class
@@ -2348,7 +2360,7 @@ class Charger:
             )
 
             with open(JSON_PATH, 'w') as json_write:
-                json.dump(ElectricityData, json_write, indent = 4)
+                json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
         else:
             if 'voltPhase' in ElectricityData['charger'][self.charger_id]:
                 self.voltPhase = int(ElectricityData['charger'][self.charger_id]['voltPhase'])
@@ -2605,11 +2617,11 @@ class Charger:
             returns actual restricted within min/max ampere.
         """
         max_available_amps = self.getmaxChargingAmps()
-        if charging_amp_set > max_available_amps:
+        if charging_amp_set < self.min_ampere:
+            charging_amp_set = self.min_ampere
+        elif charging_amp_set > max_available_amps:
             charging_amp_set = max_available_amps
             self.ADapi.log(f"Set charge limited by max avail amps: {max_available_amps} for {self.charger}") ###
-        elif charging_amp_set < self.min_ampere:
-            charging_amp_set = self.min_ampere
 
         stack = inspect.stack() # Check if called from child
         if stack[1].function != 'setChargingAmps':
@@ -2837,7 +2849,7 @@ class Charger:
                                         "Using this until better data is available."
                                     ) ###
                                     self.Car.battery_size = (session / pctCharged)*100
-                                else:
+                                elif pctCharged > 0 and session > 0: ###
                                     self.ADapi.log(
                                         f"Did not register pct Charged {pctCharged} for {self.Car.carName}. kWh: {session}. Est battery size: {(session / pctCharged)*100}"
                                     ) ###
@@ -3052,7 +3064,7 @@ class Car:
                 }}
             )
             with open(JSON_PATH, 'w') as json_write:
-                json.dump(ElectricityData, json_write, indent = 4)
+                json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
         else:
             if 'CarLimitAmpere' in ElectricityData['car'][self.vehicle_id]:
                 self.car_limit_max_charging = math.ceil(float(ElectricityData['car'][self.vehicle_id]['CarLimitAmpere']))
@@ -3496,7 +3508,7 @@ class Car:
     def stopCharging(self) -> None:
         """ Stops controlling charger.
         """
-        self.ADapi.log(f"Calling stop from car {self.carName}")
+        self.ADapi.log(f"Calling stop from car {self.carName} with {self.connectedCharger.charger}") ###
         self.connectedCharger.stopCharging()
 
 class Tesla_charger(Charger):
@@ -3746,6 +3758,7 @@ class Tesla_charger(Charger):
                     if self.ADapi.get_state(self.charger_switch, namespace = self.namespace) == 'on':
                         return # Calculations will be handeled by ChargingStarted
 
+                    self.ADapi.log(f"Find new chargetime from ChargingConnected for {self.Car.carName} connected to {self.Car.connectedCharger.charger}. with state {self.getChargingState()}") ###
                     self.Car.findNewChargeTime()
 
                 elif (
@@ -4199,13 +4212,15 @@ class Easee(Charger):
             if self.Car is not None:
                 if (
                     not CHARGE_SCHEDULER.hasChargingScheduled(vehicle_id = self.Car.vehicle_id)
-                    or CHARGE_SCHEDULER.isPastChargingTime(vehicle_id = self.Car.vehicle_id)
+                    #or CHARGE_SCHEDULER.isPastChargingTime(vehicle_id = self.Car.vehicle_id)
                 ):
                     self.kWhRemaining() # Update kWh remaining to charge
                     self.Car.findNewChargeTime()
 
                 elif not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.Car.vehicle_id):
                     self.stopCharging()
+                elif CHARGE_SCHEDULER.isPastChargingTime(vehicle_id = self.Car.vehicle_id):
+                    self.ADapi.log(f"{self.Car.carName} connected to {self.charger} with new status {new} was past charingtime. Check and correct in Easee") ###
             else:
                 self.ADapi.log(f"No car connected when charging started in {self.charger}. Stopping charging. Should I see this?") ###
                 self.stopCharging()
@@ -4464,7 +4479,7 @@ class Heater:
                 {self.heater : {"ConsumptionData" : {}}}
             )
             with open(JSON_PATH, 'w') as json_write:
-                json.dump(ElectricityData, json_write, indent = 4)
+                json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
         else:
             consumptionData = ElectricityData['consumption'][self.heater]['ConsumptionData']
             try:
@@ -4478,7 +4493,7 @@ class Heater:
                         {"power" : self.normal_power}
                     )
                     with open(JSON_PATH, 'w') as json_write:
-                        json.dump(ElectricityData, json_write, indent = 4)
+                        json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
             elif "power" in ElectricityData['consumption'][self.heater]:
                 self.normal_power = ElectricityData['consumption'][self.heater]['power']
             if 'peak_hours' in ElectricityData['consumption'][self.heater]:
@@ -4821,7 +4836,7 @@ class Heater:
                     )
 
                 with open(JSON_PATH, 'w') as json_write:
-                    json.dump(ElectricityData, json_write, indent = 4)
+                    json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
 
             except Exception as e:
                 self.ADapi.log(
