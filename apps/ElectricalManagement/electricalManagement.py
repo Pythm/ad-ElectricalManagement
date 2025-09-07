@@ -1022,7 +1022,8 @@ class ElectricalUsage(ad.ADBase):
                                 level = 'INFO'
                             ) ###
                             data = {
-                                'tag' : 'charging' + str(c.carName)
+                                'tag' : 'charging' + str(c.carName),
+                                'actions' : [{ 'action' : 'find_new_chargetime'+str(c.carName), 'title' : f'Find new chargetime for {c.carName}' }]
                                 }
                             NOTIFY_APP.send_notification(
                                 message = f"Was not able to finish with {c.kWhRemaining()} kWh remaining before prices increased.",
@@ -1712,8 +1713,7 @@ class ElectricalUsage(ad.ADBase):
                 self.ADapi.log(ve, level = 'DEBUG')
             return
 
-        stack = inspect.stack() ###
-        self.ADapi.log(f"Log Idle Consuption started with {current_consumption}. Called from {stack[1].function}") ###
+        self.ADapi.log(f"Log Idle Consuption started with {current_consumption}") ###
         heater_consumption:float = 0.0
         for heater in self.heaters:
             if heater.validConsumptionSensor:
@@ -2435,7 +2435,10 @@ class Charger:
                     phases = self.phases
                 )
             if 'MaxAmp' in ElectricityData['charger'][self.charger_id]:
-                self.maxChargerAmpere = int(ElectricityData['charger'][self.charger_id]['MaxAmp'])
+                try:
+                    self.maxChargerAmpere = int(ElectricityData['charger'][self.charger_id]['MaxAmp'])
+                except TypeError:
+                    pass
             if 'ConnectedCar' in ElectricityData['charger'][self.charger_id]:
                 if ElectricityData['charger'][self.charger_id]['ConnectedCar'] is not None:
                     for car in self.cars:
@@ -2493,7 +2496,7 @@ class Charger:
                                 ):
                                     car.connectedCharger = self
                                     self.Car = car
-                                    self.ADapi.log(f"Connecting {self.Car.carName} to {self.charger}") ###
+                                    self.ADapi.log(f"Connecting {self.Car.carName} to {self.charger} in findCarConnectedToCharger") ###
                                     self.kWhRemaining()
                                     self.Car.findNewChargeTime()
                                     return True
@@ -2817,7 +2820,7 @@ class Charger:
         """
         self.ADapi.log(
             f"Charging started for {self.Car.carName} with connected charger is None: {self.Car.connectedCharger is None} - is self: {self.Car.connectedCharger is self} "
-            f"Has charging scheduled: {self.Car.hasChargingScheduled()}"
+            f"Has charging scheduled: {self.Car.hasChargingScheduled()}. TODO: Check if handled correctly elsewhere..."
         ) ###
         #if self.Car.connectedCharger is None:
         #    if not self.findCarConnectedToCharger():
@@ -3077,7 +3080,6 @@ class Car:
         if not self.vehicle_id in ElectricityData['car']:
             ElectricityData['car'].update(
                 {self.vehicle_id : {
-                    "CarLimitAmpere" : None,
                     "MaxkWhCharged" : 5
                 }}
             )
@@ -3085,7 +3087,10 @@ class Car:
                 json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
         else:
             if 'CarLimitAmpere' in ElectricityData['car'][self.vehicle_id]:
-                self.car_limit_max_charging = math.ceil(float(ElectricityData['car'][self.vehicle_id]['CarLimitAmpere']))
+                try:
+                    self.car_limit_max_charging = math.ceil(float(ElectricityData['car'][self.vehicle_id]['CarLimitAmpere']))
+                except TypeError:
+                    pass
             if 'MaxkWhCharged' in ElectricityData['car'][self.vehicle_id]:
                 self.maxkWhCharged = float(ElectricityData['car'][self.vehicle_id]['MaxkWhCharged'])
             if 'batterysize' in ElectricityData['car'][self.vehicle_id]:
@@ -3113,6 +3118,8 @@ class Car:
             )
 
         self.find_Chargetime_Whenhome_handler = None
+
+        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace = self.namespace)
 
         """ TODO Departure / Maxrange handling: To be re-written before implementation
             Set a departure time in a HA datetime sensor for when car will be finished charging to 100%,
@@ -3255,7 +3262,7 @@ class Car:
                     charger_state in ['NoPower', 'Stopped']
                     and startcharge
                 ):
-                    self.ADapi.log(f"Starting to charge {self.carName} from findNewChargeTime with {self.connectedCharger.charger}") ###
+                    self.ADapi.log(f"Starting to charge {self.carName} in findNewChargeTime with {self.connectedCharger.charger}") ###
                     self.startCharging()
 
         elif self.getLocation() != 'home':
@@ -3530,6 +3537,12 @@ class Car:
             self.ADapi.log(f"Calling stop from car {self.carName} connected to {self.connectedCharger.charger} with state {self.connectedCharger.getChargingState()}") ###
             self.connectedCharger.stopCharging(force_stop = force_stop)
 
+    def _notify_event(self, event_name, data, kwargs) -> None:
+        if data['action'] == 'find_new_chargetime'+str(self.carName):
+            self.kWhRemaining()
+            self.findNewChargeTime()
+
+
 class Tesla_charger(Charger):
     """ Tesla
         Child class of Charger. Uses Tesla custom integration. https://github.com/alandtse/tesla Easiest installation is via HACS.
@@ -3782,7 +3795,8 @@ class Tesla_charger(Charger):
                     )
 
                     # Find chargetime
-                    #if self.ADapi.get_state(self.charger_switch, namespace = self.namespace) == 'on':
+                    if self.ADapi.get_state(self.charger_switch, namespace = self.namespace) == 'on':
+                        self.ADapi.log(f"Charger cable connected and charger switch is on for {self.charger}. TODO: Check if calculations are handled correctly elsewhere.") ###
                     #    return # Calculations will be handeled by ChargingStarted ### TODO: Test if possible without
                     self.Car.findNewChargeTime()
 
@@ -4188,7 +4202,7 @@ class Easee(Charger):
 
         if old == 'disconnected':
             if self.Car is None:
-                self.ADapi.log(f"{self.charger} was disconnected. Car: is none") ###
+                self.ADapi.log(f"{self.charger} was disconnected. Car is None") ###
                 if self.findCarConnectedToCharger():
                     if self.Car is not None:
                         self.ADapi.log(f"{self.Car.carName} connected to {self.charger} in StatusChange. New status: {new}") ###
