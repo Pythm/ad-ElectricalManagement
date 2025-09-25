@@ -1639,10 +1639,10 @@ class ElectricalUsage(ad.ADBase):
                                         return
 
                             elif ChargingState in ['Stopped', 'awaiting_start']:
-                                if (
-                                    not CHARGE_SCHEDULER.isChargingTime(vehicle_id = c.vehicle_id)
-                                    and not c.dontStopMeNow()
-                                ):
+                                if CHARGE_SCHEDULER.isChargingTime(vehicle_id = c.vehicle_id):
+                                    self.ADapi.log(f"Chargestate for {c.carName} is {ChargingState} in queueChargingList. Starting to charge car.") ###
+                                    c.startCharging()
+                                elif not c.dontStopMeNow():
                                     try:
                                         self.queueChargingList.remove(queue_id)
                                     except Exception as e:
@@ -1676,19 +1676,19 @@ class ElectricalUsage(ad.ADBase):
                                 and ChargingState == 'NoPower'
                             ):
                                 c.startCharging()
-                                self.ADapi.log(f"Trying to start {c.carName} from chargequeue. Chargestate is NoPower and not onboard charger") ###
+                                self.ADapi.log(f"Trying to start {c.carName} from chargequeue. Chargestate is NoPower and not onboard charger. Connected charger is {c.connectedCharger.getChargingState()}") ###
                             else:
                                 if (
                                     c.connectedCharger is c.onboardCharger
                                     and ChargingState == 'NoPower'
                                 ):
                                     self.ADapi.log(f"{c.carName} from chargequeue has Chargestate is NoPower and is connected to onboard charger") ###
-                                    c.connectedCharger = None
                                     for charger in self.chargers:
                                         if (
                                             charger.Car is None
-                                            and charger.getChargingState() != 'Disconnected'
+                                            and charger.getChargingState() in ['Stopped', 'awaiting_start']
                                         ):
+                                            c.connectedCharger = None
                                             charger.findCarConnectedToCharger()
                                             return
 
@@ -1748,7 +1748,7 @@ class ElectricalUsage(ad.ADBase):
                                         for charger in self.chargers:
                                             if (
                                                 charger.Car is None
-                                                and charger.getChargingState() != 'Disconnected'
+                                                and charger.getChargingState() in ['Stopped', 'awaiting_start']
                                             ):
                                                 charger.findCarConnectedToCharger()
                                                 return
@@ -2773,12 +2773,8 @@ class Charger:
         """ A check to see if a car is connected to the charger. """
         if self.getChargingState() not in ['Disconnected', 'Complete', 'NoPower']:
             for car in self.cars:
-
-                if car._polling_of_data():
-                    if (
-                        car.isConnected()
-                        and car.connectedCharger is None
-                    ):
+                if car._polling_of_data() and car.isConnected():
+                    if car.connectedCharger is None or car.getCarChargerState() == 'NoPower':
                         if self.compareChargingState(
                             car_status = car.getCarChargerState()
                         ):
@@ -3806,7 +3802,7 @@ class Car:
                     f"{self.charger} Could not get attribute = 'charging_state' from: "
                     f"{self.ADapi.get_state(self.car_charger_sensor, namespace = self.namespace)} "
                     f"Error: {ve}",
-                    level = 'DEBUG'
+                    level = 'INFO' #'DEBUG'
                 )
             else:
                 if state == 'Starting':
@@ -3814,6 +3810,7 @@ class Car:
                 return state
         
         if self.connectedCharger is not None:
+            self.ADapi.log(f"Returning connected charger state {self.connectedCharger.getChargingState()} for {self.carName} in getCarChargerState") ###
             return self.connectedCharger.getChargingState()
 
     def startCharging(self) -> None:
@@ -4032,7 +4029,6 @@ class Tesla_charger(Charger):
                     self.Car.connectedCharger is not self
                     and self.Car.connectedCharger is not None
                 ):
-                    self.ADapi.log(f"Max ampere for {self.charger} is {new} while connected to {self.Car.connectedCharger.charger}. Is charging with {chargingAmpere} and not following max. Updating") ###
                     self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
 
         except (ValueError, TypeError):
@@ -4217,7 +4213,6 @@ class Tesla_car(Car):
            self.ADapi.listen_state(self.destination_updated, destination_location_tracker,
             namespace = namespace
         )
-
         """ End initialization Tesla Car Class
         """
 
