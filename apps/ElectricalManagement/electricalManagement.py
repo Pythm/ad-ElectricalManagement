@@ -35,8 +35,7 @@ from pydantic_models import (
 
 __version__ = "0.3.0"
 
-RECIPIENTS:list = [] ### TODO: Clean up a bit on Globals
-NOTIFY_APP = None
+RECIPIENTS:list = []
 OUT_TEMP:float = 10.0
 RAIN_AMOUNT:float = 0.0
 WIND_AMOUNT:float = 0.0
@@ -67,494 +66,475 @@ class ElectricalUsage(ad.ADBase):
         return cls._instance
 
     def initialize(self):
-        self._setup_api_and_translations()
-        self._init_collections()
-        self._setup_notify_app()
-        self._setup_electricity_price()
-        
-        self._validate_current_consumption_sensor()
-        self._setup_accumulated_consumption_current_hour()
-        self._setup_power_production_sensors()
+        try:
+            self._setup_api_and_translations()
+            self._init_collections()
+            self._setup_notify_app()
+            self._setup_electricity_price()
+            
+            self._validate_current_consumption_sensor()
+            self._setup_accumulated_consumption_current_hour()
+            self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path')
-        if not self.json_path:
-            self.ADapi.log(
-                "Path to store json not provided. "
-                "Please input a valid path with configuration 'json_path' to use persistency.",
-                level = 'WARNING'
-            )
+            self.json_path = self.args.get('json_path')
+            if not self.json_path:
+                self.ADapi.log(
+                    "Path to store json not provided. "
+                    "Please input a valid path with configuration 'json_path' to use persistency.",
+                    level = 'WARNING'
+                )
 
-        self._load_persistent_data()
+            self._load_persistent_data()
 
-        global CHARGE_SCHEDULER
-        CHARGE_SCHEDULER = Scheduler(
-            api=self.ADapi,
-            stopAtPriceIncrease=self.args.get('stopAtPriceIncrease', 0.3),
-            startBeforePrice=self.args.get('startBeforePrice', 0.01),
-            infotext=self.args.get('infotext', None),
-            namespace=self.HASS_namespace,
-            chargingQueue = self._persistence.chargingQueue,
-            available_watt = self._persistence.available_watt
-        )
-
-        self.away_state = self._get_vacation_state()
-        self.automate = self.args.get('automate', True)
-        self._setup_weather_sensors()
-
-        CAR_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_sensor",           "binary_sensor", "_charger"),
-            ("charge_limit",             "number",        "_charge_limit"),
-            ("asleep_sensor",            "binary_sensor", "_asleep"),
-            ("online_sensor",            "binary_sensor", "_online"),
-            ("battery_sensor",           "sensor",        "_battery"),
-            ("location_tracker",         "device_tracker","_location_tracker"),
-            ("destination_location_tracker", "device_tracker","_destination_location_tracker"),
-            ("arrival_time",             "sensor",        "_arrival_time"),
-            ("software_update",          "update",        "_software_update"),
-            ("force_data_update",        "button",        "_force_data_update"),
-            ("polling_switch",           "switch",        "_polling"),
-            ("data_last_update_time",    "sensor",        "_data_last_update_time"),
-        ]
-
-        CHARGER_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_switch",           "switch",        "_charger"),
-            ("charging_amps",            "number",        "_charging_amps"),
-            ("charger_power",            "sensor",        "_charger_power"),
-            ("session_energy",           "sensor",        "_energy_added"),
-        ]
-
-        EASEE_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_sensor",          "sensor",   "_status"),
-            ("reason_for_no_current",   "sensor",   "_reason_for_no_current"),
-            ("charging_amps",           "sensor",   "_current"),
-            ("charger_power",           "sensor",   "_power"),
-            ("session_energy",          "sensor",   "_energy_added"),
-            ("voltage",                 "sensor",   "_voltage"),
-            ("max_charger_limit",       "sensor",   "_max_charger_limit"),
-            ("idle_current",            "sensor",   "_idle_current"),
-        ]
-
-        def merge_config_with_persistent(
-            cfg: dict,
-            name: str,
-            specs: List[tuple[str, str, str]],
-            persistent_data,
-        ) -> dict:
-
-            namespace = cfg.get("namespace", self.HASS_namespace)
-
-            if persistent_data:
-                for key, value in persistent_data.dict().items():
-                    if key not in cfg and isinstance(value, dict):
-                        cfg[key] = value
-
-            for key, domain, suffix in specs:
-                value = str(f"{domain}.{name}{suffix}")
-
-                if key in cfg and cfg[key] is not None:
-                    setattr(persistent_data, key, cfg[key])
-                    continue
-
-                elif self.ADapi.entity_exists(f"{domain}.{name}{suffix}", namespace = namespace):
-                    cfg[key] = str(f"{domain}.{name}{suffix}")
-                    setattr(persistent_data, key, cfg[key])
-                else:
-                    self.ADapi.log(
-                        f"Could not automatically find {key} when setting up {name} in "
-                        f"{namespace} namespace. Please update your configuration with the missing sensor.",
-                        level = 'INFO'
-                    )
-
-            return cfg
-
-        
-        for cfg in self.args.get('tesla', []):
-            namespace = cfg.get('namespace', self.HASS_namespace)
-
-            carName = cfg.get('charger') or cfg.get('car')
-            if 'charger_sensor' in cfg and not carName:
-                sensor_id = cfg['charger_sensor']
-                carName = sensor_id.replace('binary_sensor.', '').replace('_charger', '')
-
-            persisted_car = self._persistence.car.get(carName)
-            if not persisted_car:
-                defaults: dict[str, Any] = {
-                    'charger_sensor':              cfg.get('charger_sensor', None),
-                    'charge_limit':                cfg.get('charge_limit', None),
-                    'battery_sensor':              cfg.get('battery_sensor', None),
-                    'asleep_sensor':               cfg.get('asleep_sensor', None),
-                    'online_sensor':               cfg.get('online_sensor', None),
-                    'location_tracker':            cfg.get('location_tracker', None),
-                    'destination_location_tracker':cfg.get('destination_location_tracker', None),
-                    'arrival_time':                cfg.get('arrival_time', None),
-                    'software_update':             cfg.get('software_update', None),
-                    'force_data_update':           cfg.get('force_data_update', None),
-                    'polling_switch':              cfg.get('polling_switch', None),
-                    'data_last_update_time':       cfg.get('data_last_update_time', None),
-                    'battery_size':                cfg.get('battery_size', 100),
-                    'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
-                    'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
-                    'charge_now':                  cfg.get('charge_now', False),
-                    'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
-                    'departure':                   cfg.get('departure', None),
-                    'battery_reg_counter':  0,
-                    'car_limit_max_ampere': None,
-                    'max_kWh_charged':      5,
-                    'old_charge_limit':     100,
-                    'kWh_remain_to_charge': -2,
-                }
-                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
-                self._persistence.car[carName] = CarData(**cfg)
-
-            cfg = merge_config_with_persistent(cfg = cfg,
-                                               name = carName,
-                                               specs = CAR_SPECS,
-                                               persistent_data = self._persistence.car[carName])
-
-            tesla_car = Tesla_car(
+            global CHARGE_SCHEDULER
+            CHARGE_SCHEDULER = Scheduler(
                 api=self.ADapi,
-                namespace=namespace,
-                carName=carName,
-                car_data=self._persistence.car[carName]
+                stopAtPriceIncrease=self.args.get('stopAtPriceIncrease', 0.3),
+                startBeforePrice=self.args.get('startBeforePrice', 0.01),
+                infotext=self.args.get('infotext', None),
+                namespace=self.HASS_namespace,
+                chargingQueue = self._persistence.chargingQueue,
+                available_watt = self._persistence.available_watt
             )
-            self.cars.append(tesla_car)
 
-            persisted_charger = self._persistence.charger.get(carName)
+            self.away_state = self._get_vacation_state()
+            self.automate = self.args.get('automate', True) # Default Automate switch for all heaters
+            self._setup_weather_sensors()
 
-            if not persisted_charger:
-                defaults: dict[str, Any] = {
-                    'charger_sensor':        cfg.get('charger_sensor'),
-                    'charger_switch':        cfg.get('charger_switch'),
-                    'charging_amps':         cfg.get('charging_amps'),
-                    'charger_power':         cfg.get('charger_power'),
-                    'session_energy':        cfg.get('session_energy'),
-                    'idle_current':          cfg.get('idle_current', False),
-                    'guest':                 cfg.get('guest', False),
-                    'ampereCharging':        0.0,
-                    'min_ampere':            6,
-                    'maxChargerAmpere':      0,
-                    'connected_car_name':    None,
-                    'volts':                 220,
-                    'phases':                1,
-                    'voltPhase':             220,
-                }
-                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
-                self._persistence.charger[carName] = ChargerData(**cfg)
+            CAR_SPECS: List[Tuple[str, str, str]] = [
+                ("charger_sensor",           "binary_sensor", "_charger"),
+                ("charge_limit",             "number",        "_charge_limit"),
+                ("asleep_sensor",            "binary_sensor", "_asleep"),
+                ("online_sensor",            "binary_sensor", "_online"),
+                ("battery_sensor",           "sensor",        "_battery"),
+                ("location_tracker",         "device_tracker","_location_tracker"),
+                ("destination_location_tracker", "device_tracker","_destination_location_tracker"),
+                ("arrival_time",             "sensor",        "_arrival_time"),
+                ("software_update",          "update",        "_software_update"),
+                ("force_data_update",        "button",        "_force_data_update"),
+                ("polling_switch",           "switch",        "_polling"),
+                ("data_last_update_time",    "sensor",        "_data_last_update_time"),
+            ]
 
-            cfg = merge_config_with_persistent(cfg = cfg,
+            CHARGER_SPECS: List[Tuple[str, str, str]] = [
+                ("charger_switch",           "switch",        "_charger"),
+                ("charging_amps",            "number",        "_charging_amps"),
+                ("charger_power",            "sensor",        "_charger_power"),
+                ("session_energy",           "sensor",        "_energy_added"),
+            ]
+
+            EASEE_SPECS: List[Tuple[str, str, str]] = [
+                ("charger_sensor",          "sensor",   "_status"),
+                ("reason_for_no_current",   "sensor",   "_reason_for_no_current"),
+                ("charging_amps",           "sensor",   "_current"),
+                ("charger_power",           "sensor",   "_power"),
+                ("session_energy",          "sensor",   "_energy_added"),
+                ("voltage",                 "sensor",   "_voltage"),
+                ("max_charger_limit",       "sensor",   "_max_charger_limit"),
+                ("idle_current",            "sensor",   "_idle_current"),
+            ]
+
+            def merge_config_with_persistent(
+                cfg: dict,
+                name: str,
+                specs: List[tuple[str, str, str]],
+                persistent_data,
+            ) -> dict:
+
+                namespace = cfg.get("namespace", self.HASS_namespace)
+
+                if persistent_data:
+                    for key, value in persistent_data.dict().items():
+                        if key not in cfg and isinstance(value, dict):
+                            cfg[key] = value
+
+                for key, domain, suffix in specs:
+                    value = str(f"{domain}.{name}{suffix}")
+
+                    if key in cfg and cfg[key] is not None:
+                        setattr(persistent_data, key, cfg[key])
+                        continue
+
+                    elif self.ADapi.entity_exists(f"{domain}.{name}{suffix}", namespace = namespace):
+                        cfg[key] = str(f"{domain}.{name}{suffix}")
+                        setattr(persistent_data, key, cfg[key])
+                    else:
+                        self.ADapi.log(
+                            f"Could not automatically find {key} when setting up {name} in "
+                            f"{namespace} namespace. Please update your configuration with the missing sensor.",
+                            level = 'INFO'
+                        )
+
+                return cfg
+
+            
+            for cfg in self.args.get('tesla', []):
+                namespace = cfg.get('namespace', self.HASS_namespace)
+
+                carName = cfg.get('charger') or cfg.get('car')
+                if 'charger_sensor' in cfg and not carName:
+                    sensor_id = cfg['charger_sensor']
+                    carName = sensor_id.replace('binary_sensor.', '').replace('_charger', '')
+
+                persisted_car = self._persistence.car.get(carName)
+                if not persisted_car:
+                    defaults: dict[str, Any] = {
+                        'charger_sensor':              cfg.get('charger_sensor', None),
+                        'charge_limit':                cfg.get('charge_limit', None),
+                        'battery_sensor':              cfg.get('battery_sensor', None),
+                        'asleep_sensor':               cfg.get('asleep_sensor', None),
+                        'online_sensor':               cfg.get('online_sensor', None),
+                        'location_tracker':            cfg.get('location_tracker', None),
+                        'destination_location_tracker':cfg.get('destination_location_tracker', None),
+                        'arrival_time':                cfg.get('arrival_time', None),
+                        'software_update':             cfg.get('software_update', None),
+                        'force_data_update':           cfg.get('force_data_update', None),
+                        'polling_switch':              cfg.get('polling_switch', None),
+                        'data_last_update_time':       cfg.get('data_last_update_time', None),
+                        'battery_size':                cfg.get('battery_size', 100),
+                        'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                        'priority':                    cfg.get('priority', 3),
+                        'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                        'charge_now':                  cfg.get('charge_now', False),
+                        'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
+                        'departure':                   cfg.get('departure', None),
+                        'battery_reg_counter':  0,
+                        'car_limit_max_ampere': None,
+                        'max_kWh_charged':      5,
+                        'old_charge_limit':     100,
+                        'kWh_remain_to_charge': -2,
+                    }
+                    cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                    self._persistence.car[carName] = CarData(**cfg)
+
+                cfg = merge_config_with_persistent(cfg = cfg,
                                                 name = carName,
-                                                specs = CHARGER_SPECS,
-                                                persistent_data = self._persistence.charger.get(carName))
+                                                specs = CAR_SPECS,
+                                                persistent_data = self._persistence.car[carName])
 
-            tesla_charger = Tesla_charger(
-                api=self.ADapi,
-                Car=tesla_car,
-                namespace=namespace,
-                charger=carName,
-                charger_data=self._persistence.charger[carName],
-            )
-            self.chargers.append(tesla_charger)
+                tesla_car = Tesla_car(
+                    api=self.ADapi,
+                    namespace=namespace,
+                    carName=carName,
+                    car_data=self._persistence.car[carName]
+                )
+                self.cars.append(tesla_car)
 
-        for cfg in self.args.get('cars', []):
-            namespace = cfg.get("namespace", self.HASS_namespace)
-            if not 'carName' in cfg:
-                self.ADapi.log(f"Skipping car entry {cfg} – no carName given", level='WARNING')
-                return
+                persisted_charger = self._persistence.charger.get(carName)
 
-            persisted_car = self._persistence.car.get(cfg['carName'])
-            if not persisted_car:
-                defaults: dict[str, Any] = {
-                    'charger_sensor':              cfg.get('charger_sensor', None),
-                    'charge_limit':                cfg.get('charge_limit', None),
-                    'battery_sensor':              cfg.get('battery_sensor', None),
-                    'asleep_sensor':               cfg.get('asleep_sensor', None),
-                    'online_sensor':               cfg.get('online_sensor', None),
-                    'location_tracker':            cfg.get('location_tracker', None),
-                    'destination_location_tracker':cfg.get('destination_location_tracker', None),
-                    'arrival_time':                cfg.get('arrival_time', None),
-                    'software_update':             cfg.get('software_update', None),
-                    'force_data_update':           cfg.get('force_data_update', None),
-                    'polling_switch':              cfg.get('polling_switch', None),
-                    'data_last_update_time':       cfg.get('data_last_update_time', None),
-                    'battery_size':                cfg.get('battery_size', 100),
-                    'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
-                    'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
-                    'charge_now':                  cfg.get('charge_now', False),
-                    'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
-                    'departure':                   cfg.get('departure', None),
-                    'battery_reg_counter':  0,
-                    'car_limit_max_ampere': None,
-                    'max_kWh_charged':      5,
-                    'old_charge_limit':     100,
-                    'kWh_remain_to_charge': -2,
-                }
-                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
-                self._persistence.car[cfg['carName']] = CarData(**cfg)
+                if not persisted_charger:
+                    defaults: dict[str, Any] = {
+                        'charger_sensor':        cfg.get('charger_sensor'),
+                        'charger_switch':        cfg.get('charger_switch'),
+                        'charging_amps':         cfg.get('charging_amps'),
+                        'charger_power':         cfg.get('charger_power'),
+                        'session_energy':        cfg.get('session_energy'),
+                        'idle_current':          cfg.get('idle_current', False),
+                        'guest':                 cfg.get('guest', False),
+                        'ampereCharging':        0.0,
+                        'min_ampere':            6,
+                        'maxChargerAmpere':      0,
+                        'connected_car_name':    None,
+                        'volts':                 220,
+                        'phases':                1,
+                        'voltPhase':             220,
+                    }
+                    cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                    self._persistence.charger[carName] = ChargerData(**cfg)
 
-            car = Car(
-                api=self.ADapi,
-                namespace=namespace,
-                carName=cfg['carName'],
-                vehicle_id=cfg['carName'],
-                car_data=self._persistence.car[cfg['carName']]
-            )
-            self.cars.append(car)
+                cfg = merge_config_with_persistent(cfg = cfg,
+                                                    name = carName,
+                                                    specs = CHARGER_SPECS,
+                                                    persistent_data = self._persistence.charger.get(carName))
 
+                tesla_charger = Tesla_charger(
+                    api=self.ADapi,
+                    Car=tesla_car,
+                    namespace=namespace,
+                    charger=carName,
+                    charger_data=self._persistence.charger[carName],
+                )
+                self.chargers.append(tesla_charger)
 
-        for cfg in self.args.get('easee', []):
-            namespace = cfg.get('namespace', self.HASS_namespace)
-            charger = cfg.get('charger')
-            if 'charger_status' in cfg and not charger:
-                sensor_id = cfg['charger_status']
-                charger = sensor_id.replace('sensor.', '').replace('_status', '')
-            if 'current' in cfg and not 'charging_amps' in cfg:
-                cfg['charging_amps'] = cfg['current']
-            if 'status' in cfg and not 'charger_sensor' in cfg:
-                cfg['charger_sensor'] = cfg['status']
+            for cfg in self.args.get('cars', []):
+                namespace = cfg.get("namespace", self.HASS_namespace)
+                if not 'carName' in cfg:
+                    self.ADapi.log(f"Skipping car entry {cfg} – no carName given", level='WARNING')
+                    return
 
-            persisted_charger = self._persistence.charger.get(charger)
-            if not persisted_charger:
-                defaults: dict[str, Any] = {
-                    'charger_sensor':        cfg.get('charger_sensor'),
-                    'charger_switch':        cfg.get('charger_switch'),
-                    'charging_amps':         cfg.get('charging_amps'),
-                    'charger_power':         cfg.get('charger_power'),
-                    'session_energy':        cfg.get('session_energy'),
-                    'idle_current':          cfg.get('idle_current', False),
-                    'guest':                 cfg.get('guest', False),
-                    'ampereCharging':        0.0,
-                    'min_ampere':            6,
-                    'maxChargerAmpere':      0,
-                    'connected_car_name':    None,
-                    'volts':                 220,
-                    'phases':                1,
-                    'voltPhase':             220,
-                    'max_charger_limit':     cfg.get('max_charger_limit'),
-                    'reason_for_no_current': cfg.get('reason_for_no_current', None),
-                    'voltage':               cfg.get('voltage', None),
-                }
-                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
-                self._persistence.charger[charger] = ChargerData(**cfg)
+                persisted_car = self._persistence.car.get(cfg['carName'])
+                if not persisted_car:
+                    defaults: dict[str, Any] = {
+                        'charger_sensor':              cfg.get('charger_sensor', None),
+                        'charge_limit':                cfg.get('charge_limit', None),
+                        'battery_sensor':              cfg.get('battery_sensor', None),
+                        'asleep_sensor':               cfg.get('asleep_sensor', None),
+                        'online_sensor':               cfg.get('online_sensor', None),
+                        'location_tracker':            cfg.get('location_tracker', None),
+                        'destination_location_tracker':cfg.get('destination_location_tracker', None),
+                        'arrival_time':                cfg.get('arrival_time', None),
+                        'software_update':             cfg.get('software_update', None),
+                        'force_data_update':           cfg.get('force_data_update', None),
+                        'polling_switch':              cfg.get('polling_switch', None),
+                        'data_last_update_time':       cfg.get('data_last_update_time', None),
+                        'battery_size':                cfg.get('battery_size', 100),
+                        'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                        'priority':                    cfg.get('priority', 3),
+                        'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                        'charge_now':                  cfg.get('charge_now', False),
+                        'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
+                        'departure':                   cfg.get('departure', None),
+                        'battery_reg_counter':  0,
+                        'car_limit_max_ampere': None,
+                        'max_kWh_charged':      5,
+                        'old_charge_limit':     100,
+                        'kWh_remain_to_charge': -2,
+                    }
+                    cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                    self._persistence.car[cfg['carName']] = CarData(**cfg)
 
-            cfg = merge_config_with_persistent(cfg = cfg,
-                                               name = charger,
-                                               specs = EASEE_SPECS,
-                                               persistent_data = self._persistence.charger.get(charger))
-
-            easee = Easee(
-                api=self.ADapi,
-                cars=self.cars,
-                namespace=namespace,
-                charger=charger,
-                charger_data=self._persistence.charger[charger]
-            )
-            self.chargers.append(easee)
-            # TODO Connect car to charger based on connected_car_name
+                car = Car(
+                    api=self.ADapi,
+                    namespace=namespace,
+                    carName=cfg['carName'],
+                    vehicle_id=cfg['carName'],
+                    car_data=self._persistence.car[cfg['carName']]
+                )
+                self.cars.append(car)
 
 
-        # --------------------------------------------------------------------------- #
-        # Setup heaters and switches
-        # --------------------------------------------------------------------------- #
-        def _merge_heater_cfg(heater_cfg: dict, persisted_heater) -> dict:
-            if persisted_heater:
-                common_keys = [
-                    'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
-                    'max_continuous_hours', 'on_for_minimum', 'pricedrop',
-                    'pricedifference_increase', 'automate', 'recipient'
-                ]
-                for key in common_keys:
-                    value = getattr(persisted_heater, key, None)
-                    if key not in heater_cfg and value is not None:
-                        heater_cfg[key] = value
-            return heater_cfg
+            for cfg in self.args.get('easee', []):
+                namespace = cfg.get('namespace', self.HASS_namespace)
+                charger = cfg.get('charger')
+                if 'charger_status' in cfg and not charger:
+                    sensor_id = cfg['charger_status']
+                    charger = sensor_id.replace('sensor.', '').replace('_status', '')
+                if 'current' in cfg and not 'charging_amps' in cfg:
+                    cfg['charging_amps'] = cfg['current']
+                if 'status' in cfg and not 'charger_sensor' in cfg:
+                    cfg['charger_sensor'] = cfg['status']
 
-        def _merge_climate_cfg(heater_cfg: dict, persisted_heater) -> dict:
-            if persisted_heater:
-                climate_keys = [
-                    'indoor_sensor_temp', 'window_temp', 'window_offset', 'target_indoor_input',
-                    'target_indoor_temp', 'save_temp_offset', 'save_temp', 'away_temp',
-                    'rain_level', 'anemometer_speed', 'low_price_max_continuous_hours',
-                    'priceincrease', 'windowsensors', 'getting_cold', 'daytime_savings',
-                    'temperatures'
-                ]
-                for key in climate_keys:
-                    value = getattr(persisted_heater, key, None)
-                    if key not in heater_cfg and value is not None:
-                        heater_cfg[key] = value
-            return heater_cfg
+                persisted_charger = self._persistence.charger.get(charger)
+                if not persisted_charger:
+                    defaults: dict[str, Any] = {
+                        'charger_sensor':        cfg.get('charger_sensor'),
+                        'charger_switch':        cfg.get('charger_switch'),
+                        'charging_amps':         cfg.get('charging_amps'),
+                        'charger_power':         cfg.get('charger_power'),
+                        'session_energy':        cfg.get('session_energy'),
+                        'idle_current':          cfg.get('idle_current', False),
+                        'guest':                 cfg.get('guest', False),
+                        'ampereCharging':        0.0,
+                        'min_ampere':            6,
+                        'maxChargerAmpere':      0,
+                        'connected_car_name':    None,
+                        'volts':                 220,
+                        'phases':                1,
+                        'voltPhase':             220,
+                        'max_charger_limit':     cfg.get('max_charger_limit'),
+                        'reason_for_no_current': cfg.get('reason_for_no_current', None),
+                        'voltage':               cfg.get('voltage', None),
+                    }
+                    cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                    self._persistence.charger[charger] = ChargerData(**cfg)
 
-        def _add_heater_missing(heater_cfg: dict, namespace: str, is_switch: bool):
-            def _ensure_sensor(key: str, suffixes: list[str], default_id: str,
-                            default_state: int | float, friendly_name: str) -> str:
-                for suffix in suffixes:
-                    candidate = f"sensor.{heater_cfg['heater']}{suffix}"
-                    if self.ADapi.entity_exists(candidate, namespace=namespace):
-                        self.ADapi.log(f"Added {candidate} to {heater_cfg['heater']}") ###
-                        return candidate, True
-                if not self.ADapi.entity_exists(default_id, namespace=namespace):
-                    self.ADapi.call_service(
-                        "state/set",
-                        entity_id=default_id,
-                        state=default_state,
-                        attributes={"friendly_name": friendly_name},
-                        namespace=namespace,
+                cfg = merge_config_with_persistent(cfg = cfg,
+                                                name = charger,
+                                                specs = EASEE_SPECS,
+                                                persistent_data = self._persistence.charger.get(charger))
+
+                easee = Easee(
+                    api=self.ADapi,
+                    cars=self.cars,
+                    namespace=namespace,
+                    charger=charger,
+                    charger_data=self._persistence.charger[charger]
+                )
+                self.chargers.append(easee)
+                # TODO Connect car to charger based on connected_car_name
+
+
+            # --------------------------------------------------------------------------- #
+            # Setup heaters and switches
+            # --------------------------------------------------------------------------- #
+            def _merge_heater_cfg(heater_cfg: dict, persisted_heater) -> dict:
+                if persisted_heater:
+                    common_keys = [
+                        'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
+                        'max_continuous_hours', 'on_for_minimum', 'pricedrop',
+                        'pricedifference_increase', 'automate', 'recipient'
+                    ]
+                    for key in common_keys:
+                        value = getattr(persisted_heater, key, None)
+                        if key not in heater_cfg and value is not None:
+                            heater_cfg[key] = value
+                return heater_cfg
+
+            def _merge_climate_cfg(heater_cfg: dict, persisted_heater) -> dict:
+                if persisted_heater:
+                    climate_keys = [
+                        'indoor_sensor_temp', 'window_temp', 'window_offset', 'target_indoor_input',
+                        'target_indoor_temp', 'save_temp_offset', 'save_temp', 'vacation_temp',
+                        'rain_level', 'anemometer_speed',
+                        'priceincrease', 'windowsensors', 'getting_cold', 'daytime_savings',
+                        'temperatures'
+                    ]
+                    for key in climate_keys:
+                        value = getattr(persisted_heater, key, None)
+                        if key not in heater_cfg and value is not None:
+                            heater_cfg[key] = value
+                return heater_cfg
+
+            def _add_heater_missing(heater_cfg: dict, namespace: str, is_switch: bool):
+                def _ensure_sensor(key: str, suffixes: list[str], default_id: str,
+                                default_state: int | float, friendly_name: str) -> str:
+                    for suffix in suffixes:
+                        candidate = f"sensor.{heater_cfg['heater']}{suffix}"
+                        if self.ADapi.entity_exists(candidate, namespace=namespace):
+                            self.ADapi.log(f"Added {candidate} to {heater_cfg['heater']}") ###
+                            return candidate, True
+                    if not self.ADapi.entity_exists(default_id, namespace=namespace):
+                        self.ADapi.call_service(
+                            "state/set",
+                            entity_id=default_id,
+                            state=default_state,
+                            attributes={"friendly_name": friendly_name},
+                            namespace=namespace,
+                        )
+                    return default_id, False
+
+                validConsumptionSensor = True
+                if not heater_cfg.get('consumptionSensor'):
+                    power_cap = heater_cfg.get('power', 300 if not is_switch else 1000)
+                    sensor_id, validConsumptionSensor = _ensure_sensor(
+                        key='consumptionSensor',
+                        suffixes=['_electric_consumption_w', '_electric_consumed_w'],
+                        default_id=f"input_number.{heater_cfg['heater']}_power",
+                        default_state=power_cap,
+                        friendly_name=f"{heater_cfg['heater']} Power",
                     )
-                return default_id, False
+                    heater_cfg['consumptionSensor'] = sensor_id
+                if not heater_cfg.get('kWhconsumptionSensor'):
+                    sensor_id = _ensure_sensor(
+                        key='kWhconsumptionSensor',
+                        suffixes=['_electric_consumption_kwh', '_electric_consumed_kwh'],
+                        default_id='input_number.zero',
+                        default_state=0,
+                        friendly_name='Zero consumption helper',
+                    )
+                    heater_cfg['kWhconsumptionSensor'] = sensor_id
+                return validConsumptionSensor
 
-            validConsumptionSensor = True
-            if not heater_cfg.get("consumptionSensor"):
-                power_cap = heater_cfg.get("power", 300 if not is_switch else 1000)
-                sensor_id, validConsumptionSensor = _ensure_sensor(
-                    key="consumptionSensor",
-                    suffixes=["_electric_consumption_w", "_electric_consumed_w"],
-                    default_id=f"input_number.{heater_cfg['heater']}_power",
-                    default_state=power_cap,
-                    friendly_name=f"{heater_cfg['heater']} Power",
+
+            for heater_cfg in self.args.get('climate', []):
+                namespace = heater_cfg.get('namespace', self.HASS_namespace)
+                heater_entity: str | None = heater_cfg.get('heater')
+                if not heater_entity:
+                    self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
+                                level='WARNING')
+                    return
+
+                persisted_heater = self._persistence.heater.get(heater_entity)
+                if not persisted_heater:
+                    validConsumptionSensor = _add_heater_missing(heater_cfg, namespace, is_switch=False)
+                    defaults: dict[str, Any] = {
+                        'consumptionSensor':              heater_cfg['consumptionSensor'],
+                        'validConsumptionSensor':         validConsumptionSensor,
+                        'normal_power':                   0.0,
+                        'kWhconsumptionSensor':           heater_cfg['kWhconsumptionSensor'],
+                        'max_continuous_hours':           heater_cfg.get('max_continuous_hours',2),
+                        'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
+                        'pricedrop':                      heater_cfg.get('pricedrop',1),
+                        'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
+                        'vacation':                       heater_cfg.get('vacation',self.away_state),
+                        'automate':                       heater_cfg.get('automate',self.automate),
+                        'recipient':                      heater_cfg.get('recipient',self.recipients),
+                        'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
+                        'target_indoor_input':            heater_cfg.get('target_indoor_input',None),
+                        'target_indoor_temp':             heater_cfg.get('target_indoor_temp',23),
+                        'window_temp':                    heater_cfg.get('window_temp',None),
+                        'window_offset':                  heater_cfg.get('window_offset',-3),
+                        'save_temp_offset':               heater_cfg.get('save_temp_offset',None),
+                        'save_temp':                      heater_cfg.get('save_temp',None),
+                        'vacation_temp':                  heater_cfg.get('vacation_temp',None),
+                        'rain_level':                     heater_cfg.get('rain_level',self.rain_level),
+                        'anemometer_speed':               heater_cfg.get('anemometer_speed',self.anemometer_speed),
+                        'getting_cold':                   heater_cfg.get('getting_cold',18),
+                        'priceincrease':                  heater_cfg.get('priceincrease',1),
+                        'windowsensors':                  heater_cfg.get('windowsensors',[]),
+                        'daytime_savings':                heater_cfg.get('daytime_savings',[]),
+                        'temperatures':                   heater_cfg.get('temperatures',[]),
+                        'ConsumptionData':                {},
+                        'prev_consumption':               0,
+                        'time_to_save':                   [],
+                    }
+                    for k, v in defaults.items():
+                        if k not in heater_cfg:
+                            heater_cfg[k] = v
+
+                    self._persistence.heater[heater_entity] = HeaterBlock(**heater_cfg)
+
+                heater_cfg = _merge_heater_cfg(heater_cfg, persisted_heater)
+                heater_cfg = _merge_climate_cfg(heater_cfg, persisted_heater)
+                
+
+                climate = Climate(
+                    api=self.ADapi,
+                    namespace=namespace,
+                    heater=heater_entity,
+                    heater_data=self._persistence.heater[heater_entity],
                 )
-                heater_cfg["consumptionSensor"] = sensor_id
-            if not heater_cfg.get("kWhconsumptionSensor"):
-                sensor_id = _ensure_sensor(
-                    key="kWhconsumptionSensor",
-                    suffixes=["_electric_consumption_kwh", "_electric_consumed_kwh"],
-                    default_id="input_number.zero",
-                    default_state=0,
-                    friendly_name="Zero consumption helper",
+                self.heaters.append(climate)
+
+
+            for switch_cfg in self.args.get('heater_switches', []):
+                namespace = switch_cfg.get('namespace', self.HASS_namespace)
+                heater_entity: str | None = switch_cfg.get('switch')
+                if not heater_entity:
+                    self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
+                    return
+
+                persisted_heater = self._persistence.heater.get(heater_entity)
+                if not persisted_heater:
+                    validConsumptionSensor = _add_heater_missing(switch_cfg, namespace, is_switch=True)
+                    defaults: dict[str, Any] = {
+                        'consumptionSensor':              heater_cfg['consumptionSensor'],
+                        'validConsumptionSensor':         validConsumptionSensor,
+                        'kWhconsumptionSensor':           heater_cfg['kWhconsumptionSensor'],
+                        'max_continuous_hours':           heater_cfg.get('max_continuous_hours',2),
+                        'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
+                        'pricedrop':                      heater_cfg.get('pricedrop',1),
+                        'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
+                        'vacation':                       heater_cfg.get('vacation',self.away_state),
+                        'automate':                       heater_cfg.get('automate',self.automate),
+                        'recipient':                      heater_cfg.get('recipient',self.recipients),
+                        'daytime_savings':                heater_cfg.get('daytime_savings',[]),
+                        'ConsumptionData':                {},
+                        'prev_consumption':               0,
+                        'time_to_save':                   [],
+                    }
+                    for k, v in defaults.items():
+                        if k not in switch_cfg:
+                            switch_cfg[k] = v
+
+                    self._persistence.heater[heater_entity] = HeaterBlock(**switch_cfg)
+
+                switch_cfg = _merge_heater_cfg(switch_cfg, persisted_heater)
+                
+
+                switch = On_off_switch(
+                    api=self.ADapi,
+                    namespace=namespace,
+                    heater=heater_entity,
+                    heater_data=self._persistence.heater[heater_entity],
                 )
-                heater_cfg["kWhconsumptionSensor"] = sensor_id
-            return validConsumptionSensor
-
-
-        for heater_cfg in self.args.get('climate', []):
-            namespace = heater_cfg.get('namespace', self.HASS_namespace)
-            heater_entity: str | None = heater_cfg.get('heater')
-            if not heater_entity:
-                self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
-                            level='WARNING')
-                return
-
-            persisted_heater = self._persistence.heater.get(heater_entity)
-            if not persisted_heater:
-                defaults = {
-                    'max_continuous_hours': 2,
-                    'on_for_minimum': 6,
-                    'pricedrop': 1,
-                    'pricedifference_increase': 1.07,
-                    'vacation': self.away_state,
-                    'automate': self.automate,
-                    'recipient': self.recipients,
-                    'indoor_sensor_temp': None,
-                    'window_temp': None,
-                    'window_offset': -3,
-                    'target_indoor_input': None,
-                    'save_temp_offset': None,
-                    'save_temp': None,
-                    'away_temp': None,
-                    'rain_level': self.rain_level,
-                    'anemometer_speed': self.anemometer_speed,
-                    'low_price_max_continuous_hours': 2,
-                    'priceincrease': 1,
-                    'windowsensors': [],
-                    'getting_cold': 18,
-                    'daytime_savings': [],
-                    'temperatures': [],
-                    'ConsumptionData': {}
-                }
-                for k, v in defaults.items():
-                    if k not in heater_cfg:
-                        heater_cfg[k] = v
-
-                self._persistence.heater[heater_entity] = HeaterBlock(**heater_cfg)
-
-            heater_cfg = _merge_heater_cfg(heater_cfg, persisted_heater)
-            heater_cfg = _merge_climate_cfg(heater_cfg, persisted_heater)
-            validConsumptionSensor = _add_heater_missing(heater_cfg, namespace, is_switch=False)
-
-            climate = Climate(
-                api=self.ADapi,
-                heater=heater_entity,
-                consumptionSensor=heater_cfg['consumptionSensor'],
-                validConsumptionSensor=validConsumptionSensor,
-                kWhconsumptionSensor=heater_cfg['kWhconsumptionSensor'],
-                max_continuous_hours=heater_cfg.get('max_continuous_hours', 2),
-                on_for_minimum=heater_cfg.get('on_for_minimum', 6),
-                pricedrop=heater_cfg.get('pricedrop', 1),
-                pricedifference_increase=heater_cfg.get('pricedifference_increase', 1.07),
-                namespace=namespace,
-                away=heater_cfg.get('vacation', self.away_state),
-                automate=heater_cfg.get('automate', self.automate),
-                recipient=heater_cfg.get('recipient', self.recipients),
-                indoor_sensor_temp=heater_cfg.get('indoor_sensor_temp'),
-                window_temp=heater_cfg.get('window_temp'),
-                window_offset=heater_cfg.get('window_offset', -3),
-                target_indoor_input=heater_cfg.get('target_indoor_input'),
-                target_indoor_temp=heater_cfg.get('target_indoor_temp', 23),
-                save_temp_offset=heater_cfg.get('save_temp_offset'),
-                save_temp=heater_cfg.get('save_temp'),
-                away_temp=heater_cfg.get('away_temp'),
-                rain_level=heater_cfg.get('rain_level', self.rain_level),
-                anemometer_speed=heater_cfg.get('anemometer_speed', self.anemometer_speed),
-                low_price_max_continuous_hours=heater_cfg.get('low_price_max_continuous_hours', 2),
-                priceincrease=heater_cfg.get('priceincrease', 1),
-                windowsensors=heater_cfg.get('windowsensors', []),
-                getting_cold=heater_cfg.get('getting_cold', 18),
-                daytime_savings=heater_cfg.get('daytime_savings', []),
-                temperatures=heater_cfg.get('temperatures', []),
-                json_path=self.json_path,
-            )
-            self.heaters.append(climate)
-
-
-        for switch_cfg in self.args.get('heater_switches', []):
-            namespace = switch_cfg.get('namespace', self.HASS_namespace)
-            heater_entity: str | None = switch_cfg.get('switch')
-            if not heater_entity:
-                self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
-                return
-
-            persisted_heater = self._persistence.heater.get(heater_entity)
-            if not persisted_heater:
-                defaults = {
-                    'max_continuous_hours': 2,
-                    'on_for_minimum': 6,
-                    'pricedrop': 1,
-                    'pricedifference_increase': 1.07,
-                    'vacation': self.away_state,
-                    'automate': self.automate,
-                    'recipient': self.recipients,
-                    'ConsumptionData': {}
-                }
-                for k, v in defaults.items():
-                    if k not in switch_cfg:
-                        switch_cfg[k] = v
-
-                self._persistence.heater[heater_entity] = HeaterBlock(**switch_cfg)
-
-            switch_cfg = _merge_heater_cfg(switch_cfg, persisted_heater)
-            validConsumptionSensor = _add_heater_missing(switch_cfg, namespace, is_switch=True)
-
-            switch = On_off_switch(
-                api=self.ADapi,
-                heater=switch_cfg['switch'],
-                consumptionSensor=switch_cfg['consumptionSensor'],
-                validConsumptionSensor=validConsumptionSensor,
-                kWhconsumptionSensor=switch_cfg['kWhconsumptionSensor'],
-                max_continuous_hours=switch_cfg.get('max_continuous_hours', 8),
-                on_for_minimum=switch_cfg.get('on_for_minimum', 6),
-                pricedrop=switch_cfg.get('pricedrop', 0.3),
-                pricedifference_increase=switch_cfg.get('pricedifference_increase', 1.07),
-                namespace=namespace,
-                away=switch_cfg.get('vacation', self.away_state),
-                automate=switch_cfg.get('automate', self.automate),
-                recipient=switch_cfg.get('recipient',self.recipients),
-                json_path=self.json_path,
-            )
-            self.heaters.append(switch)
-        
-        self._refresh_heaters()
-        self.ADapi.run_in(self._create_runners, 60)
-        self.ADapi.run_in(self._get_new_prices, 60)
+                self.heaters.append(switch)
+            
+            self._refresh_heaters()
+            self.ADapi.run_in(self._create_runners, 60)
+            self.ADapi.run_in(self._get_new_prices, 60)
+        except Exception as e:
+            self.ADapi.log(f"Error on initialize: {e}") ###
 
 
     def _setup_api_and_translations(self):
@@ -587,8 +567,8 @@ class ElectricalUsage(ad.ADBase):
         self.heatersRedusedConsumption:list = [] # Heaters currently turned off/down due to overconsumption
         self.lastTimeHeaterWasReduced = datetime.datetime.now() - datetime.timedelta(minutes = 5)
 
-        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options', [])
-        self.pause_charging: bool = 'pause_charging' in self.args.get('options', [])
+        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
+        self.pause_charging: bool = 'pause_charging' in self.args.get('options')
 
         self.buffer = self.args.get('buffer', 0.4) + 0.02
         self.max_kwh_goal = self.args.get('max_kwh_goal', 15)
@@ -692,8 +672,6 @@ class ElectricalUsage(ad.ADBase):
 
     def _load_persistent_data(self):
         self._persistence: PersistenceData = load_persistence(self.json_path)
-        self.ADapi.log(f"AFTER  load: {self._persistence.chargingQueue!r}")
-        #CHARGE_SCHEDULER.chargingQueue = [item.to_dict() for item in self._persistence.chargingQueue]
 
         if self._persistence.max_usage.max_kwh_usage_pr_hour == 0:
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
@@ -781,8 +759,7 @@ class ElectricalUsage(ad.ADBase):
 
         for heater in self.heaters:
             if (
-                len(heater.time_to_save) == 0 # if not run before (Empty list)
-                or ELECTRICITYPRICE.tomorrow_valid # if tomorrow price is found
+                ELECTRICITYPRICE.tomorrow_valid # if tomorrow price is found
                 or self.ADapi.now_is_between('00:00:00', '12:00:00') # Before tomorrow price is expected
             ):
                 self.ADapi.run_in(heater.heater_getNewPrices, delay = 20, random_start = 1, random_end = 2)
@@ -815,7 +792,7 @@ class ElectricalUsage(ad.ADBase):
 
     def _run_find_consumption_after_turned_back_on(self, kwargs):
         for heater in self.heaters:
-            for item in heater.time_to_save:
+            for item in heater.heater_data.time_to_save:
                 self.ADapi.run_at(self.findConsumptionAfterTurnedBackOn, item['end'], heater = heater, time_to_save_item = item)
 
     def checkElectricalUsage(self, kwargs) -> None:
@@ -835,9 +812,9 @@ class ElectricalUsage(ad.ADBase):
                 current_consumption = 2000.0
 
             for heater in self.heaters:
-                if heater.validConsumptionSensor:
+                if heater.heater_data.validConsumptionSensor:
                     try:
-                        current_consumption += float(self.ADapi.get_state(heater.consumptionSensor,
+                        current_consumption += float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
                             namespace = heater.namespace))
                     except Exception:
                         pass
@@ -975,7 +952,7 @@ class ElectricalUsage(ad.ADBase):
                             NOTIFY_APP.send_notification(
                                 message = f"Was not able to finish with {round(c.car_data.kWh_remain_to_charge,2)} kWh remaining before prices increased.",
                                 message_title = f"🚘Charging {c.carName}",
-                                message_recipient = RECIPIENTS,
+                                message_recipient = self.recipients,
                                 also_if_not_home = False,
                                 data = data
                             )
@@ -1007,14 +984,14 @@ class ElectricalUsage(ad.ADBase):
             ):
                 for heater in self.heaters:
                     try:
-                        heater.prev_consumption = float(self.ADapi.get_state(heater.consumptionSensor,
+                        heater.heater_data.prev_consumption = float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
                             namespace = heater.namespace)
                         )
                     except ValueError:
                         pass
                     else:
                         if (
-                            heater.prev_consumption > 100
+                            heater.heater_data.prev_consumption > 100
                             and heater not in self.heatersRedusedConsumption
                         ):
                             self.heatersRedusedConsumption.append(heater)
@@ -1024,9 +1001,9 @@ class ElectricalUsage(ad.ADBase):
                                     attribute = 'hvac_action',
                                     namespace = heater.namespace
                                 ) == 'heating'
-                                or heater.validConsumptionSensor
+                                or heater.heater_data.validConsumptionSensor
                             ):
-                                available_Wh += heater.prev_consumption
+                                available_Wh += heater.heater_data.prev_consumption
                     if available_Wh < -100:
                         return
 
@@ -1060,7 +1037,7 @@ class ElectricalUsage(ad.ADBase):
                             message = f"Turn down consumption. Is's about to go over max usage with {round(-available_Wh,0)} "
                             "remaining to reduce",
                             message_title = "⚡High electricity usage",
-                            message_recipient = RECIPIENTS,
+                            message_recipient = self.recipients,
                             also_if_not_home = False,
                             data = data
                         )
@@ -1094,9 +1071,9 @@ class ElectricalUsage(ad.ADBase):
             if self.heatersRedusedConsumption:
                 to_remove = set()
                 for heater in reversed(self.heatersRedusedConsumption):
-                    if heater.prev_consumption < overproduction_Wh:
+                    if heater.heater_data.prev_consumption < overproduction_Wh:
                         heater.setPreviousState()
-                        overproduction_Wh -= heater.prev_consumption
+                        overproduction_Wh -= heater.heater_data.prev_consumption
                         to_remove.add(heater)
                 self.heatersRedusedConsumption = [
                     qid for qid in self.heatersRedusedConsumption
@@ -1177,12 +1154,12 @@ class ElectricalUsage(ad.ADBase):
             # Set spend in heaters
             for heater in self.heaters:
                 if (
-                    float(self.ADapi.get_state(heater.consumptionSensor, namespace = heater.namespace)) < 100
+                    float(self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace = heater.namespace)) < 100
                     and not heater.increase_now
-                    and heater.normal_power < overproduction_Wh
+                    and heater.heater_data.normal_power < overproduction_Wh
                 ):
                     heater.setIncreaseState()
-                    overproduction_Wh -= heater.normal_power
+                    overproduction_Wh -= heater.heater_data.normal_power
         elif (
             (accumulated_kWh > production_kWh
             or projected_kWh_usage > 0)
@@ -1200,7 +1177,7 @@ class ElectricalUsage(ad.ADBase):
                     return
                 if heater.increase_now:
                     heater.setPreviousState()
-                    overproduction_Wh += heater.normal_power
+                    overproduction_Wh += heater.heater_data.normal_power
 
             # Reduce any chargers/batteries
             for queue_id in reversed(self._persistence.solarChargingList):
@@ -1467,13 +1444,13 @@ class ElectricalUsage(ad.ADBase):
         reduce_Wh: float = 0
         to_remove = set()
         for heater in reversed(self.heatersRedusedConsumption):
-            if heater.prev_consumption + 600 < available_Wh:
+            if heater.heater_data.prev_consumption + 600 < available_Wh:
                 heater.setPreviousState()
-                available_Wh -= heater.prev_consumption
+                available_Wh -= heater.heater_data.prev_consumption
                 to_remove.add(heater)
                 self.lastTimeHeaterWasReduced = datetime.datetime.now()
-            elif heater.prev_consumption > available_Wh:
-                reduce_Wh -= heater.prev_consumption
+            elif heater.heater_data.prev_consumption > available_Wh:
+                reduce_Wh -= heater.heater_data.prev_consumption
         self.heatersRedusedConsumption = [
             qid for qid in self.heatersRedusedConsumption
             if qid not in to_remove
@@ -1502,7 +1479,7 @@ class ElectricalUsage(ad.ADBase):
         hoursOffInt = 0
 
         if not heater.away_state:
-            for daytime in heater.daytime_savings:
+            for daytime in heater.heater_data.daytime_savings:
                 if 'start' in daytime and 'stop' in daytime:
                     if not 'presence' in daytime:
                         current_time = self.ADapi.datetime()
@@ -1566,7 +1543,7 @@ class ElectricalUsage(ad.ADBase):
             if matching_heater is None:
                 continue
 
-            for item in matching_heater.time_to_save:
+            for item in matching_heater.heater_data.time_to_save:
                 end_time: Optional[datetime.datetime] = item.get("end")
                 if end_time and end_time.date() == now.date():
                     save_end_hour = end_time
@@ -1602,7 +1579,7 @@ class ElectricalUsage(ad.ADBase):
                         continue
                     expected_kwh = float(nested[str(closest_temp)].Consumption or 0) * 1000
 
-                heater_watt = heater_block.power or 0.0
+                heater_watt = heater_block.normal_power or 0.0
                 pct = heater_watt / total_power
                 heater_watt -= reduce_avg_heater_watt * pct
                 heater_consumption = heater_watt * duration_hours
@@ -1646,10 +1623,10 @@ class ElectricalUsage(ad.ADBase):
 
         heater_consumption: float = 0.0
         for heater in self.heaters:
-            if heater.validConsumptionSensor and heater.registerConsumption_handler is None:
+            if heater.heater_data.validConsumptionSensor and heater.registerConsumption_handler is None:
                 try:
                     heater_consumption += float(
-                        self.ADapi.get_state(heater.consumptionSensor, namespace=heater.namespace)
+                        self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace=heater.namespace)
                     )
                 except ValueError:
                     pass
@@ -1835,8 +1812,8 @@ class ElectricalUsage(ad.ADBase):
         active_names = {h.heater for h in self.heaters}
 
         for heater_name, heater_block in list(persistence.heater.items()):
-            if heater_block.power:
-                total_power += heater_block.power
+            if heater_block.normal_power:
+                total_power += heater_block.normal_power
 
             if heater_name not in active_names:
                 heaters_to_remove.append(heater_name)
@@ -4155,88 +4132,48 @@ class Heater:
     """
     def __init__(self,
         api,
-        heater,
-        consumptionSensor,
-        validConsumptionSensor:bool,
-        kWhconsumptionSensor,
-        max_continuous_hours:int,
-        on_for_minimum:int,
-        pricedrop:float,
-        pricedifference_increase:float,
         namespace,
-        away,
-        automate,
-        recipient,
-        json_path
+        heater,
+        heater_data
     ):
         self.ADapi = api
         self.namespace = namespace
-        self.json_path = json_path
+        self.heater = heater
+        self.heater_data = heater_data
 
-        self.heater = heater # on_off_switch boiler or heater switch
-
-            # Vacation setup
-        if away is not None and self.ADapi.entity_exists(away, namespace = self.namespace):
-            self.away_state = self.ADapi.get_state(away, namespace = self.namespace)  == 'on'
-            self.ADapi.listen_state(self._awayStateListen_Heater, away,
+        # Vacation setup
+        if self.heater_data.vacation is not None and self.ADapi.entity_exists(self.heater_data.vacation, namespace = self.namespace):
+            self.away_state = self.ADapi.get_state(self.heater_data.vacation, namespace = self.namespace)  == 'on'
+            self.ADapi.listen_state(self._awayStateListen_Heater, self.heater_data.vacation,
                 namespace = self.namespace
             )
         else:
             self.away_state = False
 
-            # Automate setup
-        if isinstance(automate, str):
-            self.automate = self.ADapi.get_state(automate, namespace = self.namespace)  == 'on'
-            self.ADapi.listen_state(self.automateStateListen, automate,
+        # Automate setup
+        if isinstance(self.heater_data.automate, str):
+            self.automate = self.ADapi.get_state(self.heater_data.automate, namespace = self.namespace)  == 'on'
+            self.ADapi.listen_state(self.automateStateListen, self.heater_data.automate,
                 namespace = self.namespace
             )
-        else:
-            self.automate = True
+        elif isinstance(self.heater_data.automate, bool):
+            self.automate = self.heater_data.automate
 
-            # Notification setup
-        if recipient:
-            self.recipients = recipient
-        else:
-            self.recipients = RECIPIENTS
-
-            # Consumption sensors and setups
-        self.consumptionSensor = consumptionSensor
-        self.validConsumptionSensor:bool = validConsumptionSensor
-        self.kWhconsumptionSensor = kWhconsumptionSensor
-        self.prev_consumption:int = 0
-        self.max_continuous_hours:int = max_continuous_hours
+        # Consumption data
         self.reset_continuous_hours:bool = False
-        self.on_for_minimum:int = on_for_minimum
-        self.pricedrop:float = pricedrop
-        self.pricedifference_increase:float = pricedifference_increase
-
-            # Consumption data
-        self.time_to_save:list = []
         self.time_to_spend:list = []
         self.kWh_consumption_when_turned_on:float = 0.0
         self.isOverconsumption:bool = False
         self.increase_now:bool = False
-        self.normal_power:int = 0
+
+        # Handlers
         self.registerConsumption_handler = None
         self.checkConsumption_handler = None
 
+        # Helpers used on vacation
         self.HeatAt = None
         self.EndAt = None
         self.price:float = 0
-
-        try:
-            self.normal_power = float(self.ADapi.get_state(self.consumptionSensor, namespace = self.namespace))
-        except Exception:
-            self.normal_power = 0
-        """
-        if 'peak_hours' in ElectricityData['heater'][self.heater]:
-            for item in ElectricityData['heater'][self.heater]['peak_hours']:
-                if isinstance(item, dict): # Check if database is converted to new version.
-                    self.time_to_save = ElectricityData['heater'][self.heater]['peak_hours']
-        """
-        # Get prices to set up automation times
-
-        self.ADapi.run_in(self.heater_getNewPrices, 60)
 
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch and requests heater to set new state
@@ -4254,13 +4191,13 @@ class Heater:
         """ Updates time to save and spend based on ELECTRICITYPRICE.find_times_to_save()
             Will also find cheapest times to heat hotwater boilers and other on/off switches when on vacation.
         """  
-        self.time_to_save = ELECTRICITYPRICE.find_times_to_save(
-            pricedrop = self.pricedrop,
-            max_continuous_hours = self.max_continuous_hours,
-            on_for_minimum = self.on_for_minimum,
-            pricedifference_increase = self.pricedifference_increase,
+        self.heater_data.time_to_save = ELECTRICITYPRICE.find_times_to_save(
+            pricedrop = self.heater_data.pricedrop,
+            max_continuous_hours = self.heater_data.max_continuous_hours,
+            on_for_minimum = self.heater_data.on_for_minimum,
+            pricedifference_increase = self.heater_data.pricedifference_increase,
             reset_continuous_hours = self.reset_continuous_hours,
-            previous_save_hours = self.time_to_save
+            previous_save_hours = self.heater_data.time_to_save
         )
         if (
             self.away_state
@@ -4286,8 +4223,8 @@ class Heater:
             self.EndAt = None
         
         # TODO: Set up runs for on and off
-        if self.time_to_save:
-            for item in self.time_to_save:
+        if self.heater_data.time_to_save:
+            for item in self.heater_data.time_to_save:
                 if item['end'] > self.ADapi.datetime(aware=True):
                     self.ADapi.run_at(self.heater_setNewValues, item['end'])
                     if item['start'] > self.ADapi.datetime(aware=True):
@@ -4296,8 +4233,8 @@ class Heater:
         self.ADapi.run_in(self.heater_setNewValues, 5)
 
         """Logging purposes to check what hours heater turns off/down to check if behaving as expected"""
-        #if self.time_to_save:
-        #    self.ADapi.log(f"{self.heater} save hours:{ELECTRICITYPRICE.print_peaks(self.time_to_save)}")
+        if self.heater_data.time_to_save:
+            self.ADapi.log(f"{self.heater} save hours:{ELECTRICITYPRICE.print_peaks(self.heater_data.time_to_save)}") ### TODO: Reset back to commented out..
 
     def heater_setNewValues(self, kwargs) -> None:
         """ Turns heater on or off based on this hours electricity price.
@@ -4339,7 +4276,7 @@ class Heater:
                 current_time = self.ADapi.datetime(aware=True)
                 if (
                     (start := self.HeatAt) <= current_time < (end := self.EndAt)
-                    or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.pricedrop/2)
+                    or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
                 ):
                     self.ADapi.call_service('switch/turn_on',
                         entity_id = self.heater,
@@ -4360,11 +4297,11 @@ class Heater:
             current_time = self.ADapi.datetime(aware=True)
             if (
                 (start := self.HeatAt) <= current_time < (end := self.EndAt)
-                or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.pricedrop/2)
+                or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
             ):
                 return
-            if float(self.ADapi.get_state(self.consumptionSensor, namespace = self.namespace)) > 20:
-                self.ADapi.listen_state(self.turnOffHeaterAfterConsumption, self.consumptionSensor,
+            if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
+                self.ADapi.listen_state(self.turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
                     namespace = self.namespace,
                     constrain_state=lambda x: float(x) < 20
                 )
@@ -4420,10 +4357,10 @@ class Heater:
         """
         hoursOffInt = kwargs['hoursOffInt']
         try:
-            self.kWh_consumption_when_turned_on = float(self.ADapi.get_state(self.kWhconsumptionSensor, namespace = self.namespace))
+            self.kWh_consumption_when_turned_on = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
         except ValueError:
             self.ADapi.log(
-                f"{self.kWhconsumptionSensor} unavailable in finding consumption to register after heater is turned back on",
+                f"{self.heater_data.kWhconsumptionSensor} unavailable in finding consumption to register after heater is turned back on",
                 level = 'DEBUG'
             )
         else:
@@ -4432,7 +4369,7 @@ class Heater:
                 and not self.away_state
                 and self.automate
             ):
-                self.registerConsumption_handler = self.ADapi.listen_state(self.registerConsumption, self.consumptionSensor,
+                self.registerConsumption_handler = self.ADapi.listen_state(self.registerConsumption, self.heater_data.consumptionSensor,
                     namespace = self.namespace,
                     constrain_state=lambda x: float(x) < 20,
                     hoursOffInt = hoursOffInt
@@ -4451,10 +4388,10 @@ class Heater:
             return
         wattconsumption:float = 0
         try:
-            wattconsumption = float(self.ADapi.get_state(self.consumptionSensor, namespace = self.namespace))
+            wattconsumption = float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace))
         except ValueError:
             self.ADapi.log(
-                f"{self.consumptionSensor} unavailable in finding consumption.",
+                f"{self.heater_data.consumptionSensor} unavailable in finding consumption.",
                 level = 'DEBUG'
             )
         if wattconsumption < 20:
@@ -4473,7 +4410,7 @@ class Heater:
 
         consumption:float = 0
         try:
-            consumption = float(self.ADapi.get_state(self.kWhconsumptionSensor, namespace = self.namespace)) - self.kWh_consumption_when_turned_on
+            consumption = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace)) - self.kWh_consumption_when_turned_on
         except (TypeError, AttributeError) as ve:
             self.ADapi.log(
                 f"Could not get consumption for {self.heater} to register data. {consumption} Error: {ve}",
@@ -4556,14 +4493,14 @@ class Heater:
         """ Returns number of windows opened.
         """
         opened = 0
-        for window in self.windowsensors:
+        for window in self.heater_data.windowsensors:
             if self.ADapi.get_state(window, namespace = self.namespace) == 'on':
                 opened += 1
         return opened
 
     def _is_time_within_any_save_range(self):
         current_time = self.ADapi.datetime(aware=True)
-        for range_item in self.time_to_save:
+        for range_item in self.heater_data.time_to_save:
             if (start := range_item['start']) <= current_time < (end := range_item['end']):
                 return True
         return False
@@ -4602,94 +4539,44 @@ class Climate(Heater):
     """
     def __init__(self,
         api,
+        namespace,
         heater,
-        consumptionSensor,
-        validConsumptionSensor:bool,
-        kWhconsumptionSensor,
-        max_continuous_hours:int,
-        on_for_minimum:int,
-        pricedrop:float,
-        pricedifference_increase:float,
-        namespace:str,
-        away,
-        automate,
-        recipient,
-        indoor_sensor_temp,
-        window_temp,
-        window_offset:float,
-        target_indoor_input,
-        target_indoor_temp:float,
-        save_temp_offset:float,
-        save_temp:float,
-        away_temp:float,
-        rain_level:float,
-        anemometer_speed:int,
-        low_price_max_continuous_hours:int,
-        priceincrease:float,
-        windowsensors:list,
-        getting_cold:int,
-        daytime_savings:list,
-        temperatures:list,
-        json_path
+        heater_data
     ):
-            # Sensors
-        self.indoor_sensor_temp = indoor_sensor_temp
-        if target_indoor_input is not None:
-            api.listen_state(self.updateTarget, target_indoor_input,
+
+        # Sensors
+        if heater_data.target_indoor_input is not None:
+            api.listen_state(self.updateTarget, heater_data.target_indoor_input,
                 namespace = namespace
             )
-            self.target_indoor_temp = float(api.get_state(target_indoor_input, namespace = namespace))
+            self.target_indoor_temp = float(api.get_state(heater_data.target_indoor_input, namespace = namespace))
         else:
-            self.target_indoor_temp:float = target_indoor_temp
-        self.save_temp_offset = save_temp_offset
-        self.save_temp = save_temp
-        self.away_temp = away_temp
-        self.window_temp = window_temp
-        self.window_offset:float = window_offset
-        self.rain_level:float = rain_level
-        self.anemometer_speed:int = anemometer_speed
-        self.low_price_max_continuous_hours:int = low_price_max_continuous_hours
-        self.priceincrease:float = priceincrease
-        self.windowsensors:list = windowsensors
-        self.daytime_savings:list = daytime_savings
-        self.temperatures:list = temperatures
+            self.target_indoor_temp:float = heater_data.target_indoor_temp
 
         super().__init__(
             api = api,
-            heater = heater,
-            consumptionSensor = consumptionSensor,
-            validConsumptionSensor = validConsumptionSensor,
-            kWhconsumptionSensor = kWhconsumptionSensor,
-            max_continuous_hours = max_continuous_hours,
-            on_for_minimum = on_for_minimum,
-            pricedrop = pricedrop,
-            pricedifference_increase = pricedifference_increase,
             namespace = namespace,
-            away = away,
-            automate = automate,
-            recipient = recipient,
-            json_path = json_path
+            heater = heater,
+            heater_data = heater_data
         )
         self.reset_continuous_hours = True
-        self.getting_cold:float = getting_cold
 
         self.windows_is_open:bool = False
-        for window in self.windowsensors:
+        self.notify_on_window_open:bool = True
+        self.notify_on_window_closed:bool = False
+        for window in self.heater_data.windowsensors:
             if self.ADapi.get_state(window, namespace = self.namespace) == 'on':
                 self.windows_is_open = True
 
-        for windows in self.windowsensors:
-            self.ADapi.listen_state(self.windowOpened, windows,
+            self.ADapi.listen_state(self.windowOpened, window,
                 new = 'on',
                 duration = 120,
                 namespace = self.namespace
             )
-            self.ADapi.listen_state(self.windowClosed, windows,
+            self.ADapi.listen_state(self.windowClosed, window,
                 new = 'off',
                 namespace = self.namespace
             )
-        self.notify_on_window_open:bool = True
-        self.notify_on_window_closed:bool = False
 
         try:
             self.min_temp = self.ADapi.get_state(self.heater,
@@ -4714,7 +4601,7 @@ class Climate(Heater):
         """
         super().heater_getNewPrices(0)
         self.time_to_spend = ELECTRICITYPRICE.find_times_to_spend(
-            priceincrease = self.priceincrease
+            priceincrease = self.heater_data.priceincrease
         )
 
         """Logging purposes to check what hours heating will be turned up"""
@@ -4743,7 +4630,7 @@ class Climate(Heater):
         """ Helper function to find correct dictionary element in temperatures
         """
         target_num = 0
-        for target_num, target_temp in enumerate(self.temperatures):
+        for target_num, target_temp in enumerate(self.heater_data.temperatures):
             if target_temp['out'] >= OUT_TEMP:
                 if target_num != 0:
                     target_num -= 1
@@ -4775,9 +4662,9 @@ class Climate(Heater):
         self.isOverconsumption = True
         if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'heat':
             target_num = self.find_target_temperatures()
-            target_temp = self.temperatures[target_num]
-            if self.save_temp is not None:
-                save_temp = self.save_temp + target_temp['offset']
+            target_temp = self.heater_data.temperatures[target_num]
+            if self.heater_data.save_temp is not None:
+                save_temp = self.heater_data.save_temp + target_temp['offset']
             elif 'save' in target_temp:
                 save_temp = target_temp['save']
             else:
@@ -4807,7 +4694,7 @@ class Climate(Heater):
             return
 
         target_num = self.find_target_temperatures()
-        target_temp = self.temperatures[target_num]
+        target_temp = self.heater_data.temperatures[target_num]
 
         try:
             heater_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='temperature'))
@@ -4825,21 +4712,21 @@ class Climate(Heater):
             heater_temp = self.target_indoor_temp
 
         in_temp:float = -50
-        if self.indoor_sensor_temp is not None:
+        if self.heater_data.indoor_sensor_temp is not None:
             try:
-                in_temp = float(self.ADapi.get_state(self.indoor_sensor_temp, namespace = self.namespace))
+                in_temp = float(self.ADapi.get_state(self.heater_data.indoor_sensor_temp, namespace = self.namespace))
             except (TypeError, AttributeError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
                 self.ADapi.log(
-                    f"Not able to get new inside temperature from {self.indoor_sensor_temp}. Error: {e}",
+                    f"Not able to get new inside temperature from {self.heater_data.indoor_sensor_temp}. Error: {e}",
                     level = 'DEBUG'
                 )
         if in_temp == -50:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='current_temperature'))
                 self.ADapi.log(
-                    f"{self.heater} Not able to get new inside temperature from {self.indoor_sensor_temp}. "
+                    f"{self.heater} Not able to get new inside temperature from {self.heater_data.indoor_sensor_temp}. "
                     f"Getting in temp from heater. It is: {in_temp}",
                     level = 'DEBUG'
                 )
@@ -4856,73 +4743,73 @@ class Climate(Heater):
         else:
             new_temperature = self.target_indoor_temp
 
-        if self.away_temp is not None:
-            away_temp = self.away_temp + target_temp['offset']
+        if self.heater_data.vacation_temp is not None:
+            vacation_temp = self.heater_data.vacation_temp + target_temp['offset']
         elif 'away' in target_temp:
-            away_temp = target_temp['away']
+            vacation_temp = target_temp['away']
         else:
-            away_temp = 5
+            vacation_temp = 5
 
         # Adjust temperature based on weather
-        if RAIN_AMOUNT >= self.rain_level:
+        if RAIN_AMOUNT >= self.heater_data.rain_level:
             new_temperature += 1
-        elif WIND_AMOUNT >= self.anemometer_speed:
+        elif WIND_AMOUNT >= self.heater_data.anemometer_speed:
             new_temperature += 1
         
         adjust = 0
-        if self.window_temp is not None:
+        if self.heater_data.window_temp is not None:
             try:
-                window_temp = float(self.ADapi.get_state(self.window_temp, namespace = self.namespace))
+                window_temp = float(self.ADapi.get_state(self.heater_data.window_temp, namespace = self.namespace))
             except (TypeError, AttributeError):
-                window_temp = self.target_indoor_temp + self.window_offset
-                self.ADapi.log(f"{self.window_temp} has no temperature. Probably offline", level = 'DEBUG')
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset
+                self.ADapi.log(f"{self.heater_data.window_temp} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
-                window_temp = self.target_indoor_temp + self.window_offset
-                self.ADapi.log(f"Not able to get temperature from {self.window_temp}. {e}", level = 'DEBUG')
-            if window_temp > self.target_indoor_temp + self.window_offset:
-                adjust = math.floor(float(window_temp - (self.target_indoor_temp + self.window_offset)))
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset
+                self.ADapi.log(f"Not able to get temperature from {self.heater_data.window_temp}. {e}", level = 'DEBUG')
+            if window_temp > self.target_indoor_temp + self.heater_data.window_offset:
+                adjust = math.floor(float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset)))
 
         if in_temp > self.target_indoor_temp:
             adjust += math.floor(float(in_temp - self.target_indoor_temp))
         
         new_temperature -= adjust
 
-        if new_temperature < away_temp:
-            new_temperature = away_temp
+        if new_temperature < vacation_temp:
+            new_temperature = vacation_temp
 
         # Windows
         if (
             not self.windows_is_open
             and self.notify_on_window_closed
             and in_temp >= self.target_indoor_temp + 10
-            and OUT_TEMP > self.getting_cold
+            and OUT_TEMP > self.heater_data.getting_cold
         ):
             NOTIFY_APP.send_notification(
                 message = f"No Window near {self.heater} is open and it is getting hot inside! {in_temp}°",
                 message_title = f"Window closed",
-                message_recipient = RECIPIENTS,
+                message_recipient = self.heater_data.recipients,
                 also_if_not_home = False
             )
             self.notify_on_window_closed = False
         
         if self.windows_is_open:
-            new_temperature = away_temp
+            new_temperature = vacation_temp
             if (
                 self.notify_on_window_open
-                and OUT_TEMP < self.getting_cold
-                and in_temp < self.getting_cold
+                and OUT_TEMP < self.heater_data.getting_cold
+                and in_temp < self.heater_data.getting_cold
             ):
                 NOTIFY_APP.send_notification(
                     message = f"Window near {self.heater} is open and inside temperature is {in_temp}°",
                     message_title = "Window open",
-                    message_recipient = RECIPIENTS,
+                    message_recipient = self.heater_data.recipients,
                     also_if_not_home = False
                 )
                 self.notify_on_window_open = False
 
         # Holliday temperature
         elif self.away_state:
-            new_temperature = away_temp
+            new_temperature = vacation_temp
 
         # Peak and savings temperature
         if (
@@ -4934,7 +4821,7 @@ class Climate(Heater):
         # Daytime Savings
         else:
             doDaytimeSaving = False
-            for daytime in self.daytime_savings:
+            for daytime in self.heater_data.daytime_savings:
                 if (
                     'start' in daytime
                     and 'stop' in daytime
@@ -4980,11 +4867,11 @@ class Climate(Heater):
     def getSaveTemp(self, new_temperature:float, target_temp:dict) -> float:
         """ Returns save temperature
         """
-        if self.save_temp_offset is not None:
-            new_temperature += self.save_temp_offset
-        elif self.save_temp is not None:
-            if new_temperature > self.save_temp + target_temp['offset']:
-                new_temperature = self.save_temp + target_temp['offset']
+        if self.heater_data.save_temp_offset is not None:
+            new_temperature += self.heater_data.save_temp_offset
+        elif self.heater_data.save_temp is not None:
+            if new_temperature > self.heater_data.save_temp + target_temp['offset']:
+                new_temperature = self.heater_data.save_temp + target_temp['offset']
         elif 'save' in target_temp:
             if new_temperature > target_temp['save']:
                 new_temperature = target_temp['save']
@@ -5007,36 +4894,15 @@ class On_off_switch(Heater):
     def __init__(self,
         api,
         heater,
-        consumptionSensor,
-        validConsumptionSensor:bool,
-        kWhconsumptionSensor,
-        max_continuous_hours:int,
-        on_for_minimum:int,
-        pricedrop:float,
-        pricedifference_increase:float,
         namespace,
-        away,
-        automate,
-        recipient,
-        json_path
+        heater_data
     ):
-        self.daytime_savings:list = []
 
         super().__init__(
             api = api,
-            heater = heater,
-            consumptionSensor = consumptionSensor,
-            validConsumptionSensor = validConsumptionSensor,
-            kWhconsumptionSensor = kWhconsumptionSensor,
-            max_continuous_hours = max_continuous_hours,
-            on_for_minimum = on_for_minimum,
-            pricedrop = pricedrop,
-            pricedifference_increase = pricedifference_increase,
             namespace = namespace,
-            away = away,
-            automate = automate,
-            recipient = recipient,
-            json_path = json_path
+            heater = heater,
+            heater_data=heater_data,
         )
 
 class Notify_Mobiles:
