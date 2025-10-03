@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, RootModel
+from dataclasses import dataclass, field
 
 
 class MaxUsage(BaseModel):
@@ -138,6 +139,16 @@ class ChargingQueueItem(BaseModel):
             exclude_none=True
         )
 
+@dataclass(order=True)
+class WattSlot:
+    start: datetime
+    end: datetime
+    available_Wh: float
+
+    @property
+    def duration_hours(self) -> float:
+        return (self.end - self.start).total_seconds() / 3600.0
+
 
 class PersistenceData(BaseModel):
     max_usage: MaxUsage = Field(alias="MaxUsage", default_factory=MaxUsage)
@@ -148,10 +159,14 @@ class PersistenceData(BaseModel):
     chargingQueue: List[ChargingQueueItem] = Field(alias="chargingQueue", default_factory=list)
     queueChargingList: List[Any] = Field(alias="queueChargingList", default_factory=list)
     solarChargingList: List[Any] = Field(alias="solarChargingList", default_factory=list)
+    available_watt: List[WattSlot] = Field(alias="available_watt", default_factory=list)
 
     model_config = {
         "arbitrary_types_allowed": True,
         "populate_by_name": False,
+        "json_encoders": {   # <‑‑ tell pydantic how to serialise a WattSlot
+            WattSlot: lambda ws: ws.__dict__,
+        },
     }
 
     def has_initialized_consuming_objects(self) -> bool:
