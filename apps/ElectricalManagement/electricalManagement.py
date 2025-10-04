@@ -388,30 +388,47 @@ class ElectricalUsage(ad.ADBase):
                             heater_cfg[key] = value
                 return heater_cfg
 
-            def _add_heater_missing(heater_cfg: dict, namespace: str, is_switch: bool):
-                def _ensure_sensor(suffixes: list[str]) -> str:
-                    for suffix in suffixes:
-                        candidate = f"sensor.{heater_cfg['heater']}{suffix}"
-                        if self.ADapi.entity_exists(candidate, namespace=namespace):
-                            self.ADapi.log(f"Added {candidate} to {heater_cfg['heater']}") ###
-                            return candidate, True
-                    return None, False
+            def _ensure_sensor(
+                heater_name: str, namespace: str, suffixes: List[str]
+            ) -> Optional[str]:
+                """
+                Return the first existing sensor id that matches one of the supplied suffixes.
+                If no sensor exists, return ``None``.
+                """
+                for suffix in suffixes:
+                    candidate = f"sensor.{heater_name}{suffix}"
+                    if self.ADapi.entity_exists(candidate, namespace=namespace):
+                        return candidate
+                # nothing found
+                return None
 
-                validConsumptionSensor = True
-                if not heater_cfg.get('consumptionSensor'):
-                    sensor_id, validConsumptionSensor = _ensure_sensor(
-                        suffixes=['_electric_consumption_w', '_electric_consumed_w'],
+            def _add_heater_missing(
+                heater_cfg: dict, heater_name: str, namespace: str, is_switch: bool
+            ) -> Tuple[bool, float]:
+
+                consumption_sensor = heater_cfg.get("consumptionSensor")
+                if not consumption_sensor:
+                    sensor_id = _ensure_sensor(
+                        heater_name, namespace, ["_electric_consumption_w", "_electric_consumed_w"]
                     )
-                    if not validConsumptionSensor:
-                        normal_power = heater_cfg.get('power', 300 if not is_switch else 1000)
-                    heater_cfg['consumptionSensor'] = sensor_id
-                if not heater_cfg.get('kWhconsumptionSensor'):
-                    sensor_id, validNotUsed = _ensure_sensor(
-                        suffixes=['_electric_consumption_kwh', '_electric_consumed_kwh'],
+                    if sensor_id is None:
+                        normal_power = heater_cfg.get("power", 300 if not is_switch else 1000)
+                    else:
+                        normal_power = 0.0
+                    heater_cfg["consumptionSensor"] = sensor_id
+                    valid_consumption_sensor = sensor_id is not None
+                else:
+                    valid_consumption_sensor = True
+                    normal_power = 0.0
+
+                kwh_sensor = heater_cfg.get("kWhconsumptionSensor")
+                if not kwh_sensor:
+                    sensor_id = _ensure_sensor(
+                        heater_name, namespace, ["_electric_consumption_kwh", "_electric_consumed_kwh"]
                     )
-                    self.ADapi.log(f"the sensor id for kWh : {sensor_id}") ###
-                    heater_cfg['kWhconsumptionSensor'] = sensor_id
-                return validConsumptionSensor
+                    heater_cfg["kWhconsumptionSensor"] = sensor_id
+
+                return valid_consumption_sensor, normal_power
 
 
             for heater_cfg in self.args.get('climate', []):
@@ -421,11 +438,12 @@ class ElectricalUsage(ad.ADBase):
                     self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
                                 level='WARNING')
                     return
+                heater_name = heater_entity.replace('climate.', '')
 
                 persisted_heater = self._persistence.heater.get(heater_entity)
                 if not persisted_heater:
                     normal_power = 0.0
-                    validConsumptionSensor = _add_heater_missing(heater_cfg, namespace, is_switch=False)
+                    validConsumptionSensor, normal_power = _add_heater_missing(heater_cfg, heater_name, namespace, is_switch=False)
                     defaults: dict[str, Any] = {
                         'consumptionSensor':              heater_cfg['consumptionSensor'],
                         'validConsumptionSensor':         validConsumptionSensor,
@@ -482,13 +500,15 @@ class ElectricalUsage(ad.ADBase):
                 if not heater_entity:
                     self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
                     return
+                heater_name = heater_entity.replace('switch.', '')
 
                 persisted_heater = self._persistence.heater.get(heater_entity)
                 if not persisted_heater:
-                    validConsumptionSensor = _add_heater_missing(switch_cfg, namespace, is_switch=True)
+                    validConsumptionSensor, normal_power = _add_heater_missing(switch_cfg, heater_name, namespace, is_switch=True)
                     defaults: dict[str, Any] = {
                         'consumptionSensor':              heater_cfg['consumptionSensor'],
                         'validConsumptionSensor':         validConsumptionSensor,
+                        'normal_power':                   normal_power,
                         'kWhconsumptionSensor':           heater_cfg['kWhconsumptionSensor'],
                         'max_continuous_hours':           heater_cfg.get('max_continuous_hours',2),
                         'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
