@@ -101,6 +101,10 @@ class ElectricalUsage(ad.ADBase):
             self.automate = self.args.get('automate', True) # Default Automate switch for all heaters
             self._setup_weather_sensors()
 
+            # --------------------------------------------------------------------------- #
+            # Setup cars and chargers
+            # --------------------------------------------------------------------------- #
+
             CAR_SPECS: List[Tuple[str, str, str]] = [
                 ("charger_sensor",           "binary_sensor", "_charger"),
                 ("charge_limit",             "number",        "_charge_limit"),
@@ -1544,7 +1548,7 @@ class ElectricalUsage(ad.ADBase):
                 continue
 
             for item in matching_heater.heater_data.time_to_save:
-                end_time: Optional[datetime.datetime] = item.get("end")
+                end_time: Optional[self.ADapi.datetime(aware=True)] = item.get("end")
                 if end_time and end_time.date() == now.date():
                     save_end_hour = end_time
 
@@ -1923,7 +1927,7 @@ class Scheduler:
         self,
         kWhRemaining: float = 2,
         totalW_AllChargers: float = 3600,
-        start_time: Optional[datetime.datetime] = None,
+        start_time: Optional[self.ADapi.datetime(aware=True)] = None,
     ) -> float:
         """ Estimate the *number of hours* it will take to finish a charge. """
 
@@ -2042,7 +2046,7 @@ class Scheduler:
             est_hours = sum(c.estHourCharge for c in self.chargingQueue if c.estHourCharge)
 
         price = ELECTRICITYPRICE.get_lowest_prices(
-            checkitem=datetime.now().hour,
+            checkitem=self.ADapi.datetime(aware=True).hour,
             hours=est_hours,
             min_change=0.1
         )
@@ -2545,11 +2549,7 @@ class Charger:
             f"Setting maxChargerAmpere to 32. Needs to set value in child class of charger.",
             level = 'WARNING'
         )
-        # Update Voltphase calculations
-        self.setVoltPhase(
-            volts = self.charger_data.volts,
-            phases = self.charger_data.phases
-        )
+
         return True
 
     def getmaxChargingAmps(self) -> int:
@@ -2755,6 +2755,14 @@ class Charger:
             ):
                 self.pct_start_charge = float(self.ADapi.get_state(self.Car.car_data.battery_sensor, namespace = self.namespace))
 
+            # Update volts and phases on charging started
+            self.setVolts()
+            self.setPhases()
+            self.setVoltPhase(
+                volts = self.charger_data.volts,
+                phases = self.charger_data.phases
+            )
+
         ### TODO: Check if this is handled elsewhere:
         if self.Car.connectedCharger is None and self.Car.isConnected():
             self.ADapi.log(f"Need to find connected charger for {self.Car.carName} in ChargingStarted for {self.charger}. Add logic maybe?") ###
@@ -2812,8 +2820,8 @@ class Charger:
                     self.kWhRemaining() <= 2
                     or CHARGE_SCHEDULER.isPastChargingTime(vehicle_id = self.Car.vehicle_id)
                 ):
-                    if self.getChargingState() in ('Complete', 'Disconnected'):
-                        self.Car._handleChargeCompletion()
+                    #if self.getChargingState() in ('Complete', 'Disconnected'):
+                    self.Car._handleChargeCompletion()
                     if self.charger_data.session_energy:
                         session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace=self.namespace))
                         self._updateMaxkWhCharged(session)
@@ -3443,22 +3451,6 @@ class Tesla_charger(Charger):
             namespace = Car.namespace,
             attribute = 'id'
         )
-        if charger_data.volts == 220:
-            if Car.isConnected():
-                try:
-                    charger_data.volts = math.ceil(float(api.get_state(charger_data.charger_power,
-                    namespace = namespace,
-                    attribute = 'charger_volts'))
-                )
-                except (ValueError, TypeError):
-                    pass
-                try:
-                    charger_data.phases = int(api.get_state(charger_data.charger_power,
-                    namespace = namespace,
-                    attribute = 'charger_phases')
-                )
-                except (ValueError, TypeError):
-                    pass
 
         self.cars:list = [Car]
 
@@ -3564,10 +3556,6 @@ class Tesla_charger(Charger):
                 ))
             except (ValueError, TypeError):
                 pass
-            self.setVoltPhase(
-                volts = self.charger_data.volts,
-                phases = self.charger_data.phases
-            )
             return True
         return False
 
@@ -3713,6 +3701,27 @@ class Tesla_charger(Charger):
         if not super().checkIfChargingStopped(0):
             self.ADapi.create_task(self.stop_Tesla_charging())
 
+    def setVolts(self):
+        if Car.isConnected():
+            try:
+                charger_data.volts = math.ceil(float(api.get_state(charger_data.charger_power,
+                namespace = namespace,
+                attribute = 'charger_volts'))
+            )
+            except (ValueError, TypeError):
+                pass
+
+    def setPhases(self):
+        if Car.isConnected():
+            try:
+                charger_data.phases = int(api.get_state(charger_data.charger_power,
+                namespace = namespace,
+                attribute = 'charger_phases')
+            )
+            except (ValueError, TypeError):
+                pass
+
+
 class Tesla_car(Car):
 
     def __init__(self, api,
@@ -3831,22 +3840,6 @@ class Easee(Charger):
             attribute = 'id'
         )
 
-        if charger_data.volts == 220:
-            try:
-                charger_data.volts = math.ceil(float(api.get_state(charger_data.voltage,
-                    namespace = namespace))
-                )
-            except (ValueError, TypeError):
-                pass
-
-            try:
-                charger_data.phases = int(api.get_state(charger_data.charger_sensor,
-                namespace = namespace,
-                attribute = 'config_phaseMode')
-            )
-            except (ValueError, TypeError):
-                pass
-
         self.cars:list = cars
 
         super().__init__(
@@ -3912,8 +3905,6 @@ class Easee(Charger):
         """ Listens to changes in state of the charger.
             Easee state can be: 'awaiting_start' / 'charging' / 'completed' / 'disconnected' / from charger_status
         """
-        self.setPhases()
-
         if old == 'disconnected':
             if self.Car is None:
                 self.ADapi.log(f"{self.charger} was disconnected. Car is None") ###
@@ -4024,13 +4015,7 @@ class Easee(Charger):
             )
         except (ValueError, TypeError):
             return False
-        self.setVolts()
-        self.setPhases()
 
-        self.setVoltPhase(
-            volts = self.charger_data.volts,
-            phases = self.charger_data.phases
-        )
         return True
 
     def setVolts(self):
