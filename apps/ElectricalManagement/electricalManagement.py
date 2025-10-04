@@ -366,7 +366,7 @@ class ElectricalUsage(ad.ADBase):
                     common_keys = [
                         'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
                         'max_continuous_hours', 'on_for_minimum', 'pricedrop',
-                        'pricedifference_increase', 'automate', 'recipient'
+                        'pricedifference_increase', 'vacation', 'automate', 'recipient'
                     ]
                     for key in common_keys:
                         value = getattr(persisted_heater, key, None)
@@ -377,11 +377,10 @@ class ElectricalUsage(ad.ADBase):
             def _merge_climate_cfg(heater_cfg: dict, persisted_heater) -> dict:
                 if persisted_heater:
                     climate_keys = [
-                        'indoor_sensor_temp', 'window_temp', 'window_offset', 'target_indoor_input',
-                        'target_indoor_temp', 'save_temp_offset', 'save_temp', 'vacation_temp',
-                        'rain_level', 'anemometer_speed',
-                        'priceincrease', 'windowsensors', 'getting_cold', 'daytime_savings',
-                        'temperatures'
+                        'indoor_sensor_temp', 'target_indoor_input','target_indoor_temp', 'window_temp',
+                        'window_offset', 'save_temp_offset', 'save_temp', 'vacation_temp',
+                        'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease', 'windowsensors',
+                        'daytime_savings', 'temperatures'
                     ]
                     for key in climate_keys:
                         value = getattr(persisted_heater, key, None)
@@ -390,41 +389,26 @@ class ElectricalUsage(ad.ADBase):
                 return heater_cfg
 
             def _add_heater_missing(heater_cfg: dict, namespace: str, is_switch: bool):
-                def _ensure_sensor(key: str, suffixes: list[str], default_id: str,
-                                default_state: int | float, friendly_name: str) -> str:
+                def _ensure_sensor(suffixes: list[str]) -> str:
                     for suffix in suffixes:
                         candidate = f"sensor.{heater_cfg['heater']}{suffix}"
                         if self.ADapi.entity_exists(candidate, namespace=namespace):
                             self.ADapi.log(f"Added {candidate} to {heater_cfg['heater']}") ###
                             return candidate, True
-                    if not self.ADapi.entity_exists(default_id, namespace=namespace):
-                        self.ADapi.call_service(
-                            "state/set",
-                            entity_id=default_id,
-                            state=default_state,
-                            attributes={"friendly_name": friendly_name},
-                            namespace=namespace,
-                        )
-                    return default_id, False
+                    self.ADapi.log(f"Could not find consumption for {heater_cfg['heater']}") ###
+                    return None, False
 
                 validConsumptionSensor = True
                 if not heater_cfg.get('consumptionSensor'):
-                    power_cap = heater_cfg.get('power', 300 if not is_switch else 1000)
                     sensor_id, validConsumptionSensor = _ensure_sensor(
-                        key='consumptionSensor',
                         suffixes=['_electric_consumption_w', '_electric_consumed_w'],
-                        default_id=f"input_number.{heater_cfg['heater']}_power",
-                        default_state=power_cap,
-                        friendly_name=f"{heater_cfg['heater']} Power",
                     )
+                    if not validConsumptionSensor:
+                        normal_power = heater_cfg.get('power', 300 if not is_switch else 1000)
                     heater_cfg['consumptionSensor'] = sensor_id
                 if not heater_cfg.get('kWhconsumptionSensor'):
                     sensor_id = _ensure_sensor(
-                        key='kWhconsumptionSensor',
                         suffixes=['_electric_consumption_kwh', '_electric_consumed_kwh'],
-                        default_id='input_number.zero',
-                        default_state=0,
-                        friendly_name='Zero consumption helper',
                     )
                     heater_cfg['kWhconsumptionSensor'] = sensor_id
                 return validConsumptionSensor
@@ -440,11 +424,12 @@ class ElectricalUsage(ad.ADBase):
 
                 persisted_heater = self._persistence.heater.get(heater_entity)
                 if not persisted_heater:
+                    normal_power = 0.0
                     validConsumptionSensor = _add_heater_missing(heater_cfg, namespace, is_switch=False)
                     defaults: dict[str, Any] = {
                         'consumptionSensor':              heater_cfg['consumptionSensor'],
                         'validConsumptionSensor':         validConsumptionSensor,
-                        'normal_power':                   0.0,
+                        'normal_power':                   normal_power,
                         'kWhconsumptionSensor':           heater_cfg['kWhconsumptionSensor'],
                         'max_continuous_hours':           heater_cfg.get('max_continuous_hours',2),
                         'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
@@ -988,9 +973,12 @@ class ElectricalUsage(ad.ADBase):
             ):
                 for heater in self.heaters:
                     try:
-                        heater.heater_data.prev_consumption = float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
-                            namespace = heater.namespace)
-                        )
+                        if heater.heater_data.validConsumptionSensor:
+                            heater.heater_data.prev_consumption = float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
+                                namespace = heater.namespace)
+                            )
+                        else:
+                            heater.heater_data.prev_consumption = heater.heater_data.normal_power
                     except ValueError:
                         pass
                     else:
@@ -1157,8 +1145,15 @@ class ElectricalUsage(ad.ADBase):
                 return
             # Set spend in heaters
             for heater in self.heaters:
+                if heater.heater_data.validConsumptionSensor:
+                    try:
+                        heater.heater_data.prev_consumption = float(self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace = heater.namespace))
+                    except (ValueError, TypeError):
+                        heater.heater_data.prev_consumption = 0
+                else:
+                    heater.heater_data.prev_consumption = heater.heater_data.normal_power
                 if (
-                    float(self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace = heater.namespace)) < 100
+                    heater.heater_data.prev_consumption < 100
                     and not heater.increase_now
                     and heater.heater_data.normal_power < overproduction_Wh
                 ):
@@ -1620,7 +1615,7 @@ class ElectricalUsage(ad.ADBase):
         except ValueError as ve:
             state = self.ADapi.get_state(self.current_consumption)
             if state == "unavailable":
-                self.ADapi.log("Current consumption is unavailable – skipping idle log", level="DEBUG")
+                self.ADapi.log("Current consumption is unavailable - skipping idle log", level="DEBUG")
             else:
                 self.ADapi.log(ve, level="DEBUG")
             return
@@ -1632,12 +1627,12 @@ class ElectricalUsage(ad.ADBase):
                     heater_consumption += float(
                         self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace=heater.namespace)
                     )
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
 
         idle_consumption = current_consumption - heater_consumption
         if idle_consumption <= 0:
-            self.ADapi.log(f"idle_consumption={idle_consumption} – aborting logIdleConsumption", level="DEBUG")
+            self.ADapi.log(f"idle_consumption={idle_consumption} - aborting logIdleConsumption", level="DEBUG")
             return
 
         out_temp_str = str(_floor_even(OUT_TEMP))
@@ -4285,12 +4280,13 @@ class Heater:
                 or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
             ):
                 return
-            if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
-                self.ADapi.listen_state(self.turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
-                    namespace = self.namespace,
-                    constrain_state=lambda x: float(x) < 20
-                )
-                return
+            if self.heater_data.validConsumptionSensor:
+                if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
+                    self.ADapi.listen_state(self.turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
+                        namespace = self.namespace,
+                        constrain_state=lambda x: float(x) < 20
+                    )
+                    return
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
@@ -4341,6 +4337,8 @@ class Heater:
         """ Starts to listen for how much heater consumes after it has been in save mode.
         """
         hoursOffInt = kwargs['hoursOffInt']
+        if self.heater_data.kWhconsumptionSensor is None:
+            return
         try:
             self.kWh_consumption_when_turned_on = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
         except ValueError:
@@ -4366,6 +4364,10 @@ class Heater:
         """ Checks if there is consumption after 'findConsumptionAfterTurnedOn' starts listening.
             If there is no consumption it will cancel the timer.
         """
+        if not self.heater_data.validConsumptionSensor:
+            self._cancel_timer_handler(self.checkConsumption_handler)
+            return
+
         self.ADapi.log(f"Check if Consumption for {self.heater}. Overconsumption? {self.isOverconsumption}") ###
         if self.isOverconsumption:
             self._cancel_timer_handler(self.checkConsumption_handler)
