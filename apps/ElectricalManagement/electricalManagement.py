@@ -395,7 +395,6 @@ class ElectricalUsage(ad.ADBase):
                         if self.ADapi.entity_exists(candidate, namespace=namespace):
                             self.ADapi.log(f"Added {candidate} to {heater_cfg['heater']}") ###
                             return candidate, True
-                    self.ADapi.log(f"Could not find consumption for {heater_cfg['heater']}") ###
                     return None, False
 
                 validConsumptionSensor = True
@@ -407,9 +406,10 @@ class ElectricalUsage(ad.ADBase):
                         normal_power = heater_cfg.get('power', 300 if not is_switch else 1000)
                     heater_cfg['consumptionSensor'] = sensor_id
                 if not heater_cfg.get('kWhconsumptionSensor'):
-                    sensor_id = _ensure_sensor(
+                    sensor_id, validNotUsed = _ensure_sensor(
                         suffixes=['_electric_consumption_kwh', '_electric_consumed_kwh'],
                     )
+                    self.ADapi.log(f"the sensor id for kWh : {sensor_id}") ###
                     heater_cfg['kWhconsumptionSensor'] = sensor_id
                 return validConsumptionSensor
 
