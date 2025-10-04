@@ -994,19 +994,21 @@ class ElectricalUsage(ad.ADBase):
                 for heater in self.heaters:
                     try:
                         if heater.heater_data.validConsumptionSensor:
-                            heater.heater_data.prev_consumption = float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
+                            heater_consumption_now = float(self.ADapi.get_state(heater.heater_data.consumptionSensor,
                                 namespace = heater.namespace)
                             )
                         else:
-                            heater.heater_data.prev_consumption = heater.heater_data.normal_power
+                            heater_consumption_now = heater.heater_data.normal_power
                     except ValueError:
                         pass
                     else:
                         if (
-                            heater.heater_data.prev_consumption > 100
+                            heater_consumption_now > 100
                             and heater not in self.heatersRedusedConsumption
                         ):
                             self.heatersRedusedConsumption.append(heater)
+                            heater.last_reduced_state = self.ADapi.datetime(aware=True)
+                            heater.heater_data.prev_consumption = heater_consumption_now
                             heater.setSaveState()
                             if (
                                 self.ADapi.get_state(heater.heater,
@@ -1015,8 +1017,10 @@ class ElectricalUsage(ad.ADBase):
                                 ) == 'heating'
                                 or heater.heater_data.validConsumptionSensor
                             ):
-                                available_Wh += heater.heater_data.prev_consumption
-                    if available_Wh < -100:
+                                available_Wh += heater_consumption_now
+                            if heater_consumption_now > heater.heater_data.normal_power:
+                                heater.heater_data.normal_power = heater_consumption_now
+                    if available_Wh > -100:
                         return
 
             if (
@@ -1083,7 +1087,9 @@ class ElectricalUsage(ad.ADBase):
             if self.heatersRedusedConsumption:
                 to_remove = set()
                 for heater in reversed(self.heatersRedusedConsumption):
-                    if heater.heater_data.prev_consumption < overproduction_Wh:
+                    if (heater.heater_data.prev_consumption < overproduction_Wh and 
+                        self.ADapi.datetime(aware=True) - heater.last_reduced_state > datetime.timedelta(minutes = 5)
+                    ):
                         heater.setPreviousState()
                         overproduction_Wh -= heater.heater_data.prev_consumption
                         to_remove.add(heater)
@@ -1649,6 +1655,9 @@ class ElectricalUsage(ad.ADBase):
                     )
                 except (ValueError, TypeError):
                     pass
+                else:
+                    if heater_consumption > heater.heater_data.normal_power:
+                        heater.heater_data.normal_power = heater_consumption
 
         idle_consumption = current_consumption - heater_consumption
         if idle_consumption <= 0:
@@ -3485,7 +3494,7 @@ class Tesla_charger(Charger):
         self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
             namespace = self.namespace,
             new = 'on',
-            duration = 30 ### TODO Testing only. Remove listen state if possible.
+            duration = 10
         )
         self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_switch,
             namespace = self.namespace,
@@ -4165,6 +4174,7 @@ class Heater:
         self.kWh_consumption_when_turned_on:float = 0.0
         self.isOverconsumption:bool = False
         self.increase_now:bool = False
+        self.last_reduced_state = self.ADapi.datetime(aware=True) - datetime.timedelta(minutes=20)
 
         # Handlers
         self.registerConsumption_handler = None
@@ -4401,6 +4411,9 @@ class Heater:
                 f"{self.heater_data.consumptionSensor} unavailable in finding consumption.",
                 level = 'DEBUG'
             )
+        else:
+            if wattconsumption > self.heater_data.normal_power:
+                self.heater_data.normal_power = wattconsumption
         if wattconsumption < 20:
             self._cancel_listen_handler(self.registerConsumption_handler)
             self.registerConsumption_handler = None
@@ -4409,7 +4422,7 @@ class Heater:
         """ Registers consumption to persistent storage after heater has been off.
         """
         self.ADapi.log(f"Started to register Consumption for {self.heater}. Overconsumption? {self.isOverconsumption}") ###
-        offForHours = str(kwargs['hoursOffInt'])
+
         if self.isOverconsumption:
             self._cancel_timer_handler(self.checkConsumption_handler)
             self.checkConsumption_handler = self.ADapi.run_in(self.checkIfConsumption, 600)
@@ -4426,58 +4439,52 @@ class Heater:
             return
         if consumption == 0:
             consumption = 0.01 # Avoid multiplications by 0.
-        if consumption > 0:
-            self._cancel_timer_handler(self.checkConsumption_handler)
-            self._cancel_listen_handler(self.registerConsumption_handler)
-            self.registerConsumption_handler = None
-            if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off':
-                return
+        if consumption <= 0:
+            return
 
-            try:
-                with open(self.json_path, 'r') as json_read:
-                    ElectricityData = json.load(json_read)
+        self._cancel_timer_handler(self.checkConsumption_handler)
+        self._cancel_listen_handler(self.registerConsumption_handler)
+        self.registerConsumption_handler = None
+        if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off':
+            return
 
-                consumptionData = ElectricityData['heater'][self.heater]['ConsumptionData']
-                out_temp_str = str(_floor_even(OUT_TEMP))
+        try:
+            if self.heater_data.normal_power < float(old):
+                self.heater_data.normal_power = float(old)
+        except Exception:
+            pass
 
-                if not "power" in ElectricityData['heater'][self.heater]:
-                    ElectricityData['heater'][self.heater].update(
-                        {"power" : float(old)}
-                    )
+        off_for_hours = str(kwargs.get("hoursOffInt"))
+        out_temp_str = str(_floor_even(OUT_TEMP))
 
-                if not offForHours in ElectricityData['heater'][self.heater]['ConsumptionData']:
-                    newData = {"Consumption" : consumption, "Counter" : 1}
-                    ElectricityData['heater'][self.heater]['ConsumptionData'].update(
-                        {offForHours : {out_temp_str : newData}}
-                    )
+        if off_for_hours not in self.heater_data.ConsumptionData:
+            self.heater_data.ConsumptionData[off_for_hours] = {}
 
-                elif not out_temp_str in ElectricityData['heater'][self.heater]['ConsumptionData'][offForHours]:
-                    newData = {"Consumption" : round(consumption,2), "Counter" : 1}
-                    ElectricityData['heater'][self.heater]['ConsumptionData'][offForHours].update(
-                        {out_temp_str : newData}
-                    )
+        inner_dict: Dict[str, TempConsumption] = self.heater_data.ConsumptionData[
+            off_for_hours
+        ]
 
-                else:
-                    consumptionData = ElectricityData['heater'][self.heater]['ConsumptionData'][offForHours][out_temp_str]
-                    counter = consumptionData['Counter'] + 1
-
-                    avgConsumption = round(((consumptionData['Consumption'] * consumptionData['Counter']) + consumption) / counter,2)
-                    if counter > 100:
-                        counter = 10
-                    newData = {"Consumption" : avgConsumption, "Counter" : counter}
-                    ElectricityData['heater'][self.heater]['ConsumptionData'][offForHours].update(
-                        {out_temp_str : newData}
-                    )
-
-                self.ADapi.log(f"Updating {self.heater}. With new data. Consumption: {consumption}") ###
-                with open(self.json_path, 'w') as json_write:
-                    json.dump(ElectricityData, json_write, default=json_serial, indent = 4)
-
-            except Exception as e:
-                self.ADapi.log(
-                    f"Not able to register consumption for {self.heater}. Exception: {e}",
-                    level = 'DEBUG'
+        if out_temp_str not in inner_dict:
+            inner_dict[out_temp_str] = TempConsumption(
+                Consumption=round(consumption, 2),
+                Counter=1,
+            )
+        else:
+            existing: TempConsumption = inner_dict[out_temp_str]
+            counter = (existing.Counter or 0) + 1
+            avg_consumption = round(
+                (
+                    (existing.Consumption or 0) * (existing.Counter or 0)
+                    + consumption
                 )
+                / counter,
+                2,
+            )
+            if counter > 100:
+                counter = 10
+            existing.Consumption = avg_consumption
+            existing.Counter = counter
+
 
         # Helper functions for windows
     def windowOpened(self, entity, attribute, old, new, kwargs) -> None:
@@ -4940,35 +4947,6 @@ class Notify_Mobiles:
             )
 
 # Helper functions
-
-def json_serial(obj): ### TODO REMOVE
-    """JSON serializer for objects not serializable by default json code"""
-    if isinstance(obj, datetime.datetime):
-        return obj.isoformat()
-    elif isinstance(obj, datetime.timedelta):
-        return str(obj.total_seconds())
-    raise TypeError(f"Type {type(obj)} not serializable")
-
-def json_deserialize(dct): ### TODO REMOVE
-    """JSON deserializer for objects serialized with json_serial"""
-    try:
-        for key, value in dct.items():
-            if isinstance(value, str):
-                try:
-                    dct[key] = datetime.datetime.fromisoformat(value)
-                except ValueError:
-                    if key == 'duration':
-                        try:
-                            seconds = float(value)
-                            seconds_int = int(seconds)
-                            dct[key] = datetime.timedelta(seconds=seconds)
-                        except (ValueError, OverflowError) as e:
-                            pass
-            elif isinstance(value, dict):
-                dct[key] = json_deserialize(value)
-        return dct
-    except Exception as e:
-        return dct
 
 def get_next_runtime(offset_seconds=10, delta_in_seconds=60*15):
     now = datetime.datetime.now()
