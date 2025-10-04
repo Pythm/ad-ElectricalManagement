@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, RootModel
+from dataclasses import dataclass, field
 
 
 class MaxUsage(BaseModel):
@@ -27,13 +28,14 @@ class IdleBlock(BaseModel):
 class PeakHour(BaseModel):
     start: datetime
     end: datetime
-    duration: int | None = None
+    duration: timedelta
 
 
 class HeaterBlock(BaseModel):
     heater: str | None = None
     consumptionSensor: str | None = None
     validConsumptionSensor: bool | None = None
+    normal_power: float = 0.0
     kWhconsumptionSensor: str | None = None
     max_continuous_hours: int | None = None
     on_for_minimum: int | None = None
@@ -42,26 +44,25 @@ class HeaterBlock(BaseModel):
     vacation: Union[str, bool] = False
     automate: Union[str, bool] = False
     recipient: Optional[List[str]] = None
-    indoor_sensor_temp: str | None = None
-    window_temp: str | None = None
-    window_offset: int | None = None
-    target_indoor_input: str | None = None
-    target_indoor_temp: int | None = None
-    save_temp_offset: float | None = None
-    save_temp: int | None = None
-    away_temp: int | None = None
-    rain_level: float | None = None
-    anemometer_speed: float | None = None
-    low_price_max_continuous_hours: int | None = None
-    priceincrease: float | None = None
-    windowsensors: List[str] | None = None
-    getting_cold: int | None = None
-    daytime_savings: List[Dict] | None = None
-    temperatures: List[Dict] | None = None
+    indoor_sensor_temp: Optional[str] = None
+    target_indoor_input: Optional[str] = None
+    target_indoor_temp: Optional[int] = None
+    window_temp: Optional[str] = None
+    window_offset: Optional[int] = None
+    save_temp_offset: Optional[float] = None
+    save_temp: Optional[int] = None
+    vacation_temp: Optional[int] = None
+    rain_level: Optional[float] = None
+    anemometer_speed: Optional[float] = None
+    getting_cold: Optional[int] = 18
+    priceincrease: Optional[float] = 1
+    windowsensors: Optional[List[str]] = None
+    daytime_savings: Optional[List[Dict[str, Any]]] = None
+    temperatures: Optional[List[Dict[str, Any]]] = None
 
     ConsumptionData: Dict[str, Dict[str, TempConsumption]] = Field(default_factory=dict)
-    peak_hours: List[PeakHour] = Field(default_factory=list)
-    power: float | None = None
+    prev_consumption: float = 0.0
+    time_to_save: List[PeakHour] = Field(default_factory=list)
 
 
 class ChargerData(BaseModel):
@@ -138,6 +139,16 @@ class ChargingQueueItem(BaseModel):
             exclude_none=True
         )
 
+@dataclass(order=True)
+class WattSlot:
+    start: datetime
+    end: datetime
+    available_Wh: float
+
+    @property
+    def duration_hours(self) -> float:
+        return (self.end - self.start).total_seconds() / 3600.0
+
 
 class PersistenceData(BaseModel):
     max_usage: MaxUsage = Field(alias="MaxUsage", default_factory=MaxUsage)
@@ -148,10 +159,14 @@ class PersistenceData(BaseModel):
     chargingQueue: List[ChargingQueueItem] = Field(alias="chargingQueue", default_factory=list)
     queueChargingList: List[Any] = Field(alias="queueChargingList", default_factory=list)
     solarChargingList: List[Any] = Field(alias="solarChargingList", default_factory=list)
+    available_watt: List[WattSlot] = Field(alias="available_watt", default_factory=list)
 
     model_config = {
         "arbitrary_types_allowed": True,
         "populate_by_name": False,
+        "json_encoders": {   # <‑‑ tell pydantic how to serialise a WattSlot
+            WattSlot: lambda ws: ws.__dict__,
+        },
     }
 
     def has_initialized_consuming_objects(self) -> bool:

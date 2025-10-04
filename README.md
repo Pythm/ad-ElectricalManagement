@@ -10,7 +10,7 @@ The purpose of this app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
-### **0.3.0**
+### **0.3.0** - A complete rewrite
 - **Calculation of electricityprice**
 As of release 0.3.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) or write your own to suit your needs. Configure that app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
 
@@ -48,7 +48,9 @@ def get_Continuous_Cheapest_Time(self,
     """
 ```
 
-- **Spelling Correction**: Changed `notify_reciever` → `notify_receiver`. 
+- **Spelling Correction**: Changed `notify_reciever` → `notify_receiver`.
+
+Major changes to storage and initialization of classes.
 
 ---
 
