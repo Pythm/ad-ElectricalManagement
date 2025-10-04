@@ -33,7 +33,7 @@ from pydantic_models import (
     WattSlot
 )
 
-__version__ = "0.3.0"
+__version__ = "1.0.0_beta"
 
 RECIPIENTS:list = []
 OUT_TEMP:float = 10.0
