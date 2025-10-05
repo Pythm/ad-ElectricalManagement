@@ -2354,15 +2354,15 @@ class Scheduler:
                     timestr_stop = _fmt(car.chargingStop)
 
                     if car.vehicle_id in self.simultaneousChargeComplete:
-                        info_text_simultaneous_car += f"{car.name} & "
+                        info_text_simultaneous_car += f"{car.name} &"
                         info_text_simultaneous_time = (
-                            f"at {timestr_start}. Finish est at {timestr_eta_stop}. "
+                            f" at {timestr_start}. Finish est at {timestr_eta_stop}. "
                             f"Stop no later than {timestr_stop}. "
                         )
                     else:
                         info_text += (
                             f"Start {car.name} at {timestr_start}. "
-                            f"Finish est at {timestr_eta_stop}. "
+                            f"Finish est at {timestr_eta_stop} with {car.estHourCharge} hours to charge. "
                             f"Stop no later than {timestr_stop}. "
                         )
                     times_set = True
@@ -2779,13 +2779,20 @@ class Charger:
             ):
                 self.pct_start_charge = float(self.ADapi.get_state(self.Car.car_data.battery_sensor, namespace = self.namespace))
 
-            # Update volts and phases on charging started
-            self.setVolts()
-            self.setPhases()
-            self.setVoltPhase(
-                volts = self.charger_data.volts,
-                phases = self.charger_data.phases
-            )
+            if  (
+                self.Car.isConnected() and
+                self.kWhRemaining() > 0
+            ):
+                # Update volts and phases on charging started
+                self.setVolts()
+                self.setPhases()
+                self.setVoltPhase(
+                    volts = self.charger_data.volts,
+                    phases = self.charger_data.phases
+                )
+
+                if not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.Car.vehicle_id):
+                    self.Car.findNewChargeTime()
 
         ### TODO: Check if this is handled elsewhere:
         if self.Car.connectedCharger is None and self.Car.isConnected():
@@ -2863,21 +2870,21 @@ class Charger:
         """
         if (
             phases > 1
-            and charger_data.volts > 200
-            and charger_data.volts < 250
+            and self.charger_data.volts > 200
+            and self.charger_data.volts < 250
         ):
             self.charger_data.voltPhase = 266
 
         elif (
             phases == 3
-            and charger_data.volts > 300
+            and self.charger_data.volts > 300
         ):
             self.charger_data.voltPhase = 687
 
         elif (
             phases == 1
-            and charger_data.volts > 200
-            and charger_data.volts < 250
+            and self.charger_data.volts > 200
+            and self.charger_data.volts < 250
         ):
             self.charger_data.voltPhase = volts
 
@@ -3726,24 +3733,30 @@ class Tesla_charger(Charger):
             self.ADapi.create_task(self.stop_Tesla_charging())
 
     def setVolts(self):
-        if Car.isConnected():
+        if self.Car.isConnected():
             try:
-                charger_data.volts = math.ceil(float(api.get_state(charger_data.charger_power,
-                namespace = namespace,
+                volt = math.ceil(float(self.ADapi.get_state(self.charger_data.charger_power,
+                namespace = self.namespace,
                 attribute = 'charger_volts'))
             )
             except (ValueError, TypeError):
                 pass
+            else:
+                if volt > 0:
+                    self.charger_data.volts = volt
 
     def setPhases(self):
-        if Car.isConnected():
+        if self.Car.isConnected():
             try:
-                charger_data.phases = int(api.get_state(charger_data.charger_power,
-                namespace = namespace,
+                phase = int(self.ADapi.get_state(self.charger_data.charger_power,
+                namespace = self.namespace,
                 attribute = 'charger_phases')
             )
             except (ValueError, TypeError):
                 pass
+            else:
+                if phase > 0:
+                    self.charger_data.phases = phase
 
 
 class Tesla_car(Car):
