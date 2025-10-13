@@ -10,43 +10,15 @@ The purpose of this app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
-### **0.3.0** - A complete rewrite
+### **1.0.0** - A complete rewrite
 - **Calculation of electricityprice**
-As of release 0.3.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) or write your own to suit your needs. Configure that app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
+As of release 1.0.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) version 0.1.4 or later, or write your own to suit your needs. Configure that app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
 
 ```yaml
 electricalPriceApp: electricalPriceCalc # (name of your app)
 ```
 
 The separation is to make it easier to maintain and continue development. There are some big changes under the hood, such as support for Nordpool prices every 15 minutes, and datetime objects are now timezone aware.
-
-This app uses the following functions from the app:
-
-```python
-def find_times_to_save(self,
-                       pricedrop: float,
-                       max_continuous_hours: int,
-                       on_for_minimum: int,
-                       pricedifference_increase: float,
-                       reset_continuous_hours: bool,
-                       prev_peak_hours: list,
-                       ) -> list:
-    """Finds peak variations in electricity price for saving purposes and returns list with datetime objects;
-       'start', 'end' and 'duration' as a timedelta object for how long the electricity has been off.
-    """
-def find_times_to_spend(self,
-                        priceincrease: float
-                        ) -> list:
-    """Finds low price variations in electricity price for spending purposes and returns list with datetime objects.
-    """
-def get_Continuous_Cheapest_Time(self,
-                                 hoursTotal: float,
-                                 calculateBeforeNextDayPrices: bool,
-                                 finishByHour: int
-                                 ) -> Tuple[datetime, datetime, float]:
-    """Returns starttime, endtime and price for cheapest continuous hours with different results depending on time the call was made.
-    """
-```
 
 - **Spelling Correction**: Changed `notify_reciever` → `notify_receiver`.
 
