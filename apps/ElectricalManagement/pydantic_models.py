@@ -103,8 +103,8 @@ class CarData(BaseModel):
     force_data_update: str | None = None
     polling_switch: str | None = None
     data_last_update_time: str | None = None
-    battery_size: int = 100
-    pref_charge_limit: int = 100
+    battery_size: float = 100
+    pref_charge_limit: float = 100
     priority: int = 3
     finish_by_hour: Union[str, int] = 7
     charge_now: Union[str, bool] = False
