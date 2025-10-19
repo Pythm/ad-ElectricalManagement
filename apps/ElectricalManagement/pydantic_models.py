@@ -22,7 +22,7 @@ class TempConsumption(BaseModel):
 
 
 class IdleBlock(BaseModel):
-    ConsumptionData: Dict[str, TempConsumption] | None = None
+    ConsumptionData: Dict[str, TempConsumption] = Field(default_factory=dict)
 
 
 class PeakHour(BaseModel):

@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, Optional, Callable
 from pydantic_models import (
     TempConsumption
 )
-def cancel_timer_handler(ADapi, handler, name) -> None:
+def cancel_timer_handler(ADapi, handler, name) -> bool:
     if handler is not None:
         if ADapi.timer_running(handler):
             try:
@@ -14,8 +14,10 @@ def cancel_timer_handler(ADapi, handler, name) -> None:
                     f"Not able to stop timer handler for {name}. Exception: {e}",
                     level = 'DEBUG'
                 )
+                return False
+    return True
 
-def cancel_listen_handler(ADapi, handler, name) -> None:
+def cancel_listen_handler(ADapi, handler, name) -> bool:
     if handler is not None:
         try:
             ADapi.cancel_listen_state(handler)
@@ -24,6 +26,8 @@ def cancel_listen_handler(ADapi, handler, name) -> None:
                 f"Not able to stop listen handler for {name}. Exception: {e}",
                 level = 'DEBUG'
             )
+            return False
+    return True
 
 def get_next_runtime_aware(startTime, offset_seconds, delta_in_seconds):
     next_minute_mark = ((startTime.minute * 60 + startTime.second) // delta_in_seconds + 1) * delta_in_seconds
