@@ -12,7 +12,7 @@ The purpose of this app is to help reduce your electricity bill by:
 
 ### **1.0.0** - A complete rewrite
 - **Calculation of electricityprice**
-As of release 1.0.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) version 0.1.4 or later, or write your own to suit your needs. Configure that app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
+As of release 1.0.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) version 0.1.5 or later, or write your own to suit your needs. Configure that app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
 
 ```yaml
 electricalPriceApp: electricalPriceCalc # (name of your app)

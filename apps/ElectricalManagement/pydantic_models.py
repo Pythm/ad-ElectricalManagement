@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, RootModel
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Union, Callable
+from pydantic import BaseModel, Field
+from dataclasses import dataclass
 
 
 class MaxUsage(BaseModel):
@@ -22,7 +22,7 @@ class TempConsumption(BaseModel):
 
 
 class IdleBlock(BaseModel):
-    ConsumptionData: Dict[str, TempConsumption] | None = None
+    ConsumptionData: Dict[str, TempConsumption] = Field(default_factory=dict)
 
 
 class PeakHour(BaseModel):
@@ -148,6 +148,12 @@ class WattSlot:
     @property
     def duration_hours(self) -> float:
         return (self.end - self.start).total_seconds() / 3600.0
+
+@dataclass(frozen=True)
+class Decision:
+    name: str
+    predicate: Callable[[], bool]
+    action:   Callable[[], None]
 
 
 class PersistenceData(BaseModel):
