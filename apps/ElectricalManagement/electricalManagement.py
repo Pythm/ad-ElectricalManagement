@@ -44,6 +44,7 @@ from utils import (
     diff_ok,
     floor_even
 )
+from registry import Registry 
 
 __version__ = "1.0.0_beta"
 
@@ -53,7 +54,7 @@ RAIN_AMOUNT:float = 0.0
 WIND_AMOUNT:float = 0.0
 
 MAX_TEMP_DIFFERENCE = 5
-MAX_CONSUMPTION_RATIO_DIFFERENCE = 2
+MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
 
 # Translations from json for 'MODE_CHANGE' events
 FIRE_TRANSLATE:str = 'fire'
@@ -86,7 +87,7 @@ class ElectricalUsage(ad.ADBase):
         self._setup_electricity_price()
         
         self._validate_current_consumption_sensor()
-        self._setup_accumulated_consumption_current_hour()
+        self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
         self.json_path = self.args.get('json_path')
@@ -156,14 +157,9 @@ class ElectricalUsage(ad.ADBase):
             name: str,
             specs: List[tuple[str, str, str]],
             persistent_data,
-        ) -> dict:
+        ) -> None:
 
             namespace = cfg.get("namespace", self.HASS_namespace)
-
-            if persistent_data:
-                for key, value in persistent_data.dict().items():
-                    if key not in cfg and isinstance(value, dict):
-                        cfg[key] = value
 
             for key, domain, suffix in specs:
                 value = str(f"{domain}.{name}{suffix}")
@@ -182,8 +178,19 @@ class ElectricalUsage(ad.ADBase):
                         level = 'INFO'
                     )
 
-            return cfg
-
+        def _update_persistence_from_cfg(cfg: dict, persistent_data) -> None:
+            if persistent_data:
+                common_keys = [
+                    'battery_size', 'pref_charge_limit', 'priority',
+                    'finish_by_hour', 'charge_now', 'charge_only_on_solar',
+                    'departure'
+                ]
+                for key in common_keys:
+                    value = getattr(persistent_data, key, None)
+                    if key in cfg and cfg[key] is not None:
+                        if value != cfg[key]:
+                            setattr(persistent_data, key, cfg[key])
+                        continue
         
         for cfg in self.args.get('tesla', []):
             namespace = cfg.get('namespace', self.HASS_namespace)
@@ -220,14 +227,18 @@ class ElectricalUsage(ad.ADBase):
                     'max_kWh_charged':      5,
                     'old_charge_limit':     100,
                     'kWh_remain_to_charge': -2,
+                    'connected_charger_id': None,
                 }
                 cfg.update({k: v for k, v in defaults.items() if k not in cfg})
                 self._persistence.car[carName] = CarData(**cfg)
 
-            cfg = merge_config_with_persistent(cfg = cfg,
-                                            name = carName,
-                                            specs = CAR_SPECS,
-                                            persistent_data = self._persistence.car[carName])
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = CAR_SPECS,
+                                         persistent_data = self._persistence.car[carName])
+
+            _update_persistence_from_cfg(cfg = cfg,
+                                         persistent_data = self._persistence.car[carName])
 
             tesla_car = Tesla_car(
                 api=self.ADapi,
@@ -251,7 +262,6 @@ class ElectricalUsage(ad.ADBase):
                     'ampereCharging':        0.0,
                     'min_ampere':            6,
                     'maxChargerAmpere':      0,
-                    'connected_car_name':    None,
                     'volts':                 220,
                     'phases':                1,
                     'voltPhase':             220,
@@ -259,10 +269,10 @@ class ElectricalUsage(ad.ADBase):
                 cfg.update({k: v for k, v in defaults.items() if k not in cfg})
                 self._persistence.charger[carName] = ChargerData(**cfg)
 
-            cfg = merge_config_with_persistent(cfg = cfg,
-                                                name = carName,
-                                                specs = CHARGER_SPECS,
-                                                persistent_data = self._persistence.charger.get(carName))
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = CHARGER_SPECS,
+                                         persistent_data = self._persistence.charger.get(carName))
 
             tesla_charger = Tesla_charger(
                 api=self.ADapi,
@@ -271,13 +281,13 @@ class ElectricalUsage(ad.ADBase):
                 charger=carName,
                 charger_data=self._persistence.charger[carName],
             )
-            self.chargers.append(tesla_charger)
+            self.chargers[tesla_charger.charger_id] = tesla_charger
 
         for cfg in self.args.get('cars', []):
             namespace = cfg.get("namespace", self.HASS_namespace)
             if not 'carName' in cfg:
                 self.ADapi.log(f"Skipping car entry {cfg} – no carName given", level='WARNING')
-                return
+                continue
 
             persisted_car = self._persistence.car.get(cfg['carName'])
             if not persisted_car:
@@ -306,6 +316,7 @@ class ElectricalUsage(ad.ADBase):
                     'max_kWh_charged':      5,
                     'old_charge_limit':     100,
                     'kWh_remain_to_charge': -2,
+                    'connected_charger_id': None,
                 }
                 cfg.update({k: v for k, v in defaults.items() if k not in cfg})
                 self._persistence.car[cfg['carName']] = CarData(**cfg)
@@ -344,7 +355,6 @@ class ElectricalUsage(ad.ADBase):
                     'ampereCharging':        0.0,
                     'min_ampere':            6,
                     'maxChargerAmpere':      0,
-                    'connected_car_name':    None,
                     'volts':                 220,
                     'phases':                1,
                     'voltPhase':             220,
@@ -355,10 +365,10 @@ class ElectricalUsage(ad.ADBase):
                 cfg.update({k: v for k, v in defaults.items() if k not in cfg})
                 self._persistence.charger[charger] = ChargerData(**cfg)
 
-            cfg = merge_config_with_persistent(cfg = cfg,
-                                            name = charger,
-                                            specs = EASEE_SPECS,
-                                            persistent_data = self._persistence.charger.get(charger))
+            merge_config_with_persistent(cfg = cfg,
+                                         name = charger,
+                                         specs = EASEE_SPECS,
+                                         persistent_data = self._persistence.charger.get(charger))
 
             easee = Easee(
                 api=self.ADapi,
@@ -367,14 +377,21 @@ class ElectricalUsage(ad.ADBase):
                 charger=charger,
                 charger_data=self._persistence.charger[charger]
             )
-            self.chargers.append(easee)
-            # TODO Connect car to charger based on connected_car_name
+            self.chargers[easee.charger_id] = easee
 
+        for car in self.all_cars():
+            if car.car_data.connected_charger_id:
+                charger = Registry.get_charger(car.car_data.connected_charger_id)
+                if charger is not None:
+                    Registry.set_link(car, charger)
+            else:
+                self._connect_car_and_charger(car)
 
         # --------------------------------------------------------------------------- #
         # Setup heaters and switches
         # --------------------------------------------------------------------------- #
-        def _merge_heater_cfg(heater_cfg: dict, persisted_heater) -> dict:
+        def _merge_heater_cfg(heater_cfg: dict, persisted_heater) -> bool:
+            value_changed = False
             if persisted_heater:
                 common_keys = [
                     'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
@@ -383,11 +400,16 @@ class ElectricalUsage(ad.ADBase):
                 ]
                 for key in common_keys:
                     value = getattr(persisted_heater, key, None)
-                    if key not in heater_cfg and value is not None:
-                        heater_cfg[key] = value
-            return heater_cfg
+                    if key in heater_cfg and heater_cfg[key] is not None:
+                        if value != heater_cfg[key]:
+                            setattr(persisted_heater, key, heater_cfg[key])
+                            value_changed = True
+                        continue
 
-        def _merge_climate_cfg(heater_cfg: dict, persisted_heater) -> dict:
+            return value_changed
+
+        def _merge_climate_cfg(heater_cfg: dict, persisted_heater) -> bool:
+            value_changed = False
             if persisted_heater:
                 climate_keys = [
                     'indoor_sensor_temp', 'target_indoor_input','target_indoor_temp', 'window_temp',
@@ -397,22 +419,26 @@ class ElectricalUsage(ad.ADBase):
                 ]
                 for key in climate_keys:
                     value = getattr(persisted_heater, key, None)
-                    if key not in heater_cfg and value is not None:
-                        heater_cfg[key] = value
-            return heater_cfg
+                    if key in heater_cfg and heater_cfg[key] is not None:
+                        if value != heater_cfg[key]:
+                            setattr(persisted_heater, key, heater_cfg[key])
+                            value_changed = True
+                        continue
+
+            return value_changed
 
         def _ensure_sensor(
             heater_name: str, namespace: str, suffixes: List[str]
         ) -> Optional[str]:
             """
             Return the first existing sensor id that matches one of the supplied suffixes.
-            If no sensor exists, return ``None``.
-            """
+            If no sensor exists, return ``None``. """
+
             for suffix in suffixes:
                 candidate = f"sensor.{heater_name}{suffix}"
                 if self.ADapi.entity_exists(candidate, namespace=namespace):
                     return candidate
-            # nothing found
+
             return None
 
         def _add_heater_missing(
@@ -447,11 +473,14 @@ class ElectricalUsage(ad.ADBase):
         for heater_cfg in self.args.get('climate', []):
             namespace = heater_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = heater_cfg.get('heater')
+            print_save_hours = False
             if not heater_entity:
                 self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
                             level='WARNING')
-                return
+                continue
             heater_name = heater_entity.replace('climate.', '')
+            if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
+                print_save_hours = True
 
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
@@ -493,16 +522,19 @@ class ElectricalUsage(ad.ADBase):
                         heater_cfg[k] = v
 
                 self._persistence.heater[heater_entity] = HeaterBlock(**heater_cfg)
+                print_save_hours = True
 
-            heater_cfg = _merge_heater_cfg(heater_cfg, persisted_heater)
-            heater_cfg = _merge_climate_cfg(heater_cfg, persisted_heater)
-            
+            value_changed = _merge_heater_cfg(heater_cfg, persisted_heater)
+            value_changed = _merge_climate_cfg(heater_cfg, persisted_heater)
+            if value_changed:
+                print_save_hours = True
 
             climate = Climate(
                 api=self.ADapi,
                 namespace=namespace,
                 heater=heater_entity,
                 heater_data=self._persistence.heater[heater_entity],
+                print_save_hours = print_save_hours,
             )
             self.heaters.append(climate)
 
@@ -510,10 +542,13 @@ class ElectricalUsage(ad.ADBase):
         for switch_cfg in self.args.get('heater_switches', []):
             namespace = switch_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = switch_cfg.get('switch')
+            print_save_hours = False
             if not heater_entity:
                 self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
-                return
+                continue
             heater_name = heater_entity.replace('switch.', '')
+            if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
+                print_save_hours = True
 
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
@@ -540,21 +575,25 @@ class ElectricalUsage(ad.ADBase):
                         switch_cfg[k] = v
 
                 self._persistence.heater[heater_entity] = HeaterBlock(**switch_cfg)
+                print_save_hours = True
 
-            switch_cfg = _merge_heater_cfg(switch_cfg, persisted_heater)
-            
+            value_changed = _merge_heater_cfg(switch_cfg, persisted_heater)
+            if value_changed:
+                print_save_hours = True
 
             switch = On_off_switch(
                 api=self.ADapi,
                 namespace=namespace,
                 heater=heater_entity,
                 heater_data=self._persistence.heater[heater_entity],
+                print_save_hours = print_save_hours,
             )
             self.heaters.append(switch)
         
         self._refresh_heaters()
         self.ADapi.run_in(self._create_runners, 60)
         self.ADapi.run_in(self._get_new_prices, 60)
+
 
     def _setup_api_and_translations(self):
         self.ADapi = self.get_ad_api()
@@ -578,12 +617,12 @@ class ElectricalUsage(ad.ADBase):
         self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace=self.HASS_namespace)
 
     def _init_collections(self):
-        self.chargers: list = []
+        self.chargers: dict[str, Charger] = {}
         self.cars: dict[str, Car] = {}
         self.appliances: list = []
         self.heaters: list = []
 
-        self.heatersRedusedConsumption:list = [] # Heaters currently turned off/down due to overconsumption
+        self.heatersRedusedConsumption:list = []
         self.lastTimeHeaterWasReduced = self.ADapi.datetime(aware=True) - timedelta(minutes = 5)
 
         self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
@@ -596,10 +635,11 @@ class ElectricalUsage(ad.ADBase):
         self.accumulated_unavailable:int = 0
         self.last_accumulated_kWh:float = 0
         self.accumulated_kWh_wasUnavailable:bool = False
-        self.SolarProducing_ChangeToZero:bool = False
+        self.solar_producing_change_to_zero:bool = False
         self.notify_about_overconsumption:bool = False
         self.totalWattAllHeaters:float = 0
         self.houseIsOnFire:bool = False
+        self.find_next_charger_counter:int = 0
 
         self.checkIdleConsumption_Handler = None
 
@@ -629,51 +669,35 @@ class ElectricalUsage(ad.ADBase):
     def _validate_current_consumption_sensor(self):
         self.current_consumption_sensor = self.args.get('power_consumption', None) # In Watt
         if not self.current_consumption_sensor:
-            raise Exception(
-                "power_consumption sensor not provided in configuration. Aborting Electrical Usage setup."
+            self.ADapi.log(
+                "'power_consumption' sensor not provided in configuration. Aborting Electrical Usage setup."
                 "Please provide a watt power consumption sensor to use this function"
+                "Set up Tibber Pulse or equivalent and configure a watt power consumption sensor.\n"
+                "ElectricalUsage will not adjust electricity consumption",
+                level='INFO'
             )
         try:
-            float(self.ADapi.get_state(self.current_consumption_sensor))
-        except ValueError as ve:
+            self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
+        except (ValueError, TypeError) as ve:
             if self.ADapi.get_state(self.current_consumption_sensor) in UNAVAIL:
                 self.ADapi.log(f"Current consumption is unavailable at startup", level='DEBUG')
             else:
-                raise Exception()
-        except Exception as e:
+                self.ADapi.log(
+                    "power_consumption sensor is not a number on app initialization. ",
+                    level='INFO'
+                )
+            self.ADapi.log(ve, level='DEBUG')
+
+    def _validate_accumulated_consumption_current_hour(self):
+        self.accumulated_consumption_current_hour = self.args.get('accumulated_consumption_current_hour', None)
+        if self.accumulated_consumption_current_hour is None:
             self.ADapi.log(
-                f"power_consumption sensor is not a number. Please provide a watt power consumption sensor for this function",
-                level='WARNING'
-            )
-            self.ADapi.log(
-                "If power_consumption should be a number and this error occurs after a restart, "
-                "your sensor has probably not started sending data.",
+                "'accumulated_consumption_current_hour' not provided in configuration. "
+                "Set up Tibber Pulse or equivalent and configure a kWh consumption for current hour.\n"
+                "ElectricalUsage will not adjust electricity consumption",
                 level='INFO'
             )
-            self.ADapi.log(e, level='DEBUG')
-
-    def _setup_accumulated_consumption_current_hour(self):
-        if 'accumulated_consumption_current_hour' in self.args:
-            self.accumulated_consumption_current_hour = self.args['accumulated_consumption_current_hour']
-        else:
-            sensor_states = self.ADapi.get_state(namespace=self.HASS_namespace)
-            for sensor_id in sensor_states.keys():
-                if 'accumulated_consumption_current_hour' in sensor_id:
-                    self.accumulated_consumption_current_hour = sensor_id
-                    break
-
-        if not self.accumulated_consumption_current_hour:
-            raise Exception(
-                "accumulated_consumption_current_hour not found. "
-                "Please install Tibber Pulse or input equivalent to provide kWh consumption current hour."
-            )
-            self.ADapi.log(
-                "Check out https://tibber.com/ to learn more. "
-                "If you are interested in switching to Tibber, you can use my invite link to get a startup bonus: "
-                "https://invite.tibber.com/fydzcu9t"
-                " or contact me for an invite code.",
-                level='INFO'
-            )
+            return
 
         attr_last_updated = self.ADapi.get_state(
             entity_id=self.accumulated_consumption_current_hour,
@@ -749,33 +773,88 @@ class ElectricalUsage(ad.ADBase):
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.HASS_namespace)
 
     def _create_runners(self, kwargs):
-        # Schedule regular checks and event listeners
+        """ Schedule check for charging, electricity usage and electricity price. """
+
         now = self.ADapi.datetime(aware=True)
-        runtime = get_next_runtime_aware(startTime = now, offset_seconds=0, delta_in_seconds=60)
-        self.ADapi.run_every(self.checkElectricalUsage, runtime, 60)
-        self.ADapi.run_hourly(self.dump_persistence, "14:30:00")
+        
+        if self.current_consumption_sensor is not None and self.accumulated_consumption_current_hour is not None:
+            runtime = get_next_runtime_aware(startTime = now, offset_seconds=0, delta_in_seconds=60)
+            self.ADapi.run_every(self.checkElectricalUsage, runtime, 60)
+        else:
+            self.available_Wh = 10000 # Set a trick fixed value since sensors are missing.
+            runtime = get_next_runtime_aware(startTime = now, offset_seconds=0, delta_in_seconds=600)
+            self.ADapi.run_every(self.checkChargingQueue, runtime, 600)
+
+        self.ADapi.run_daily(self.dump_persistence_file, "14:30:00")
         self.ADapi.run_daily(self._get_new_prices, "00:03:00")
         self.ADapi.run_daily(self._get_new_prices, "13:01:00")
+
+
+        item = ELECTRICITYPRICE.elpricestoday[0]
+        duration = (item.end - item.start).total_seconds()
+        runtime_switch = get_next_runtime_aware(startTime = now, offset_seconds = 1, delta_in_seconds = duration)
+        interval = min(duration, 900)
+        runtime_climate = get_next_runtime_aware(startTime = now, offset_seconds = 1, delta_in_seconds = interval)
+
+        for heater in self.heaters:
+            if isinstance(heater, Climate):
+                self.ADapi.run_every(heater.heater_setNewValues, runtime_climate, interval)
+            else:
+                self.ADapi.run_every(heater.heater_setNewValues, runtime_switch, duration)
 
     # Finished initialization.
 
     def terminate(self) -> None:
-        """ Writes charger and car data to persisten storage before terminating app.
-        """
+        """ Writes charger and car data to persisten storage before terminating app """
+
         if hasattr(self, "_persistence"):
             dump_persistence(self.json_path, self._persistence)
 
-    def dump_persistence(self, kwargs) -> None:
+    def dump_persistence_file(self, kwargs) -> None:
+        """ Writes charger and car data to persisten storage daily """
+
         if hasattr(self, "_persistence"):
             dump_persistence(self.json_path, self._persistence)
-
-    def get_car(self, vehicle_id: str) -> Car | None:
-        return self.cars.get(vehicle_id)
 
     def all_cars(self) -> Iterable[Car]:
+        """ Returns iterable car list """
+
         return self.cars.values()
 
+    def all_cars_connected(self) -> Iterable[Car]:
+        """ Yield only cars that are actually connected and have a charger """
+
+        return (
+            car
+            for car in self.cars.values()
+            if car.isConnected() and car.connected_charger is not None
+    )
+
+    def all_chargers(self) -> Iterable[Charger]:
+        """ Returns iterable charger list """
+
+        return self.chargers.values()
+
+    def _connect_car_and_charger(self, car) -> None:
+        """ Finds charger that car is connected to """
+
+        if car.isConnected():
+            ChargingState = car.getCarChargerState()
+            if ChargingState == 'NoPower':
+                for charger in self.all_chargers():
+                    if (
+                        charger.connected_vehicle is None
+                        and charger.getChargingState() in ('Stopped', 'awaiting_start')
+                    ):
+                        charger.findCarConnectedToCharger()
+
+            elif ChargingState != 'Disconnected':
+                Registry.set_link(car, car.onboard_charger)
+
+
     def _get_new_prices(self, kwargs) -> None:
+        """ Fetches new prices and finds charge time """
+
         if (
             not ELECTRICITYPRICE.tomorrow_valid
             and self.ADapi.now_is_between('12:30:00', '15:30:00')
@@ -791,9 +870,8 @@ class ElectricalUsage(ad.ADBase):
                 self.ADapi.run_in(heater.heater_getNewPrices, delay = 20, random_start = 1, random_end = 2)
 
         if ELECTRICITYPRICE.tomorrow_valid:
-            for car in self.all_cars():
-                if car.isConnected():
-                    self.ADapi.run_in(car.findNewChargeTimeAt, 140)
+            for car in self.all_cars_connected():
+                self.ADapi.run_in(car.findNewChargeTimeAt, 140)
 
         self.ADapi.run_in(self.calculateIdleConsumption, 120)
         self.ADapi.run_in(self._run_find_consumption_after_turned_back_on, 620)
@@ -808,17 +886,21 @@ class ElectricalUsage(ad.ADBase):
         ):
             self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, "04:30:01")
 
-    def _run_find_consumption_after_turned_back_on(self, kwargs):
+    def checkChargingQueue(self, kwargs) -> None:
+        """ Handels charging start and stop when no consumption sensors is configured """
+
         now = self.ADapi.datetime(aware=True)
-        for heater in self.heaters:
-            for item in heater.heater_data.time_to_save:
-                if item.end > now:
-                    self.ADapi.run_at(self.findConsumptionAfterTurnedBackOn, item.end, heater = heater, time_to_save_item = item)
+        minute = now.minute
+
+        if minute == 0:
+            self._check_charging_this_hour()
+
+        self._check_queue_charging_list()
 
     def checkElectricalUsage(self, kwargs) -> None:
         """ Calculate and ajust consumption to stay within kWh limit.
-            Start charging when time to charge.
-        """
+            Start and stops charging when time to charge """
+
         now = self.ADapi.datetime(aware=True)
         minute = now.minute
 
@@ -854,7 +936,7 @@ class ElectricalUsage(ad.ADBase):
     def _cond_cons_gt_prod_solar_off(self) -> bool:
         return (
             (self.accumulated_kWh > self.production_kWh or self.projected_kWh_usage > 0)
-            and self.SolarProducing_ChangeToZero
+            and self.solar_producing_change_to_zero
         )
 
     def _cond_under_target(self) -> bool:
@@ -873,19 +955,21 @@ class ElectricalUsage(ad.ADBase):
 
     def _build_decision_table(self) -> list[Decision]:
         return [
-            Decision("over_target",          self._cond_over_target,          self._act_over_target),
-            Decision("heaters_reduced",      self._cond_heaters_reduced,      self._act_heaters_reduced),
-            Decision("prod_gt_cons",         self._cond_prod_gt_cons,         self._act_prod_gt_cons),
+            Decision("over_target",            self._cond_over_target,            self._act_over_target),
+            Decision("heaters_reduced",        self._cond_heaters_reduced,        self._act_heaters_reduced),
+            Decision("prod_gt_cons",           self._cond_prod_gt_cons,           self._act_prod_gt_cons),
             Decision("cons_gt_prod_solar_off", self._cond_cons_gt_prod_solar_off, self._act_cons_gt_prod_solar_off),
-            Decision("under_target",         self._cond_under_target,         self._act_under_target),
+            Decision("under_target",           self._cond_under_target,           self._act_under_target),
         ]
 
 
     def _act_over_target(self) -> None:
-        # Current consuption is on it´s way to go over max kWh usage pr hour. Redusing usage
+        """ Current consuption is on it's way to go over max kWh usage pr hour. Redusing electricity usage """
+
         now = self.ADapi.datetime(aware=True)
         minute = now.minute
         remaining_minute = 60 - minute
+        reduce_Wh:float = 0.0
 
         if (
             self.available_Wh > -800
@@ -898,7 +982,11 @@ class ElectricalUsage(ad.ADBase):
             reduce_Wh = self._get_heaters_reduced_previous_consumption()
 
             if reduce_Wh + self.available_Wh < 0:
-                self._reduce_charging_ampere(reduce_Wh)
+                reduce_Wh = self._reduce_charging_ampere(reduce_Wh)
+
+        if reduce_Wh + self.available_Wh > 0:
+            return
+
         if minute > 7 or not self._persistence.queueChargingList:
             self._reduce_heating()
 
@@ -912,13 +1000,15 @@ class ElectricalUsage(ad.ADBase):
             and self.available_Wh < -200
         ):
             if self.pause_charging:
-                self._stop_chargers_due_to_overconsumption()
+                if self._stop_chargers_due_to_overconsumption():
+                    return
 
             if self.notify_overconsumption:
                 self._notify_overconsumption()
 
     def _act_heaters_reduced(self) -> None:
-        # Reduce charging speed to turn heaters back on
+        """ Reduce charging speed to turn heaters back on """
+
         self.notify_about_overconsumption = False
 
         reduce_Wh = self._get_heaters_reduced_previous_consumption()
@@ -930,11 +1020,12 @@ class ElectricalUsage(ad.ADBase):
             self._reduce_charging_ampere(reduce_Wh)
 
     def _act_prod_gt_cons(self) -> None:
-        # Production is higher than consumption
-        # TODO: Not tested properly
+        """ Production is higher than consumption """
+
+        # TODO: Not tested. Not refactored.
 
         self.notify_about_overconsumption = False
-        self.SolarProducing_ChangeToZero = True
+        self.solar_producing_change_to_zero = True
         overproduction_Wh:float = self.current_production - self.current_consumption
         # Check if any heater is reduced
         for heater in self.heaters:
@@ -948,60 +1039,49 @@ class ElectricalUsage(ad.ADBase):
 
         if not self._persistence.solarChargingList :
             # Check if any is charging, or is not finished
-            for car in self.all_cars():
-                if (
-                    car.isConnected()
-                    and car.connectedCharger is not None
+            for car in self.all_cars_connected():
+                if car.getCarChargerState() == 'Charging':
+                    car.charging_on_solar = True
+                    self._persistence.solarChargingList.append(car.vehicle_id)
+                elif (car.getCarChargerState() in {'Stopped', 'awaiting_start'}
+                    and car.car_battery_soc() < car.car_data.pref_charge_limit
+                    and overproduction_Wh > 1600
                 ):
-                    if car.getCarChargerState() == 'Charging':
-                        car.charging_on_solar = True
-                        self._persistence.solarChargingList.append(car.vehicle_id)
-                    elif (car.getCarChargerState() in {'Stopped', 'awaiting_start'}
-                        and car.car_battery_soc() < car.car_data.pref_charge_limit
-                        and overproduction_Wh > 1600
-                    ):
-                        car.startCharging()
-                        car.charging_on_solar = True
-                        self._persistence.solarChargingList.append(car.vehicle_id)
-                        AmpereToCharge = math.ceil(overproduction_Wh / car.charger_data.voltPhase)
-                        car.connectedCharger.setChargingAmps(charging_amp_set = AmpereToCharge)
-                        return
-                elif car.isConnected():
-                    car.connectedCharger = car.onboardCharger
+                    car.startCharging()
+                    car.charging_on_solar = True
+                    self._persistence.solarChargingList.append(car.vehicle_id)
+                    AmpereToCharge = math.ceil(overproduction_Wh / car.charger_data.voltPhase)
+                    car.connected_charger.setChargingAmps(charging_amp_set = AmpereToCharge)
+                    return
+                #elif car.isConnected():
+                #    car.connected_charger = car.onboard_charger
 
             # Check if any is below prefered charging limit
-            for car in self.all_cars():
-                if (
-                    car.isConnected()
-                    and car.connectedCharger is not None
+            for car in self.all_cars_connected():
+                if car.getCarChargerState() == 'Charging':
+                    self._persistence.solarChargingList.append(car.vehicle_id)
+                    car.charging_on_solar = True
+                elif (
+                    car.car_data.pref_charge_limit > car.car_data.old_charge_limit
                 ):
-                    if car.getCarChargerState() == 'Charging':
-                        self._persistence.solarChargingList.append(car.vehicle_id)
-                        car.charging_on_solar = True
-                    elif (
-                        car.car_data.pref_charge_limit > car.car_data.old_charge_limit
-                    ):
-                        car.charging_on_solar = True
-                        car.changeChargeLimit(car.car_data.pref_charge_limit)
-                        car.startCharging()
-                        self._persistence.solarChargingList.append(car.vehicle_id)
-                        AmpereToCharge = math.ceil(overproduction_Wh / car.charger_data.voltPhase)
-                        car.connectedCharger.setChargingAmps(charging_amp_set = AmpereToCharge)
-                        return
+                    car.charging_on_solar = True
+                    car.changeChargeLimit(car.car_data.pref_charge_limit)
+                    car.startCharging()
+                    self._persistence.solarChargingList.append(car.vehicle_id)
+                    AmpereToCharge = math.ceil(overproduction_Wh / car.charger_data.voltPhase)
+                    car.connected_charger.setChargingAmps(charging_amp_set = AmpereToCharge)
+                    return
 
         else :
             to_remove = set()
             for queue_id in self._persistence.solarChargingList:
-                car = self.get_car(queue_id)
+                car = Registry.get_car(queue_id)
                 if car is not None:
                     ChargingState = car.getCarChargerState()
-                    if (
-                        car.vehicle_id == queue_id
-                        and car.connectedCharger is not None
-                    ):
+                    if car.connected_charger is not None:
                         if ChargingState == 'Charging':
                             AmpereToIncrease = math.ceil(overproduction_Wh / car.charger_data.voltPhase)
-                            car.connectedCharger.changeChargingAmps(charging_amp_change = AmpereToIncrease)
+                            car.connected_charger.changeChargingAmps(charging_amp_change = AmpereToIncrease)
                             return
                         elif ChargingState == 'Complete':
                             to_remove.add(queue_id)
@@ -1026,8 +1106,9 @@ class ElectricalUsage(ad.ADBase):
                 overproduction_Wh -= heater.heater_data.normal_power
 
     def _act_cons_gt_prod_solar_off(self) -> None:
-        # Consumption is higher than production
-        # TODO: Not tested properly
+        """ Consumption is higher than production """
+
+        # TODO: Not tested. Not refactored
 
         self.notify_about_overconsumption = False
         overproduction_Wh:float = self.current_production - self.current_consumption
@@ -1042,47 +1123,47 @@ class ElectricalUsage(ad.ADBase):
 
         # Reduce any chargers/batteries
         for queue_id in reversed(self._persistence.solarChargingList):
-            for c in self.chargers:
-                if c.Car is not None:
+            #charger = Registry.get_charger()
+            for charger in self.all_chargers():
+                if charger.connected_vehicle is not None:
                     if (
-                        c.Car.connectedCharger is c
-                        and c.Car.vehicle_id == queue_id
+                        charger.connected_vehicle.connected_charger is charger
+                        and charger.connected_vehicle.vehicle_id == queue_id
                     ):
-                        if c.charger_data.ampereCharging == 0:
-                            c.charger_data.ampereCharging = math.floor(float(self.ADapi.get_state(c.charger_data.charging_amps,
-                                namespace = c.namespace))
-                            )
-                        if c.charger_data.ampereCharging > c.charger_data.min_ampere:
-                            AmpereToReduce = math.floor(overproduction_Wh / c.charger_data.voltPhase)
-                            if (c.charger_data.ampereCharging + AmpereToReduce) < c.charger_data.min_ampere:
-                                c.setChargingAmps(charging_amp_set = c.charger_data.min_ampere)
-                                overproduction_Wh += (c.charger_data.ampereCharging - c.charger_data.min_ampere) * c.charger_data.voltPhase
+                        if charger.charger_data.ampereCharging == 0:
+                            charger.update_ampere_charging_from_sensor()
+                        if charger.charger_data.ampereCharging > charger.charger_data.min_ampere:
+                            AmpereToReduce = math.floor(overproduction_Wh / charger.charger_data.voltPhase)
+                            if (charger.charger_data.ampereCharging + AmpereToReduce) < charger.charger_data.min_ampere:
+                                charger.setChargingAmps(charging_amp_set = charger.charger_data.min_ampere)
+                                overproduction_Wh += (charger.charger_data.ampereCharging - charger.charger_data.min_ampere) * charger.charger_data.voltPhase
                                 # TODO: Check if remaining available is lower than production and stop charing.
                             else:
-                                c.changeChargingAmps(charging_amp_change = AmpereToReduce)
-                                overproduction_Wh += AmpereToReduce * c.charger_data.voltPhase
+                                charger.changeChargingAmps(charging_amp_change = AmpereToReduce)
+                                overproduction_Wh += AmpereToReduce * charger.charger_data.voltPhase
                                 break
         if self.current_production < 1000:
             # TODO: Find proper idle consumption... 
             # If production is low -> stop and reset.
-            self.SolarProducing_ChangeToZero = False
+            self.solar_producing_change_to_zero = False
             to_remove = set()
             for queue_id in reversed(self._persistence.solarChargingList):
-                car = self.get_car(queue_id)
+                car = Registry.get_car(queue_id)
                 if car is not None:
-                    if car.vehicle_id == queue_id:
-                        car.charging_on_solar = False
-                        car.changeChargeLimit(car.car_data.old_charge_limit)
-                        to_remove.add(queue_id)
+                    car.charging_on_solar = False
+                    car.changeChargeLimit(car.car_data.old_charge_limit)
+                    to_remove.add(queue_id)
             self._persistence.solarChargingList = [
                 qid for qid in self._persistence.solarChargingList
                 if qid not in to_remove
             ]
 
     def _act_under_target(self) -> None:
+        """ Consumption is below max target """
         now = self.ADapi.datetime(aware=True)
         minute = now.minute
         remaining_minute = 60 - minute
+
         # Increase charging speed or add another charger if time to charge
         self.notify_about_overconsumption = False
         if (
@@ -1091,138 +1172,123 @@ class ElectricalUsage(ad.ADBase):
             or now - self.lastTimeHeaterWasReduced < timedelta(minutes = 10)
         ):
             return
+        self._check_queue_charging_list()
+
+    def _check_queue_charging_list(self):
+        """ Updates queueChargingList and increases chargingspeed """
+
+        now = self.ADapi.datetime(aware=True)
+        minute = now.minute
+        remaining_minute = 60 - minute
 
         next_vehicle_id = False
-        if self._update_ChargingQueue():
-            to_remove = set()
-            for queue_id in self._persistence.queueChargingList:
-                car = self.get_car(queue_id)
-                if car is not None:
-                    if car.connectedCharger is not None:
-                        ChargingState = car.getCarChargerState()
-                        if ChargingState in ('Complete', 'Disconnected'):
-                            to_remove.add(queue_id)
-                            CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
-                            car.connectedCharger._CleanUpWhenChargingStopped()
-                            if (
-                                len(self._persistence.queueChargingList) <= 1 and
-                                not self.away_state and
-                                self.ADapi.now_is_between('01:00:00', '05:00:00')
-                            ):
-                                if CHARGE_SCHEDULER.findNextChargerToStart() is None:
-                                    if self.ADapi.now_is_between('01:00:00', '04:00:00'):
-                                        self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, "04:30:01")
-                                    else:
-                                        self.ADapi.run_in(self.logIdleConsumption, 30)
-                                elif self._should_start_next_charging(vehicle_id = car.vehicle_id):
-                                    next_vehicle_id = True
+        to_remove = set()
+        for queue_id in self._persistence.queueChargingList:
+            car = Registry.get_car(queue_id)
+            if car is None:
+                continue
 
-                        elif ChargingState in ('Stopped', 'awaiting_start'):
-                            
-                            if CHARGE_SCHEDULER.isChargingTime(vehicle_id = car.vehicle_id) and self.available_Wh > 1300:
-                                self.ADapi.log(f"Chargestate for {car.carName} is {ChargingState} in queueChargingList. Starting to charge car.") ###
-                                self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                                        remaining_minute = remaining_minute)
-                                                                        
-                                return
-                            elif not car.dontStopMeNow():
-                                to_remove.add(queue_id)
-                                CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
-
-                        elif ChargingState == 'Charging':
-                            if (len(CHARGE_SCHEDULER.chargingQueue) > len(self._persistence.queueChargingList) and
-                                self._should_start_next_charging(vehicle_id = car.vehicle_id)
-                            ):
-                                next_vehicle_id = True
+            if car.connected_charger is not None:
+                ChargingState = car.getCarChargerState()
+                if ChargingState in ('Complete', 'Disconnected'):
+                    to_remove.add(queue_id)
+                    CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
+                    car.connected_charger._CleanUpWhenChargingStopped()
+                    if (
+                        len(self._persistence.queueChargingList) <= 1 and
+                        not self.away_state and
+                        self.ADapi.now_is_between('01:00:00', '05:00:00')
+                    ):
+                        if CHARGE_SCHEDULER.findNextChargerToStart(check_if_charging_time = True) is None:
+                            if self.ADapi.now_is_between('01:00:00', '04:00:00'):
+                                self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, "04:30:01")
                             else:
-                                next_vehicle_id = False
+                                self.ADapi.run_in(self.logIdleConsumption, 30)
+                        elif self._should_start_next_charging(vehicle_id = car.vehicle_id):
+                            next_vehicle_id = True
 
-                                if not car.isChargingAtMaxAmps():
-                                    AmpereToIncrease = math.floor(self.available_Wh / car.connectedCharger.charger_data.voltPhase)
-                                    car.connectedCharger.changeChargingAmps(charging_amp_change = AmpereToIncrease)
+                elif ChargingState in ('Stopped', 'awaiting_start'):
+                    
+                    if CHARGE_SCHEDULER.isChargingTime(vehicle_id = car.vehicle_id) and self.available_Wh > 1300:
+                        self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                                remaining_minute = remaining_minute)
+                                                                
+                        return
+                    elif not car.dontStopMeNow():
+                        to_remove.add(queue_id)
+                        CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
 
-                        elif ChargingState is None:
-                            car.wakeMeUp()
-                            self.ADapi.log(f"Waking up {car.carName} from chargequeue. Chargestate is None") ###
-                            self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                                    remaining_minute = remaining_minute)
-                            return
-                        elif (
-                            car.connectedCharger is not car.onboardCharger
-                            and ChargingState == 'NoPower'
-                        ):
-                            if car.connectedCharger.getChargingState() != 'Charging':
-                                self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                                        remaining_minute = remaining_minute)
-                                return
-                        else:
-                            if (
-                                car.connectedCharger is car.onboardCharger
-                                and ChargingState == 'NoPower'
-                            ):
-                                self.ADapi.log(f"{car.carName} from chargequeue has Chargestate is NoPower and is connected to onboard charger") ###
-                                for charger in self.chargers:
-                                    if (
-                                        charger.Car is None
-                                        and charger.getChargingState() in ('Stopped', 'awaiting_start')
-                                    ):
-                                        car.connectedCharger = None
-                                        charger.findCarConnectedToCharger()
-
+                elif ChargingState == 'Charging':
+                    if (len(CHARGE_SCHEDULER.chargingQueue) > len(self._persistence.queueChargingList) and
+                        self._should_start_next_charging(vehicle_id = car.vehicle_id)
+                    ):
+                        next_vehicle_id = True
                     else:
-                        if not car.isConnected():
-                            to_remove.add(queue_id)
-                            CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
-                            self.ADapi.log(f"Removing {car.carName} from chargequeue. is not connected. Chargestate not Disconnetcted? {car.getCarChargerState()}") ###
-                            car._handleChargeCompletion()
-                        else:
-                            car.connectedCharger = car.onboardCharger
-            self._persistence.queueChargingList = [
-                qid for qid in self._persistence.queueChargingList
-                if qid not in to_remove
-            ]
+                        next_vehicle_id = False
 
-        if not self._persistence.queueChargingList or next_vehicle_id:
+                        if not car.isChargingAtMaxAmps():
+                            self._increase_charging_ampere(car, self.available_Wh)
+
+                elif ChargingState is None:
+                    car.wakeMeUp()
+                    self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                            remaining_minute = remaining_minute)
+                    return
+
+                elif (
+                    car.connected_charger is not car.onboard_charger
+                    and ChargingState == 'NoPower'
+                ):
+                    if car.connected_charger.getChargingState() != 'Charging':
+                        self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                                remaining_minute = remaining_minute)
+                        return
+
+                else:
+                    if (
+                        car.connected_charger is car.onboard_charger
+                        and ChargingState == 'NoPower'
+                    ):
+                        car.wakeMeUp()
+                        self.ADapi.log(f"{car.carName} from chargequeue has Chargestate NoPower and is connected to onboard charger") ###
+                        for charger in self.all_chargers():
+                            if (
+                                charger.connected_vehicle is None
+                                and charger.getChargingState() in ('Stopped', 'awaiting_start')
+                            ):
+                                self.ADapi.log(f"-> Found {charger.charger} with state {charger.getChargingState()}. Will try to match with car {car.carName}") ###
+                                Registry.unlink(car)
+                                charger.findCarConnectedToCharger()
+
+            elif not car.isConnected():
+                to_remove.add(queue_id)
+                CHARGE_SCHEDULER.removeFromCharging(car.vehicle_id)
+                self.ADapi.log(f"Removing {car.carName} from chargequeue. is not connected. Chargestate not Disconnetcted? {car.getCarChargerState()}") ###
+                car._handleChargeCompletion()
+
+            else:
+                self.ADapi.log(f"Needed to connect {self.car.carName} to onboard charger") ###
+                Registry.set_link(car, car.onboard_charger)
+
+        self._persistence.queueChargingList = [
+            qid for qid in self._persistence.queueChargingList
+            if qid not in to_remove
+        ]
+
+        self.find_next_charger_counter += 1
+        if next_vehicle_id or (self.find_next_charger_counter > 5 and not self._persistence.queueChargingList):
+            self.find_next_charger_counter = 0
             if (
+                self.available_Wh > 1600 and
                 CHARGE_SCHEDULER.isChargingTime()
-                and self.available_Wh > 1600
-                and minute > 3
             ):
-                next_vehicle_to_start = CHARGE_SCHEDULER.findNextChargerToStart()
-
-                if next_vehicle_to_start is not None:
-                    if self._checkIfPossibleToStartCharging():
-                        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkIdleConsumption_Handler, name = "log"):
-                            self.checkIdleConsumption_Handler = None
-
-                        car = self.get_car(next_vehicle_to_start)
-                        if car is not None:
-                            if car.connectedCharger is not None:
-                                if car.vehicle_id not in self._persistence.queueChargingList:
-                                    self._persistence.queueChargingList.append(car.vehicle_id)
-                                    self._persistence.queueChargingList = CHARGE_SCHEDULER.sort_charging_queue_by_priority(
-                                                                                        self._persistence.queueChargingList)
-                                    CHARGE_SCHEDULER.markAsCharging(car.vehicle_id)
-                                    self.ADapi.log(f"Starting to charge {car.carName} from queueChargingList") ###
-                                    self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                                            remaining_minute = remaining_minute)
-                                    
-                                    return
-                            else:
-                                if not car.isConnected():
-                                    self.ADapi.log(f"{car.carName} Next to charge from queueChargingList but not connected?") ###
-                                    car._handleChargeCompletion()
-                                elif car.getCarChargerState() == 'NoPower':
-                                    for charger in self.chargers:
-                                        if (
-                                            charger.Car is None
-                                            and charger.getChargingState() in ('Stopped', 'awaiting_start')
-                                        ):
-                                            charger.findCarConnectedToCharger()
-                                            return
+                self._update_ChargingQueue()
+                self._find_next_charger_to_start(queue_list = self._persistence.queueChargingList,
+                                                 check_if_charging_time = True)
 
 
-    # get data for consumption calculation
+    # Functions for consumption calculation
+
     def _get_current_consumption(self) -> None:
         try:
             self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
@@ -1238,17 +1304,13 @@ class ElectricalUsage(ad.ADBase):
                             namespace = heater.namespace))
                     except (TypeError, ValueError):
                         self.current_consumption += heater_consumption / len(self.heaters)
-            for car in self.all_cars():
-                if (
-                    car.isConnected()
-                    and car.getCarChargerState() == 'Charging'
-                    and car.connectedCharger is not None
-                ):
+            for car in self.all_cars_connected():
+                if car.getCarChargerState() == 'Charging':
                     try:
-                        self.current_consumption += car.connectedCharger.charger_data.ampereCharging * car.connectedCharger.charger_data.voltPhase
+                        self.current_consumption += car.connected_charger.charger_data.ampereCharging * car.connected_charger.charger_data.voltPhase
                     except (TypeError, ValueError):
                         self.ADapi.log(
-                            f"Not able to get charging info when current consumption is unavailable from {type(car.connectedCharger).__name__}",
+                            f"Not able to get charging info when current consumption is unavailable from {type(car.connected_charger).__name__}",
                             level = 'WARNING'
                         )
 
@@ -1295,6 +1357,11 @@ class ElectricalUsage(ad.ADBase):
                         self.accumulated_kWh += add_consumption
                         self.last_accumulated_kWh += add_consumption
 
+    async def _reload_accumulated_consumption_sensor(self) -> None:
+        await self.ADapi.call_service('homeassistant/reload_config_entry',
+            entity_id = self.accumulated_consumption_current_hour
+        )
+
     def _get_sensor_value(self, sensor_id: str | None) -> float:
         if not sensor_id:
             return 0.0
@@ -1320,22 +1387,50 @@ class ElectricalUsage(ad.ADBase):
                 + (self.max_target_kWh_buffer * (60 / remaining_minute))
                 ) * 1000 - self.current_consumption
 
+
     # Manage charging consumption
+
+    def _find_next_charger_to_start(self, queue_list:list, check_if_charging_time:bool):
+
+        next_vehicle_to_start = CHARGE_SCHEDULER.findNextChargerToStart(check_if_charging_time)
+
+        if next_vehicle_to_start is None:
+            return
+
+        now = self.ADapi.datetime(aware=True)
+        minute = now.minute
+        remaining_minute = 60 - minute
+
+        if self._checkIfPossibleToStartCharging():
+            car = Registry.get_car(next_vehicle_to_start)
+            if car is None:
+                return
+            if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkIdleConsumption_Handler, name = "log"):
+                self.checkIdleConsumption_Handler = None
+            if car.connected_charger is not None:
+                if car.vehicle_id not in queue_list:
+                    queue_list.append(car.vehicle_id)
+                    queue_list = CHARGE_SCHEDULER.sort_charging_queue_by_priority(
+                                                                        queue_list)
+                    self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                          remaining_minute = remaining_minute)
+                    return
+            else:
+                self._connect_car_and_charger(car)
+
     def _checkIfPossibleToStartCharging(self) -> bool:
         softwareUpdates = False
-        for car in self.all_cars():
-            if car.isConnected():
-                if car.SoftwareUpdates():
-                    softwareUpdates = True
-        # Stop other chargers if a car is updating software. Not able to adjust chargespeed when updating.
+        for car in self.all_cars_connected():
+            if car.SoftwareUpdates():
+                softwareUpdates = True
+        # Stop other chargers if a car is updating software. Might not be able to adjust chargespeed when updating.
         if softwareUpdates:
-            for car in self.all_cars():
+            for car in self.all_cars_connected():
                 if (
-                    car.isConnected()
-                    and not car.dontStopMeNow()
+                    not car.dontStopMeNow()
                     and car.getCarChargerState() == 'Charging'
                 ):
-                    car.stopCharging(force_stop = True)
+                    car.stopCharging()
             return False
         return True
 
@@ -1343,48 +1438,55 @@ class ElectricalUsage(ad.ADBase):
                                          vehicle_id:str = None, 
                                          remaining_minute:int = 1) -> None:
         if remaining_minute > 3:
-            for queue_id in self._persistence.queueChargingList:
-                car = self.get_car(queue_id)
-                if car is not None:
-                    if car.vehicle_id == queue_id:
-                        if car.vehicle_id == vehicle_id:
-                            car.startCharging()
-                            AmpereToCharge = math.floor(self.available_Wh / car.connectedCharger.charger_data.voltPhase)
-                            car.connectedCharger.setChargingAmps(charging_amp_set = AmpereToCharge)
-                    elif not self._should_start_next_charging(vehicle_id = car.vehicle_id):
-                        return
+            car = Registry.get_car(vehicle_id)
+            if car is not None:
+                car.startCharging()
+                #AmpereToCharge = math.floor(self.available_Wh / car.connected_charger.charger_data.voltPhase)
+                #car.connected_charger.setChargingAmps(charging_amp_set = AmpereToCharge)
+                CHARGE_SCHEDULER.markAsCharging(car.vehicle_id)
 
-    def _should_start_next_charging(vehicle_id:str = None) -> bool:
-        car = self.get_car(vehicle_id)
+
+    def _should_start_next_charging(self, vehicle_id:str = None) -> bool:
+        """ Check if next car should also start charging """
+
+        now = self.ADapi.datetime(aware=True)
+        minute = now.minute
+        remaining_minute = 60 - minute
+
+        car = Registry.get_car(vehicle_id)
         if car is not None:
             if car.isChargingAtMaxAmps():
                 return True
             if minute > 15 and remaining_minute > 12:
-                amp = car.connectedCharger.charger_data.ampereCharging
+                amp = car.connected_charger.charger_data.ampereCharging
                 threshold = max(car.getCarMaxAmps() - 12, 12)
                 return amp > threshold
         return False
 
     def _update_ChargingQueue(self) -> bool:
-        for car in self.all_cars():
+        """Add eligible cars to the charging queue and return whether the queue is non-empty """
+
+        added = False
+        for car in self.all_cars_connected():
             if (
-                car.isConnected()
-                and (car.getCarChargerState() == 'Charging' or car.connectedCharger is not None and car.connectedCharger.getChargingState() == 'Charging')
-                and car.vehicle_id not in self._persistence.queueChargingList
-                and not self.SolarProducing_ChangeToZero
+                car.vehicle_id not in self._persistence.queueChargingList and
+                not self.solar_producing_change_to_zero and
+                (car.getCarChargerState() == 'Charging' or car.connected_charger.getChargingState() == 'Charging')
             ):
                 self._persistence.queueChargingList.append(car.vehicle_id)
-                self._persistence.queueChargingList = CHARGE_SCHEDULER.sort_charging_queue_by_priority(
-                                                                    self._persistence.queueChargingList)
+                added = True
                 CHARGE_SCHEDULER.markAsCharging(car.vehicle_id)
+
+        if added:
+            self._persistence.queueChargingList = CHARGE_SCHEDULER.sort_charging_queue_by_priority(
+                                                                    self._persistence.queueChargingList)
         return self._persistence.queueChargingList
 
     def _check_charging_this_hour(self):
-        for car in self.all_cars():
+        for car in self.all_cars_connected():
             if (
-                car.isConnected()
-                and car.getCarChargerState() == 'Charging'
-                and not self.SolarProducing_ChangeToZero
+                car.getCarChargerState() == 'Charging'
+                and not self.solar_producing_change_to_zero
                 and not car.dontStopMeNow()
             ):
                 if not CHARGE_SCHEDULER.isChargingTime(vehicle_id = car.vehicle_id):
@@ -1414,54 +1516,59 @@ class ElectricalUsage(ad.ADBase):
                     else:
                         car.findNewChargeTime()
 
-    def _reduce_charging_ampere(self, reduce_Wh: float) -> None:
-        """ Reduces charging to stay within max kWh. """
-        reduce_Wh += self.available_Wh
+    def _reduce_charging_ampere(self, reduce_Wh: float) -> float:
+        """ Reduces charging to stay within max kWh """
 
         for queue_id in reversed(self._persistence.queueChargingList):
-            for c in self.chargers:
-                if c.Car is not None:
-                    if (
-                        c.Car.connectedCharger is c
-                        and c.Car.vehicle_id == queue_id
-                        and reduce_Wh < 0
-                    ):
-                        if c.charger_data.ampereCharging == 0:
-                            c.charger_data.ampereCharging = float(self.ADapi.get_state(c.charger_data.charging_amps,
-                                namespace = c.namespace))
+            car = Registry.get_car(queue_id)
+            if car is None or car.connected_charger is None:
+                continue
 
-                        if c.charger_data.ampereCharging > c.charger_data.min_ampere:
-                            AmpereToReduce = math.floor(reduce_Wh / c.charger_data.voltPhase)
-                            if (c.charger_data.ampereCharging + AmpereToReduce) < c.charger_data.min_ampere:
-                                c.setChargingAmps(charging_amp_set = c.charger_data.min_ampere)
-                                self.available_Wh -= (c.charger_data.ampereCharging  - c.charger_data.min_ampere) * c.charger_data.voltPhase
-                                reduce_Wh -= (c.charger_data.ampereCharging  - c.charger_data.min_ampere) * c.charger_data.voltPhase
-                            else:
-                                c.changeChargingAmps(charging_amp_change = AmpereToReduce)
-                                self.available_Wh -= AmpereToReduce * c.charger_data.voltPhase
-                                reduce_Wh -= AmpereToReduce * c.charger_data.voltPhase
-                                break
+            ampere_charging = car.connected_charger.charger_data.ampereCharging
+            if ampere_charging == 0:
+                ampere_charging = car.connected_charger.update_ampere_charging_from_sensor()
 
-    def _stop_chargers_due_to_overconsumption(self) -> None:
+            charger_min_ampere = car.connected_charger.charger_data.min_ampere
+            charger_voltPhase = car.connected_charger.charger_data.voltPhase
+
+            if ampere_charging > charger_min_ampere:
+                AmpereToReduce = math.floor(reduce_Wh + self.available_Wh / charger_voltPhase)
+                if (ampere_charging + AmpereToReduce) < charger_min_ampere:
+                    car.connected_charger.setChargingAmps(charging_amp_set = charger_min_ampere)
+                    self.available_Wh -= (ampere_charging  - charger_min_ampere) * charger_voltPhase
+                    reduce_Wh -= (ampere_charging  - charger_min_ampere) * charger_voltPhase
+                else:
+                    car.connected_charger.changeChargingAmps(charging_amp_change = AmpereToReduce)
+                    self.available_Wh -= AmpereToReduce * charger_voltPhase
+                    reduce_Wh -= AmpereToReduce * charger_voltPhase
+
+            if reduce_Wh + self.available_Wh > 0:
+                return reduce_Wh
+        return reduce_Wh
+
+    def _increase_charging_ampere(self, car, increase_Wh: float) -> None:
+        """ Increase charging speed """
+
+        AmpereToIncrease = math.floor(increase_Wh / car.connected_charger.charger_data.voltPhase)
+        car.connected_charger.changeChargingAmps(charging_amp_change = AmpereToIncrease)
+
+    def _stop_chargers_due_to_overconsumption(self) -> bool:
         for queue_id in reversed(self._persistence.queueChargingList):
-            for charger in self.chargers:
-                car = charger.Car
-                if not car:
-                    continue
-                if (
-                    car.connectedCharger is charger
-                    and car.vehicle_id == queue_id
-                ):
-                    if charger.getChargingState() == "Charging":
-                        self.available_Wh += (
-                            charger.charger_data.ampereCharging * charger.charger_data.voltPhase
-                        )
-                        charger.stopCharging(force_stop=True)
-                        if self.available_Wh > -100:
-                            return
-                    break
+            car = Registry.get_car(queue_id)
+            if car is None or car.connected_charger is None:
+                continue
+
+            if car.connected_charger.getChargingState() == "Charging":
+                self.available_Wh += (
+                    car.connected_charger.charger_data.ampereCharging * car.connected_charger.charger_data.voltPhase
+                )
+                car.stopCharging(force_stop=True)
+                if self.available_Wh > -100:
+                    return True
+        return False
 
     # Manage heaters consumption
+
     def _reduce_heating(self) -> None:
         now = self.ADapi.datetime(aware=True)
         for heater in self.heaters:
@@ -1491,8 +1598,8 @@ class ElectricalUsage(ad.ADBase):
     def _get_heaters_reduced_previous_consumption(self) -> float:
         """ Function that finds the value of power consumption when heating for items that are turned down
             and turns the heating back on if there is enough available watt,
-            or return how many watt to reduce charing to turn heating back on.
-        """
+            or return how many watt to reduce charing to turn heating back on """
+
         reduce_Wh: float = 0
         to_remove = set()
         now = self.ADapi.datetime(aware=True)
@@ -1523,10 +1630,17 @@ class ElectricalUsage(ad.ADBase):
             return None, None
         return idle, heater
 
+    def _run_find_consumption_after_turned_back_on(self, kwargs):
+        now = self.ADapi.datetime(aware=True)
+        for heater in self.heaters:
+            for item in heater.heater_data.time_to_save:
+                if item.end > now:
+                    self.ADapi.run_at(self.findConsumptionAfterTurnedBackOn, item.end, heater = heater, time_to_save_item = item)
+
     def findConsumptionAfterTurnedBackOn(self, **kwargs) -> None:
         """ Functions to register consumption based on outside temperature after turned back on,
-            to better be able to calculate chargingtime based on max kW pr hour usage
-        """
+            to better be able to calculate chargingtime based on max kW pr hour usage """
+
         heater = kwargs['heater']
         time_to_save_item = kwargs['time_to_save_item']
         hoursOffInt = 0
@@ -1551,17 +1665,10 @@ class ElectricalUsage(ad.ADBase):
                 runtime = time_to_save_item.end + timedelta(minutes = 3)
                 self.ADapi.run_at(heater.findConsumptionAfterTurnedOn, runtime, hoursOffInt = hoursOffInt)
 
-    def check_if_heaterName_is_in_heaters(self, heater_name:str) -> bool:
-        """ Function to find heater configuration by its name. """
-        for heater in self.heaters:
-            if heater_name == heater.heater:
-                return True
-        return False
-
 
     def _reset_hourly(self, now) -> None:
-        # Resets and logs every hour
         self.last_accumulated_kWh = 0
+        self.find_next_charger_counter = 0
         if now.hour == 0 and now.day == 1:
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
 
@@ -1571,8 +1678,10 @@ class ElectricalUsage(ad.ADBase):
 
 
     # Functions to calculate and store consumption
+
     def calculateIdleConsumption(self, kwargs: dict) -> None:
-        """Build the per_hour available_wh schedule and store it in the persistence data."""
+        """Build the per_hour available_wh schedule """
+
         persistence = self._persistence
 
         now = self.ADapi.datetime(aware=True)
@@ -1670,10 +1779,8 @@ class ElectricalUsage(ad.ADBase):
 
 
     def logIdleConsumption(self, kwargs) -> None:
-        """
-        Calculate the new idle & heater consumption values for the *current* outside temperature
-        and persist them into `self._persistence.idle_usage`.
-        """
+        """ Calculate the new idle & heater consumption values for the *current* outside temperature """
+
         try:
             self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
         except ValueError as ve:
@@ -1771,7 +1878,8 @@ class ElectricalUsage(ad.ADBase):
                 consumption_dict[out_temp_str] = new_entry
 
     def logHighUsage(self) -> None:
-        """ Writes top three max kWh usage pr hour to persistent storage. """
+        """ Updates top three max kWh usage pr hour """
+
         newTotal = 0.0
         max_kwh_usage_top = self._persistence.max_usage.topUsage
         newTopUsage:float = 0
@@ -1811,9 +1919,11 @@ class ElectricalUsage(ad.ADBase):
             )
 
 
-        # Set proper value when weather sensors is updated
+    # Weather sensors
+
     def weather_event(self, event_name, data, **kwargs) -> None:
-        """ Listens for weather change from the weather app. """
+        """ Listens for weather change from the weather app """
+
         global OUT_TEMP
         global RAIN_AMOUNT
         global WIND_AMOUNT
@@ -1884,18 +1994,15 @@ class ElectricalUsage(ad.ADBase):
         """ Listens to same mode event that I have used in Lightwand: https://github.com/Pythm/ad-Lightwand
             If mode name equals 'fire' it will turn off all charging and heating.
             To call from another app use: self.fire_event('MODE_CHANGE', mode = 'fire')
-            Set back to normal with mode 'false-alarm'.
-        """
+            Set back to normal with mode 'false-alarm' """
+
         if data['mode'] == FIRE_TRANSLATE:
             self.houseIsOnFire = True
-            for car in self.all_cars():
-                if (
-                    car.isConnected()
-                    and car.getCarChargerState() == 'Charging'
-                ):
+            for car in self.all_cars_connected():
+                if car.getCarChargerState() == 'Charging':
                     car.stopCharging(force_stop = True)
             
-            for charger in self.chargers:
+            for charger in self.all_chargers():
                 charger.doNotStartMe = True
 
             for heater in self.heaters:
@@ -1908,10 +2015,10 @@ class ElectricalUsage(ad.ADBase):
             for heater in self.heaters:
                 heater.turn_on_heater()
             
-            for charger in self.chargers:
+            for charger in self.all_chargers():
                 charger.doNotStartMe = False
 
-            for car in self.all_cars():
+            for car in self.all_cars_connected():
                 if car.kWhRemaining() > 0:
                     car.findNewChargeTime()
 
@@ -1938,35 +2045,33 @@ class ElectricalUsage(ad.ADBase):
                 car.findNewChargeTime()
                 return
         
-        for c in self.chargers:
-            if data['action'] == 'kWhremaining'+str(c.charger):
+        for charger in self.all_chargers():
+            if data['action'] == 'kWhremaining'+str(charger.charger):
                 try:
-                    c.Car.car_data.kWh_remain_to_charge = float(data['reply_text'])
+                    charger.connected_vehicle.car_data.kWh_remain_to_charge = float(data['reply_text'])
                 except (ValueError, TypeError):
-                    c.kWhRemaining()
+                    charger.kWhRemaining()
                     self.ADapi.log(
-                        f"User input {data['reply_text']} on setting kWh remaining for Guest car. Not valid number. Using {c.Car.car_data.kWh_remain_to_charge} to calculate charge time",
+                        f"User input {data['reply_text']} on setting kWh remaining for Guest car. Not valid number. "
+                        f"Using {charger.connected_vehicle.car_data.kWh_remain_to_charge} to calculate charge time",
                         level = 'INFO'
                     )
-                c.Car.findNewChargeTime()
+                charger.connected_vehicle.findNewChargeTime()
                 return
 
-            if data['action'] == 'chargeNow'+str(c.charger):
-                c.Car.charge_now = True
-                c.startCharging()
+            if data['action'] == 'chargeNow'+str(charger.charger):
+                charger.connected_vehicle.charge_now = True
+                charger.startCharging()
                 return
 
     def _awayStateListen_Main(self, entity, attribute, old, new, kwargs) -> None:
-        """ Listen for changes in vacation switch and requests heater to set new state. """
+        """ Listen for changes in vacation switch """
+
         self.away_state = new == 'on'
 
-    async def _reload_accumulated_consumption_sensor(self) -> None:
-        await self.ADapi.call_service('homeassistant/reload_config_entry',
-            entity_id = self.accumulated_consumption_current_hour
-        )
 
 class Scheduler:
-    """ Class for calculating and schedule charge times. """
+    """ Class for calculating and schedule charge times """
 
     def __init__(self, api,
         stopAtPriceIncrease:float,
@@ -1999,7 +2104,7 @@ class Scheduler:
         totalW_AllChargers: float = 3600,
         start_time: Optional[self.ADapi.datetime(aware=True)] = None,
     ) -> float:
-        """ Estimate the *number of hours* it will take to finish a charge. """
+        """ Estimate the *number of hours* it will take to finish a charge """
 
         if start_time is None:
             start_time = self.ADapi.datetime(aware=True)
@@ -2038,12 +2143,13 @@ class Scheduler:
         return hours_to_charge
 
     def _entry_for(self, vehicle_id: str) -> Optional["ChargingQueueItem"]:
-        """ Return the first queue item that belongs to *vehicle_id* or ``None``. """
+        """ Return the first queue item that belongs to *vehicle_id* or ``None`` """
 
         return next((c for c in self.chargingQueue if c.vehicle_id == vehicle_id), None)
 
     def _vehicle_priority_map(self) -> dict[str, int]:
         """ A lookup table that maps every vehicle_id that is currently in the *charging* queue to its `priority` value. """
+
         return {item.vehicle_id: item.priority for item in self.chargingQueue}
 
     def sort_charging_queue_by_priority(
@@ -2053,7 +2159,8 @@ class Scheduler:
         reverse: bool = False
     ) -> List[str]:
         """ Return a **new list** containing the same vehicle_ids but sorted
-        according to the priority stored in `self._persistence.chargingQueue`."""
+        according to the priority stored in `self._persistence.chargingQueue` """
+
         priority_map = self._vehicle_priority_map()
 
         def priority_of(vid: str) -> int:
@@ -2063,7 +2170,7 @@ class Scheduler:
 
     def getChargingTime(self, vehicle_id: str) -> Tuple[Optional[datetime], Optional[datetime]]:
         """ Return ``(charging_start, charging_stop)`` for *vehicle_id* if the
-        queue item has both timestamps set, otherwise ``(None, None)``. """
+        queue item has both timestamps set, otherwise ``(None, None)`` """
 
         entry = self._entry_for(vehicle_id)
         if entry and entry.chargingStart and entry.chargingStop:
@@ -2072,7 +2179,7 @@ class Scheduler:
 
     def isChargingTime(self, vehicle_id: Optional[str] = None) -> bool:
         """ Return ``True`` if *now* lies between a chargingStart/Stop pair for the
-        supplied vehicle (or for any vehicle when *vehicle_id* is ``None``). """
+        supplied vehicle (or for any vehicle when *vehicle_id* is ``None``) """
 
         if not self.chargingQueue:
             return False
@@ -2109,17 +2216,13 @@ class Scheduler:
 
     def _update_prices_for_future_hours(self) -> float:
         """ When tomorrow's price data is not yet available """
+
         now = self.ADapi.datetime(aware=True)
         if all(c.price is not None for c in self.chargingQueue):
             return -1
 
         kWh_to_charge = sum(c.kWhRemaining for c in self.chargingQueue if c.kWhRemaining is not None)
         total_power = sum(c.maxAmps * c.voltPhase for c in self.chargingQueue if c.maxAmps and c.voltPhase)
-
-        for c in self.chargingQueue: ### Only for checking
-            if c.estHourCharge: ###
-                self.ADapi.log(f"Est hours to charge for {c.name} is {c.estHourCharge}") ###
-
 
         if not any(c.estHourCharge for c in self.chargingQueue):
             est_hours = self._calculate_expected_chargetime(
@@ -2129,10 +2232,9 @@ class Scheduler:
             self.ADapi.log(f"Calculated est hours to charge: {est_hours} in _update_prices_for_future_hours") ###
         else:
             est_hours = sum(c.estHourCharge for c in self.chargingQueue if c.estHourCharge)
-            self.ADapi.log(f"Found est hours to charge: {est_hours} in _update_prices_for_future_hours") ###
 
         price = ELECTRICITYPRICE.get_lowest_prices(
-            checkitem = now,
+            checkitem = now.hour,
             hours = est_hours,
             min_change = 0.1
         )
@@ -2142,8 +2244,7 @@ class Scheduler:
         return price
 
     def getVehiclePrice(self, vehicle_id: Optional[str] = None) -> float:
-        """
-        Return the price for a specific vehicle if it is present in the queue.
+        """ Return the price for a specific vehicle if it is present in the queue.
         Otherwise return the *highest* price seen across all entries """
 
         highest_price = 0.0
@@ -2156,7 +2257,8 @@ class Scheduler:
 
     def isPastChargingTime(self, vehicle_id: Optional[str] = None) -> bool:
         """ Return ``True`` when the charging stop time for *vehicle_id* has
-        already passed. """
+        already passed """
+
         now = self.ADapi.datetime(aware=True)
         entry = self._entry_for(vehicle_id) if vehicle_id else None
         if not entry or entry.chargingStop is None:
@@ -2170,7 +2272,8 @@ class Scheduler:
         finish_by_hour: int,
     ) -> bool:
         """ Return ``True`` if a matching queue entry exists **and** the
-        scheduled charging has not yet finished. """
+        scheduled charging has not yet finished """
+
         now = self.ADapi.datetime(aware=True)
         entry = self._entry_for(vehicle_id)
         if not entry:
@@ -2198,19 +2301,22 @@ class Scheduler:
     def isCurrentlyCharging(self, vehicle_id):
         return vehicle_id in self.currentlyCharging
 
-    def findNextChargerToStart(self) -> Optional[str]:
-        """Return the *vehicle_id* of the next charging job that is ready to start. """
+    def findNextChargerToStart(self, check_if_charging_time:bool = True) -> Optional[str]:
+        """ Return the *vehicle_id* of the next charging job that is ready to start """
 
         for priority in range(1, 6):
             for entry in self.chargingQueue:
                 if entry.priority == priority or priority == 5:
-                    if not self.isCurrentlyCharging(entry.vehicle_id) \
-                    and self.isChargingTime(entry.vehicle_id):
+                    if (
+                        not self.isCurrentlyCharging(entry.vehicle_id) and
+                        (self.isChargingTime(entry.vehicle_id) or not check_if_charging_time)
+                    ):
                         return entry.vehicle_id
         return None
 
     def removeFromQueue(self, vehicle_id: str) -> None:
-        """ Remove the first queue entry that matches *vehicle_id*. """
+        """ Remove the first queue entry that matches *vehicle_id* """
+
         for idx, entry in enumerate(self.chargingQueue):
             if entry.vehicle_id == vehicle_id:
                 del self.chargingQueue[idx]
@@ -2226,8 +2332,8 @@ class Scheduler:
         priority: int,
         name: str,
     ) -> bool:
-        """
-        Enqueue a new charging job (or replace an existing one). """
+        """ Enqueue a new charging job (or replace an existing one) """
+
         self.removeFromQueue(vehicle_id)
 
         if kWhRemaining <= 0:
@@ -2257,11 +2363,10 @@ class Scheduler:
         return self.isChargingTime(vehicle_id=vehicle_id)
 
     def process_charging_queue(self) -> None:
-        """
-        Resolve the whole queue, scheduling charging windows, detecting
+        """ Resolve the whole queue, scheduling charging windows, detecting
         simultaneous sessions and finally computing the “best” price block
-        for each job.
-        """
+        for each job """
+
         self.chargingQueue.sort(key=lambda c: c.finish_by_hour)
 
         simultaneous_charge: List[str] = []
@@ -2315,10 +2420,9 @@ class Scheduler:
             self.simultaneousChargeComplete.extend(simultaneous_charge)
 
     def calcSimultaneousCharge(self, simultaneous_charge: List[str]) -> None:
-        """
-        Re-calculate the charging window for a group of vehicles that must run
-        at the same time.  The function updates the queue in place.
-        """
+        """ Re-calculate the charging window for a group of vehicles that must run
+        at the same time.  The function updates the queue in place """
+
         finish_by_hour = 0
         kWh_to_charge = 0.0
         total_w_all_chargers = 0.0
@@ -2366,10 +2470,10 @@ class Scheduler:
                     c.price = price
 
     def notifyChargeTime(self, kwargs) -> None:
-        """ Sends notifications and updates infotext with charging times and prices. """
+        """ Sends notifications and updates infotext with charging times and prices """
 
         def _fmt(dt: datetime | None) -> str:
-            """Return a human readable string without the TZ component."""
+            """ Return a human readable string without the TZ component """
             return "" if dt is None else dt.strftime("%Y-%m-%d %H:%M")
 
         lowest_price: float | None = None
@@ -2476,8 +2580,8 @@ class Charger:
     Set variables in childclass after init for connected chargers if needed:
         self.guestCharging:bool # Defaults to False
     Set variables in childclass after init for onboard chargers if needed:
-        self.Car
-        self.Car.onboardCharger
+        self.connected_vehicle
+        self.connected_vehicle.onboard_charger
     
     Change default values if needed:
     self.charger_data.min_ampere = 6
@@ -2493,7 +2597,7 @@ class Charger:
     ):
 
         self.ADapi = api
-        self.Car = None
+        self.connected_vehicle: Optional[Car] = None
         self.namespace = namespace
         self.charger = charger
         self.charger_data = charger_data
@@ -2502,6 +2606,9 @@ class Charger:
         self.checkCharging_handler = None
         self.doNotStartMe:bool = False
         self.pct_start_charge:float = 100
+        self._recheck_findCarConnectedToCharger_handler = None
+
+        Registry.register_charger(self)
 
         # Switch to allow guest to charge
         if isinstance(charger_data.guest, str):
@@ -2526,52 +2633,54 @@ class Charger:
                 namespace = namespace
             )
 
-        """ End initialization Charger Class
-        """
+        """ End initialization Charger Class """
+
 
     def findCarConnectedToCharger(self) -> bool:
-        """ A check to see if a car is connected to the charger. """
-        if self.getChargingState() not in ('Disconnected', 'Complete', 'NoPower'):
-            for car in self._cars:
-                if car._polling_of_data() and car.isConnected():
-                    if car.connectedCharger is None or car.getCarChargerState() == 'NoPower':
-                        if self.compareChargingState(
-                            car_status = car.getCarChargerState()
-                        ):
-                            car.connectedCharger = self
-                            self.Car = car
-                            self.kWhRemaining()
-                            stack = inspect.stack() ###
-                            self.ADapi.log(f"Connected {self.Car.carName} to {self.charger} in findCarConnectedToCharger. Called from {stack[1].function}") ###
-                            self.Car.findNewChargeTime()
-                            return True
+        """ A check to see if a car is connected to the charger """
 
-            if self.Car is None:
-                self.ADapi.run_in(self._recheck_findCarConnectedToCharger, 120)
+        if self.getChargingState() in ('Disconnected', 'Complete', 'NoPower'):
+            return False
+
+        for car in self._cars:
+            if not car._polling_of_data() or not car.isConnected():
+                continue
+
+            if car.connected_charger is None or car.getCarChargerState() == 'NoPower':
+                if self.compareChargingState(
+                    car_status = car.getCarChargerState()
+                ):
+                    Registry.set_link(car, self)
+                    self.kWhRemaining()
+                    self.connected_vehicle.findNewChargeTime()
+                    return True
+
+        if self.connected_vehicle is None:
+            if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
+                self._recheck_findCarConnectedToCharger_handler = self.ADapi.run_in(self._recheck_findCarConnectedToCharger, 120)
         return False
 
-        # Functions to react to charger sensors
     def _recheck_findCarConnectedToCharger(self, kwargs) -> None:
         self.findCarConnectedToCharger()
 
     def kWhRemaining(self) -> float:
         """ Calculates kWh remaining to charge from car battery sensor/size and charge limit.
-            If those are not available it uses session energy to estimate how much is needed to charge.
-        """
+            If those are not available it uses session energy to estimate how much is needed to charge """
+
         chargingState = self.getChargingState()
         if chargingState in ('Complete', 'Disconnected'):
             if self.guestCharging:
-                self.Car.car_data.kWh_remain_to_charge = -1
+                self.connected_vehicle.car_data.kWh_remain_to_charge = -1
             return -1
 
-        if self.Car is not None:
-            kWhRemain:float = self.Car.kWhRemaining()
+        if self.connected_vehicle is not None:
+            kWhRemain:float = self.connected_vehicle.kWhRemaining()
             if kWhRemain > -2:
                 return kWhRemain
 
             if self.charger_data.session_energy:
                 if self.guestCharging:
-                    kWh_remain = self.Car.car_data.kWh_remain_to_charge - (float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)))
+                    kWh_remain = self.connected_vehicle.car_data.kWh_remain_to_charge - (float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)))
                     self.ADapi.log(
                         f"Guest charging when trying to calculate kWh Remaining: {kWh_remain}"
                     ) ###
@@ -2580,23 +2689,23 @@ class Charger:
                     else:
                         return 10
 
-                self.Car.car_data.kWh_remain_to_charge = self.Car.car_data.max_kWh_charged - float(self.ADapi.get_state(self.charger_data.session_energy,
+                self.connected_vehicle.car_data.kWh_remain_to_charge = self.connected_vehicle.car_data.max_kWh_charged - float(self.ADapi.get_state(self.charger_data.session_energy,
                     namespace = self.namespace)
                 )
-                return self.Car.car_data.kWh_remain_to_charge
+                return self.connected_vehicle.car_data.kWh_remain_to_charge
         
         return -1
 
     def compareChargingState(self, car_status:str) -> bool:
-        """ Returns True if car and charger match charging state.
-        """
+        """ Returns True if car and charger match charging state """
+
         charger_status = self.getChargingState()
         return car_status == charger_status
 
     def getChargingState(self) -> str:
         """ Returns the charging state of the charger.
-            Valid returns: 'Complete' / None / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower'.
-        """
+            Valid returns: 'Complete' / None / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower' """
+
         if self.charger_data.charger_sensor is not None:
             if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'on':
                 # Connected
@@ -2612,8 +2721,8 @@ class Charger:
         return None
 
     def getChargerPower(self) -> float:
-        """ Returns charger power in kWh.
-        """
+        """ Returns charger power in kWh """
+
         pwr = self.ADapi.get_state(self.charger_data.charger_power,
             namespace = self.namespace
         )
@@ -2628,8 +2737,8 @@ class Charger:
         return pwr
 
     def setmaxChargingAmps(self) -> bool:
-        """ Set maxChargerAmpere from charger sensors
-        """
+        """ Set maxChargerAmpere from charger sensors """
+
         self.charger_data.maxChargerAmpere = 32
         self.ADapi.log(
             f"Setting maxChargerAmpere to 32. Needs to set value in child class of charger.",
@@ -2639,47 +2748,58 @@ class Charger:
         return True
 
     def getmaxChargingAmps(self) -> int:
-        """ Returns the maximum ampere the car/charger can get/deliver.
-        """
+        """ Returns the maximum ampere the car/charger can get/deliver """
+
         if self.charger_data.maxChargerAmpere == 0:
             return 32
         
         return self.charger_data.maxChargerAmpere
 
     def updateAmpereCharging(self, entity, attribute, old, new, kwargs) -> None:
-        """ Updates the charging ampere value in self.ampereCharging from charging_amps sensor.
-        """
+        """ Updates the charging ampere value in self.ampereCharging from charging_amps sensor """
+
         try:
-            newAmp = math.ceil(float(new))
+            newAmp = math.floor(float(new))
         except (ValueError, TypeError) as ve:
             self.ADapi.log(
                 f"{self.charger} Not able to get ampere charging. New is {new}. Error {ve}",
                 level = 'DEBUG'
             )
-            return
-
-        if newAmp >= 0:
+        else:
             self.charger_data.ampereCharging = newAmp
 
+    def update_ampere_charging_from_sensor(self) -> int:
+        newAmp:int = 0
+        try:
+            newAmp = math.floor(float(self.ADapi.get_state(self.charger_data.charging_amps,
+                                namespace = self.namespace)))
+        except (ValueError, TypeError) as ve:
+            self.ADapi.log(
+                f"{self.charger} Not able to get ampere charging. New is {newAmp}. Error {ve}",
+                level = 'DEBUG'
+            )
+        else:
+            self.charger_data.ampereCharging = newAmp
+        return newAmp
+
     def changeChargingAmps(self, charging_amp_change:int = 0) -> None:
-        """ Function to change ampere charging +/-
-        """
+        """ Function to change ampere charging +/- """
+
         if charging_amp_change != 0:
             new_charging_amp = self.charger_data.ampereCharging + charging_amp_change
             self.setChargingAmps(charging_amp_set = new_charging_amp)
 
     def setChargingAmps(self, charging_amp_set:int = 16) -> int:
-        """ Function to set ampere charging to received value.
-            returns actual restricted within min/max ampere.
-        """
+        """ Function to set ampere charging to received value. Returns actual restricted within min/max ampere """
+
         max_available_amps = self.getmaxChargingAmps()
         if charging_amp_set < self.charger_data.min_ampere:
             charging_amp_set = self.charger_data.min_ampere
         elif charging_amp_set > max_available_amps:
             charging_amp_set = max_available_amps
-            if self.Car.onboardCharger is not None:
-               if self.Car.connectedCharger is not self.Car.onboardCharger:
-                    self.Car.onboardCharger.setChargingAmps(charging_amp_set = self.Car.onboardCharger.getmaxChargingAmps())
+            if self.connected_vehicle.onboard_charger is not None:
+               if self.connected_vehicle.connected_charger is not self.connected_vehicle.onboard_charger:
+                    self.connected_vehicle.onboard_charger.setChargingAmps(charging_amp_set = self.connected_vehicle.onboard_charger.getmaxChargingAmps())
 
         stack = inspect.stack() # Check if called from child
         if stack[1].function != 'setChargingAmps':
@@ -2692,36 +2812,35 @@ class Charger:
         return charging_amp_set
 
     def Charger_ChargeCableConnected(self, entity, attribute, old, new, kwargs) -> None:
-        """ Function that reacts to charger_sensor connected or disconnected
-        """
+        """ Function that reacts to charger_sensor connected or disconnected """
+
         self.ADapi.log(
             f"Charger_ChargeCableConnected not implemented in parent class for {self.charger}",
             level = 'WARNING'
         )
 
     def startCharging(self) -> bool:
-        """ Starts charger.
-            Parent class returns boolen to child if ready to start charging.
-        """
+        """ Starts charger. Parent class returns boolen to child if ready to start charging """
+
         if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
             self.checkCharging_handler = None
         if self.doNotStartMe:
             return False
-        self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
+        self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
 
         # Calculations for battery size:
         if (
-            self.Car is not None
+            self.connected_vehicle is not None
             and self.charger_data.session_energy is not None
         ):
             if (
                 float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)) < 4
-                and self.Car.car_data.battery_sensor is not None
+                and self.connected_vehicle.car_data.battery_sensor is not None
             ):
-                self.pct_start_charge = float(self.ADapi.get_state(self.Car.car_data.battery_sensor, namespace = self.namespace))
+                self.pct_start_charge = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
 
-        CHARGE_SCHEDULER.markAsCharging(self.Car.vehicle_id)
-        stack = inspect.stack() # Check if called from child
+        CHARGE_SCHEDULER.markAsCharging(self.connected_vehicle.vehicle_id)
+        stack = inspect.stack()
         if stack[1].function == 'startCharging':
             return True
         else:
@@ -2732,17 +2851,16 @@ class Charger:
         return False
 
     def stopCharging(self, force_stop:bool = False) -> bool:
-        """ Stops charger.
-            Parent class returns boolen to child if able to stop charging.
-        """
-        if self.Car is not None:
-            if self.Car.dontStopMeNow() and not force_stop:
+        """ Stops charger. Parent class returns boolen to child if able to stop charging """
+
+        if self.connected_vehicle is not None:
+            if self.connected_vehicle.dontStopMeNow() and not force_stop:
                 return False
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         if self.getChargingState() in ('Charging', 'Starting'):
-            self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
+            self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_stopped, 60)
 
-            stack = inspect.stack() # Check if called from child
+            stack = inspect.stack()
             if stack[1].function != 'stopCharging':
                 self.ADapi.call_service('switch/turn_off',
                     entity_id = self.charger_data.charger_switch,
@@ -2750,15 +2868,13 @@ class Charger:
                 )
         return True
 
-    def checkIfChargingStarted(self, kwargs) -> bool:
-        """ Check if charger was able to start.
-        """
+    def _check_that_charging_started(self, kwargs) -> bool:
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         if not self.getChargingState() in ('Charging', 'Complete', 'Disconnected'):
-            self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStarted, 60)
+            self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
 
-            stack = inspect.stack() # Check if called from child
-            if stack[1].function in ('startCharging', 'checkIfChargingStarted'):
+            stack = inspect.stack()
+            if stack[1].function in ('startCharging', '_check_that_charging_started'):
                 return False
             else:
                 self.ADapi.call_service('switch/turn_on',
@@ -2767,18 +2883,16 @@ class Charger:
                 )
         return True
 
-    def checkIfChargingStopped(self, kwargs) -> bool:
-        """ Check if charger was able to stop.
-        """
-        if self.Car is not None:
+    def _check_that_charging_stopped(self, kwargs) -> bool:
+        if self.connected_vehicle is not None:
             cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
-            if self.Car.dontStopMeNow():
+            if self.connected_vehicle.dontStopMeNow():
                 return True
             if self.getChargingState() == 'Charging':
-                self.checkCharging_handler = self.ADapi.run_in(self.checkIfChargingStopped, 60)
+                self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_stopped, 60)
 
-                stack = inspect.stack() # Check if called from child
-                if stack[1].function in ('stopCharging', 'checkIfChargingStopped'):
+                stack = inspect.stack()
+                if stack[1].function in ('stopCharging', '_check_that_charging_stopped'):
                     return False
                 else:
                     self.ADapi.call_service('switch/turn_off',
@@ -2789,22 +2903,22 @@ class Charger:
         return True
 
     def ChargingStarted(self, entity, attribute, old, new, kwargs) -> None:
-        """ Charger started charging. Check if controlling car and if chargetime has been set up
-        """
+        """ Charger started charging. Check if controlling car and if chargetime has been set up """
+
         # Calculations for battery size. Also calculate if charging elsewhere.
         if (
-            self.Car is not None
+            self.connected_vehicle is not None
             and self.charger_data.session_energy is not None
             and self.pct_start_charge == 100
         ):
             if (
                 float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)) < 4
-                and self.Car.car_data.battery_sensor is not None
+                and self.connected_vehicle.car_data.battery_sensor is not None
             ):
-                self.pct_start_charge = float(self.ADapi.get_state(self.Car.car_data.battery_sensor, namespace = self.namespace))
+                self.pct_start_charge = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
 
             if  (
-                self.Car.isConnected() and
+                self.connected_vehicle.isConnected() and
                 self.kWhRemaining() > 0
             ):
                 # Update volts and phases on charging started
@@ -2815,64 +2929,63 @@ class Charger:
                     phases = self.charger_data.phases
                 )
 
-                if not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.Car.vehicle_id):
-                    self.Car.findNewChargeTime()
+                if not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.connected_vehicle.vehicle_id):
+                    self.connected_vehicle.findNewChargeTime()
 
         ### TODO: Check if this is handled elsewhere:
-        if self.Car.connectedCharger is None and self.Car.isConnected():
-            self.ADapi.log(f"Need to find connected charger for {self.Car.carName} in ChargingStarted for {self.charger}. Add logic maybe?") ###
+        if self.connected_vehicle.connected_charger is None and self.connected_vehicle.isConnected():
+            self.ADapi.log(f"Need to find connected charger for {self.connected_vehicle.carName} in ChargingStarted for {self.charger}. Add logic maybe?") ###
             if not self.findCarConnectedToCharger():
                 return
 
     def ChargingStopped(self, entity, attribute, old, new, kwargs) -> None:
-        """ Charger stopped charging.
-        """
+        """ Charger stopped charging """
+
         self._CleanUpWhenChargingStopped()
 
     def _updateMaxkWhCharged(self, session: float):
-        if self.Car.car_data.max_kWh_charged < session:
-            self.Car.car_data.max_kWh_charged = session
+        if self.connected_vehicle.car_data.max_kWh_charged < session:
+            self.connected_vehicle.car_data.max_kWh_charged = session
 
     def _calculateBatterySize(self, session: float):
-        battery_sensor = getattr(self.Car.car_data, 'battery_sensor', None)
-        battery_reg_counter = getattr(self.Car.car_data, 'battery_reg_counter', 0)
+        battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
+        battery_reg_counter = getattr(self.connected_vehicle.car_data, 'battery_reg_counter', 0)
 
         if battery_sensor is not None and self.pct_start_charge < 90:
             pctCharged = float(self.ADapi.get_state(battery_sensor, namespace=self.namespace)) - self.pct_start_charge
 
             if pctCharged > 35:
                 self._updateBatterySize(session, pctCharged, battery_reg_counter)
-            elif pctCharged > 10 and self.Car.car_data.battery_size == 100 and battery_reg_counter == 0:
-                self.Car.car_data.battery_size = (session / pctCharged)*100
+            elif pctCharged > 10 and self.connected_vehicle.car_data.battery_size == 100 and battery_reg_counter == 0:
+                self.connected_vehicle.car_data.battery_size = (session / pctCharged)*100
 
     def _updateBatterySize(self, session: float, pctCharged: float, battery_reg_counter: int):
         if battery_reg_counter == 0:
             avg = round((session / pctCharged) * 100, 2)
         else:
             avg = round(
-                ((self.Car.car_data.battery_size * battery_reg_counter) + (session / pctCharged) * 100)
+                ((self.connected_vehicle.car_data.battery_size * battery_reg_counter) + (session / pctCharged) * 100)
                 / (battery_reg_counter + 1),
                 2
             )
 
-        self.Car.car_data.battery_reg_counter += 1
+        self.connected_vehicle.car_data.battery_reg_counter += 1
 
-        if self.Car.car_data.battery_reg_counter > 100:
-            self.Car.car_data.battery_reg_counter = 10
+        if self.connected_vehicle.car_data.battery_reg_counter > 100:
+            self.connected_vehicle.car_data.battery_reg_counter = 10
 
         self.ADapi.log(
-            f"pct Charged for {self.Car.carName} is {pctCharged}. kWh: {round(session,2)}. Est battery size: {round((session / pctCharged)*100,2)}"
-            f"Old calc: {self.Car.car_data.battery_size}. counter: {self.Car.car_data.battery_reg_counter}. New avg: {avg}"
+            f"pct Charged for {self.connected_vehicle.carName} is {pctCharged}. kWh: {round(session,2)}. Est battery size: {round((session / pctCharged)*100,2)}"
+            f"Old calc: {self.connected_vehicle.car_data.battery_size}. counter: {self.connected_vehicle.car_data.battery_reg_counter}. New avg: {avg}"
         )
 
-        self.Car.car_data.battery_size = avg
+        self.connected_vehicle.car_data.battery_size = avg
 
     def _CleanUpWhenChargingStopped(self) -> None:
-        """ Charger stopped charging. """
-        if self.Car is not None:
-            if self.Car.connectedCharger is self:
+        if self.connected_vehicle is not None:
+            if self.connected_vehicle.connected_charger is self:
                 if self.getChargingState() in ('Complete', 'Disconnected'):
-                    self.Car._handleChargeCompletion()
+                    self.connected_vehicle._handleChargeCompletion()
                     if self.charger_data.session_energy:
                         session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace=self.namespace))
                         self._updateMaxkWhCharged(session)
@@ -2886,8 +2999,8 @@ class Charger:
             VoltPhase is a make up name and simplification to calculate chargetime based on remaining kwh to charge
             230v 1 phase,
             266v is 3 phase on 230v without neutral (supported by tesla among others)
-            687v is 3 phase on 400v with neutral.
-        """
+            687v is 3 phase on 400v with neutral """
+
         if (
             phases > 1
             and self.charger_data.volts > 200
@@ -2910,14 +3023,14 @@ class Charger:
 
 
     def idle_currentListen(self, entity, attribute, old, new, kwargs) -> None:
-        """ Listens for changes to idle_current switch. """
         if new == 'on':
             self.idle_current = True
         elif new == 'off':
             self.idle_current = False
 
     def notify_charge_now_or_kWhRemain(self, carName):
-        """ Sends notification to ask to charge car Now or input kWh remaining. """
+        """ Sends notification to ask to charge car Now or input kWh remaining """
+
         data = {
             'tag' : carName,
             'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {carName} Now' },
@@ -2935,38 +3048,37 @@ class Charger:
                 )
 
     def guestChargingListen(self, entity, attribute, old, new, kwargs) -> None:
-        """ Disables logging and schedule if guest is using charger.
-        """
+        """ Handles smart chargers when guest connects on HA switch change """
+
         self.guestCharging = new == 'on'
         if (
             new == 'on'
             and old == 'off'
         ):
             self._addGuestCar()
-            self.notify_charge_now_or_kWhRemain(self.Car.carName)
+            self.notify_charge_now_or_kWhRemain(self.connected_vehicle.carName)
 
         elif (
             new == 'off'
             and old == 'on'
         ):
-            if self.Car is not None:
-                if self.Car.carName == 'guestCar':
+            if self.connected_vehicle is not None:
+                if self.connected_vehicle.carName == 'guestCar':
                     self.stopCharging()
-                    self.Car._handleChargeCompletion()
-                    self.remove_car_from_list(self.Car.carName)
-                    self.Car = None
+                    self.connected_vehicle._handleChargeCompletion()
+                    self.remove_car_from_list(self.connected_vehicle.carName)
+                    Registry.unlink_by_charger(self)
                 elif (
-                    self.Car.isConnected()
+                    self.connected_vehicle.isConnected()
                     and self.kWhRemaining() > 0
                 ):
-                    self.Car.findNewChargeTime()
+                    self.connected_vehicle.findNewChargeTime()
             else:
                 self.stopCharging()
 
     def _addGuestCar(self):
-        """
-        Create a “dumb” guest car.
-        """
+        """ Create a “dumb” guest car """
+
         guest_car_cfg = CarData()
 
         guest_car = Car(
@@ -2978,17 +3090,15 @@ class Charger:
         )
 
         self.add_car_to_list(guest_car)
-        self.Car = guest_car
-        self.Car.connectedCharger = self
-        self.Car.car_data.kWh_remain_to_charge = 10
+        Registry.set_link(guest_car, self)
+        self.connected_vehicle.car_data.kWh_remain_to_charge = 10
 
     def add_car_to_list(self, car_instance):
-        """Method to add a car to the list."""
         self._cars.append(car_instance)
 
     def remove_car_from_list(self, carName):
-        """Method to remove a car from the list."""
         self._cars = [car for car in self._cars if car.carName != carName]
+
 
 class Car:
     """ Car parent class
@@ -2997,7 +3107,7 @@ class Car:
 
     Set variables in childclass after init if needed:
         self.guestCharging:bool # Defaults to False
-        self.Car # Car to charge
+        self.connected_vehicle # Car to charge
     """
     def __init__(self, api,
         namespace:str,
@@ -3047,8 +3157,9 @@ class Car:
         self.charging_on_solar:bool = False
 
         # Charger objects:
-        self.connectedCharger:object = None
-        self.onboardCharger:object = None
+        self.connected_charger: Optional[Charger] = None
+        self.onboard_charger: Optional[Charger] = None
+        Registry.register_car(self)
 
         if self.car_data.charge_limit is not None:
             self.car_data.kWh_remain_to_charge:float = self.kWhRemaining()
@@ -3085,6 +3196,9 @@ class Car:
         """ End initialization Car Class
         """
 
+    def set_connected_charger(self, charger: Charger) -> None:
+        Registry.set_link(self, charger)
+
         # Functions on when to charge Car
     def _finishByHourListen(self, entity, attribute, old, new, kwargs) -> None:
         self.finish_by_hour = math.ceil(float(new))
@@ -3096,7 +3210,7 @@ class Car:
         if (
             new == 'on'
             and old == 'off'
-            and self.connectedCharger is not None
+            and self.connected_charger is not None
         ):
             self.startCharging()
         elif (
@@ -3128,11 +3242,6 @@ class Car:
         """ Function to run when initialized and when new prices arrive. """
         self.findNewChargeTime()
 
-    def _find_Chargetime_Whenhome(self, entity, attribute, old, new, kwargs) -> None:
-        self.findNewChargeTime()
-        if cancel_listen_handler(ADapi = self.ADapi, handler = self.find_Chargetime_Whenhome_handler, name = self.carName):
-            self.find_Chargetime_Whenhome_handler = None
-
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
         now = self.ADapi.datetime(aware=True)
@@ -3142,14 +3251,14 @@ class Car:
             return
         startcharge = False
         charger_state = self.getCarChargerState()
-        if self.connectedCharger is None:
+        if self.connected_charger is None:
             if charger_state != 'NoPower':
-                self.connectedCharger = self.onboardCharger
+                Registry.set_link(self, self.onboard_charger)
             else:
                 return
         if (
             self.isConnected() and charger_state not in ('Disconnected', 'Complete') or
-            self.connectedCharger.getChargingState() not in ('Disconnected', 'Complete')
+            self.connected_charger.getChargingState() not in ('Disconnected', 'Complete')
         ):
             if (
                 not self.charging_on_solar
@@ -3160,7 +3269,7 @@ class Car:
                     vehicle_id = self.vehicle_id,
                     kWhRemaining = self.car_data.kWh_remain_to_charge,
                     maxAmps = self.getCarMaxAmps(),
-                    voltPhase = self.connectedCharger.charger_data.voltPhase,
+                    voltPhase = self.connected_charger.charger_data.voltPhase,
                     finish_by_hour = self.finish_by_hour,
                     priority = self.car_data.priority,
                     name = self.carName
@@ -3183,14 +3292,6 @@ class Car:
                     and startcharge
                 ):
                     self.startCharging()
-
-        elif self.getLocation() != 'home':
-            self.ADapi.log(f"{self.carName} is not home when finding chargetime. If at home, find new logic calling findNewChargeTime from Easee..") ###
-            self.find_Chargetime_Whenhome_handler = self.ADapi.listen_state(self._find_Chargetime_Whenhome, self.car_data.location_tracker,
-                namespace = self.namespace,
-                new = 'home',
-                oneshot = True
-            )
 
     def removeFromQueue(self) -> None:
         """ Removes car from chargequeue
@@ -3218,10 +3319,10 @@ class Car:
     def car_ChargeCableDisconnected(self, entity, attribute, old, new, kwargs) -> None:
         """ Charge cable disconnected for car.
         """
-        if self.connectedCharger is not None:
-            if self.connectedCharger.getChargingState() == 'Disconnected':
-                if self.connectedCharger.Car.onboardCharger is self.connectedCharger:
-                    self.connectedCharger._CleanUpWhenChargingStopped()
+        if self.connected_charger is not None:
+            if self.connected_charger.getChargingState() == 'Disconnected':
+                if self.connected_charger.connected_vehicle.onboard_charger is self.connected_charger:
+                    self.connected_charger._CleanUpWhenChargingStopped()
 
             if self.max_range_handler is not None:
                 # TODO: Program charging to max at departure time.
@@ -3236,13 +3337,8 @@ class Car:
             if self.car_data.charger_sensor is not None:
                 if self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on':
                     return True
-                else: ###
-                    self.ADapi.log(
-                        f"charger sensor not on. Should be off for {self.carName} : "
-                        f"{self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on'}"
-                    ) ###
-            if self.connectedCharger is not None:
-                return self.connectedCharger.getChargingState() not in ['Disconnected']
+            if self.connected_charger is not None:
+                return self.connected_charger.getChargingState() not in ['Disconnected']
             return True
         return False
 
@@ -3395,7 +3491,7 @@ class Car:
     def ChargeLimitChanged(self, entity, attribute, old, new, kwargs) -> None:
         """ Charge limit changed.
         """
-        if self.connectedCharger is not None:
+        if self.connected_charger is not None:
             try:
                 new = int(new)
                 self.car_data.old_charge_limit = int(old)
@@ -3416,7 +3512,7 @@ class Car:
                 )
                 return
             if battery_state > float(new):
-                self.connectedCharger._CleanUpWhenChargingStopped()
+                self.connected_charger._CleanUpWhenChargingStopped()
 
             elif self.kWhRemaining() > 0:
                 self.findNewChargeTime()
@@ -3425,12 +3521,12 @@ class Car:
         """ Returns True if the charging speed is at maximum.
         """
         if self.car_data.car_limit_max_ampere is None:
-            return self.connectedCharger.getmaxChargingAmps() <= self.connectedCharger.charger_data.ampereCharging
-        return self.car_data.car_limit_max_ampere <= self.connectedCharger.charger_data.ampereCharging
+            return self.connected_charger.getmaxChargingAmps() <= self.connected_charger.charger_data.ampereCharging
+        return self.car_data.car_limit_max_ampere <= self.connected_charger.charger_data.ampereCharging
 
     def getCarMaxAmps(self) -> int:
         if self.car_data.car_limit_max_ampere is None:
-            return self.connectedCharger.getmaxChargingAmps()
+            return self.connected_charger.getmaxChargingAmps()
         return self.car_data.car_limit_max_ampere
 
     def getCarChargerState(self) -> str:
@@ -3448,16 +3544,16 @@ class Car:
                     f"{self.charger} Could not get attribute = 'charging_state' from: "
                     f"{self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace)} "
                     f"Error: {ve}",
-                    level = 'INFO' #'DEBUG'
+                    level = 'INFO' ### 'DEBUG'
                 )
             else:
                 if state == 'Starting':
                     state = 'Charging'
                 return state
         
-        if self.connectedCharger is not None:
-            self.ADapi.log(f"Returning connected charger state {self.connectedCharger.getChargingState()} for {self.carName} in getCarChargerState") ###
-            return self.connectedCharger.getChargingState()
+        if self.connected_charger is not None:
+            self.ADapi.log(f"Returning connected charger state {self.connected_charger.getChargingState()} for {self.carName} in getCarChargerState") ###
+            return self.connected_charger.getChargingState()
         return None
 
     def startCharging(self) -> None:
@@ -3465,17 +3561,17 @@ class Car:
         """
         if (
             self.getCarChargerState() == 'Stopped'
-            or self.connectedCharger.getChargingState() in {'awaiting_start', 'Stopped'}
+            or self.connected_charger.getChargingState() in {'awaiting_start', 'Stopped'}
         ):
-            self.connectedCharger.startCharging()
+            self.connected_charger.startCharging()
         elif self.getCarChargerState() == 'Complete':
-            self.connectedCharger._CleanUpWhenChargingStopped()
+            self.connected_charger._CleanUpWhenChargingStopped()
 
     def stopCharging(self, force_stop:bool = False) -> None:
         """ Stops controlling charger.
         """
-        if self.connectedCharger.getChargingState() in ('Charging', 'Starting'):
-            self.connectedCharger.stopCharging(force_stop = force_stop)
+        if self.connected_charger.getChargingState() in ('Charging', 'Starting'):
+            self.connected_charger.stopCharging(force_stop = force_stop)
 
 class Tesla_charger(Charger):
     """ Tesla
@@ -3510,11 +3606,10 @@ class Tesla_charger(Charger):
             charger_data = charger_data,
         )
 
-        self.Car = Car
-        self.Car.onboardCharger = self
-
         self.charger_data.min_ampere = 5
         self.noPowerDetected_handler = None
+
+        Registry.set_onboard_link(Car, self)
 
         self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
             namespace = self.namespace,
@@ -3561,9 +3656,9 @@ class Tesla_charger(Charger):
         # Set as connected charger if restarted after cable connected.
         if (
             state == 'Stopped'
-            and self.Car.connectedCharger is None
+            and self.connected_vehicle.connected_charger is None
         ):
-            self.Car.connectedCharger = self
+            Registry.set_link(self.connected_vehicle, self)
 
         return state
 
@@ -3571,10 +3666,10 @@ class Tesla_charger(Charger):
         """ Set maxChargerAmpere from charger sensors
         """
         if (
-            self.Car.isConnected()
+            self.connected_vehicle.isConnected()
             and self.getChargingState() not in ('Disconnected', 'Complete')
         ):
-            if self.Car.connectedCharger is self:
+            if self.connected_vehicle.connected_charger is self:
                 try:
                     maxAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                         namespace = self.namespace,
@@ -3628,8 +3723,8 @@ class Tesla_charger(Charger):
             )
             if float(new) > chargingAmpere:
                 if (
-                    self.Car.connectedCharger is not self
-                    and self.Car.connectedCharger is not None
+                    self.connected_vehicle.connected_charger is not self
+                    and self.connected_vehicle.connected_charger is not None
                 ):
                     self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
 
@@ -3645,16 +3740,16 @@ class Tesla_charger(Charger):
         if cancel_listen_handler(ADapi = self.ADapi, handler = self.noPowerDetected_handler, name = self.charger):
             self.noPowerDetected_handler = None
 
-        if self.Car is not None:
+        if self.connected_vehicle is not None:
             if (
-                (self.Car.connectedCharger is None
-                or self.Car.connectedCharger is self)
-                and self.Car.isConnected()
+                (self.connected_vehicle.connected_charger is None
+                or self.connected_vehicle.connected_charger is self)
+                and self.connected_vehicle.isConnected()
                 and new == 'on'
                 and self.kWhRemaining() > 0
             ):
                 if self.getChargingState() != 'NoPower':
-                    if self.Car.connectedCharger is None:
+                    if self.connected_vehicle.connected_charger is None:
                         if not self.findCarConnectedToCharger():
                             return
                     # Listen for changes made from other connected chargers
@@ -3664,7 +3759,7 @@ class Tesla_charger(Charger):
                         new = 'NoPower'
                     )
 
-                    self.Car.findNewChargeTime()
+                    self.connected_vehicle.findNewChargeTime()
 
                 elif self.getChargingState() == 'NoPower':
                     self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
@@ -3673,14 +3768,14 @@ class Tesla_charger(Charger):
         """ Reacts when chargecable is connected but no power is given.
             This indicates that a smart connected charger has cut the power.
         """
-        if self.Car.connectedCharger is self:
-            self.Car.connectedCharger = None
+        if self.connected_vehicle.connected_charger is self:
+            Registry.unlink_by_charger(self)
 
     def ChargingStopped(self, entity, attribute, old, new, kwargs) -> None:
         """ Charger stopped charging.
         """
         self._CleanUpWhenChargingStopped()
-        if self.Car.connectedCharger is self:
+        if self.connected_vehicle.connected_charger is self:
             self.setChargingAmps(charging_amp_set = self.charger_data.min_ampere) # Set to minimum amp for preheat.
 
     def startCharging(self) -> None:
@@ -3690,14 +3785,14 @@ class Tesla_charger(Charger):
             self.ADapi.create_task(self.start_Tesla_charging())
 
     async def start_Tesla_charging(self):
-        if self.Car is not None:
+        if self.connected_vehicle is not None:
             try:
                 await self.ADapi.call_service('tesla_custom/api',
                     namespace = self.namespace,
                     command = 'START_CHARGE',
                     parameters = { 'path_vars': {'vehicle_id': self.charger_id}, 'wake_if_asleep': True}
                 )
-                await self.Car._force_API_update()
+                await self.connected_vehicle._force_API_update()
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
         else:
@@ -3710,40 +3805,40 @@ class Tesla_charger(Charger):
             self.ADapi.create_task(self.stop_Tesla_charging())
 
     async def stop_Tesla_charging(self):
-        if self.Car is not None:
+        if self.connected_vehicle is not None:
             try:
                 await self.ADapi.call_service('tesla_custom/api',
                     namespace = self.namespace,
                     command = 'STOP_CHARGE',
                     parameters = { 'path_vars': {'vehicle_id': self.charger_id}, 'wake_if_asleep': True}
                 )
-                await self.Car._force_API_update()
+                await self.connected_vehicle._force_API_update()
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
         else:
             self.ADapi.log(f"Car was None when trying to stop charging?") ###
 
-    def checkIfChargingStarted(self, kwargs) -> None:
+    def _check_that_charging_started(self, kwargs) -> None:
         """ Check if charger was able to start.
         """
         if (
             self.getChargingState() == 'NoPower'
-            and self.Car.connectedCharger is self
+            and self.connected_vehicle.connected_charger is self
         ):
-            self.ADapi.log(f"Charing had not started for {self.charger}. Asleep? {self.Car.asleep()}. NoPower detected. Disconnecting from self") ###
-            self.Car.connectedCharger = None
+            self.ADapi.log(f"Charing had not started for {self.charger}. Asleep? {self.connected_vehicle.asleep()}. NoPower detected. Disconnecting from self") ###
+            Registry.unlink_by_charger(self)
 
-        elif not super().checkIfChargingStarted(0):
+        elif not super()._check_that_charging_started(0):
             self.ADapi.create_task(self.start_Tesla_charging())
 
-    def checkIfChargingStopped(self, kwargs) -> None:
+    def _check_that_charging_stopped(self, kwargs) -> None:
         """ Check if charger was able to stop.
         """
-        if not super().checkIfChargingStopped(0):
+        if not super()._check_that_charging_stopped(0):
             self.ADapi.create_task(self.stop_Tesla_charging())
 
     def setVolts(self):
-        if self.Car.isConnected():
+        if self.connected_vehicle.isConnected():
             try:
                 volt = math.ceil(float(self.ADapi.get_state(self.charger_data.charger_power,
                 namespace = self.namespace,
@@ -3756,7 +3851,7 @@ class Tesla_charger(Charger):
                     self.charger_data.volts = volt
 
     def setPhases(self):
-        if self.Car.isConnected():
+        if self.connected_vehicle.isConnected():
             try:
                 phase = int(self.ADapi.get_state(self.charger_data.charger_power,
                 namespace = self.namespace,
@@ -3789,6 +3884,7 @@ class Tesla_car(Car):
             vehicle_id=self.vehicle_id,
             car_data=car_data,
         )
+        self.onboard_charger = None
 
         if self.car_data.destination_location_tracker:
            self.ADapi.listen_state(self.destination_updated, self.car_data.destination_location_tracker,
@@ -3899,14 +3995,8 @@ class Easee(Charger):
 
         api.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
 
-        if (
-            api.get_state(self.charger_data.charger_sensor, namespace = self.namespace) != 'disconnected'
-            and self.Car is None
-        ):
-            self.findCarConnectedToCharger()
-
-
-        elif type(Car).__name__ == 'Car':
+        ### TODO Move to after connected to car without max ampere sensor.
+        if type(Car).__name__ == 'Car':
             api.listen_state(self.reasonChange, reason_for_no_current, namespace = namespace)
 
         """ End initialization Easee Charger Class
@@ -3940,7 +4030,7 @@ class Easee(Charger):
         elif status == 'awaiting_start':
             return 'awaiting_start'
         elif status == 'disconnected':
-            if self.Car is not None:
+            if self.connected_vehicle is not None:
                 return 'awaiting_start'
             return 'Disconnected'
         elif not status == 'ready_to_charge':
@@ -3952,34 +4042,33 @@ class Easee(Charger):
             Easee state can be: 'awaiting_start' / 'charging' / 'completed' / 'disconnected' / from charger_status
         """
         if old == 'disconnected':
-            if self.Car is None:
-                self.ADapi.log(f"{self.charger} was disconnected. Car is None") ###
+            if self.connected_vehicle is None:
                 if self.findCarConnectedToCharger():
-                    if self.Car is not None:
-                        self.ADapi.log(f"{self.Car.carName} connected to {self.charger} in StatusChange. New status: {new}") ###
+                    if self.connected_vehicle is not None:
+                        self.ADapi.log(f"{self.connected_vehicle.carName} connected to {self.charger} in StatusChange. New status: {new}") ###
                         self.kWhRemaining() # Update kWh remaining to charge
-                        self.Car.findNewChargeTime()
+                        self.connected_vehicle.findNewChargeTime()
                         return
                     else:
                         self.ADapi.log(f"No car connected when cable conneted to {self.charger} in StatusChange. New status: {new}") ###
             else: # Temporarily disconnected an connected again:
-                start, stop = CHARGE_SCHEDULER.getChargingTime(vehicle_id = self.Car.vehicle_id) ###
-                self.ADapi.log(f"{self.charger} was disconnected. Car: is {self.Car.carName}. Has charging scheduled? Start {start} Stop {stop}") ###
+                start, stop = CHARGE_SCHEDULER.getChargingTime(vehicle_id = self.connected_vehicle.vehicle_id) ###
+                self.ADapi.log(f"{self.charger} was disconnected. Car: is {self.connected_vehicle.carName}. Has charging scheduled? Start {start} Stop {stop}") ###
             return
 
         elif (
             new != 'disconnected'
             and old == 'completed'
         ):
-            if self.Car is not None:
+            if self.connected_vehicle is not None:
                 if (
                     self.kWhRemaining() > 2
-                    and not self.Car.charging_scheduled_with_updated_data()
+                    and not self.connected_vehicle.charging_scheduled_with_updated_data()
                 ):
-                    self.Car.findNewChargeTime()
+                    self.connected_vehicle.findNewChargeTime()
 
                 if (
-                    CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.Car.vehicle_id)
+                    CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.connected_vehicle.vehicle_id)
                     or self.idle_current # Preheating
                 ):
                     return
@@ -3990,22 +4079,22 @@ class Easee(Charger):
             new == 'charging'
             or new == 'ready_to_charge'
         ):
-            if self.Car is None:
+            if self.connected_vehicle is None:
                 if not self.findCarConnectedToCharger():
                     self.stopCharging()
                     return
-            if self.Car is not None:
+            if self.connected_vehicle is not None:
                 if (
-                    not self.Car.charging_scheduled_with_updated_data()
+                    not self.connected_vehicle.charging_scheduled_with_updated_data()
                 ):
                     self.kWhRemaining() # Update kWh remaining to charge
-                    self.Car.findNewChargeTime()
+                    self.connected_vehicle.findNewChargeTime()
 
-                elif not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.Car.vehicle_id):
+                elif not CHARGE_SCHEDULER.isChargingTime(vehicle_id = self.connected_vehicle.vehicle_id):
                     self.stopCharging()
 
         elif new == 'completed':
-            if self.Car is not None:
+            if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
 
         elif new == 'disconnected':
@@ -4013,24 +4102,22 @@ class Easee(Charger):
 
         elif new == 'awaiting_start':
             self._CleanUpWhenChargingStopped()
-            if self.Car is None:
+            if self.connected_vehicle is None:
                 self.findCarConnectedToCharger()
 
     def _check_if_still_disconnected(self, kwargs) -> None:
         if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'disconnected':
-            if self.Car is not None:
+            if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
-                self.Car.connectedCharger = None
-                self.Car = None
+                Registry.unlink_by_charger(self)
             else: ###
                 self.ADapi.log(f"{self.charger} still disconnected with no car connected. Should not see this unless state was complete") ###
-        elif self.Car is not None: # Check if new car is connected.
-            if self.Car.getCarChargerState() == 'Disconnected':
+        elif self.connected_vehicle is not None: # Check if new car is connected.
+            if self.connected_vehicle.getCarChargerState() == 'Disconnected':
                 self._CleanUpWhenChargingStopped()
-                self.Car.connectedCharger = None
-                self.Car = None
+                Registry.unlink_by_charger(self)
                 self.findCarConnectedToCharger()
-        elif self.Car is None: # New car connected.
+        elif self.connected_vehicle is None: # New car connected.
             self.findCarConnectedToCharger()
 
 
@@ -4047,11 +4134,11 @@ class Easee(Charger):
                 namespace = self.namespace))
             )
             if (
-                self.Car.car_data.car_limit_max_ampere != chargingAmpere
+                self.connected_vehicle.car_data.car_limit_max_ampere != chargingAmpere
                 and chargingAmpere >= 6
             ):
-                self.Car.car_data.car_limit_max_ampere = chargingAmpere
-                self.ADapi.log(f"Updated {self.Car.carName} limit max ampere charging to {chargingAmpere} in Easee charger") ###
+                self.connected_vehicle.car_data.car_limit_max_ampere = chargingAmpere
+                self.ADapi.log(f"Updated {self.connected_vehicle.carName} limit max ampere charging to {chargingAmpere} in Easee charger") ###
 
     def setmaxChargingAmps(self) -> bool:
         """ Set maxChargerAmpere from charger sensors
@@ -4123,10 +4210,10 @@ class Easee(Charger):
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Stop Charging. Exception: {e}", level = 'WARNING')
 
-    def checkIfChargingStarted(self, kwargs) -> None:
+    def _check_that_charging_started(self, kwargs) -> None:
         """ Check if charger was able to start.
         """
-        if not super().checkIfChargingStarted(0):
+        if not super()._check_that_charging_started(0):
             try:
                 self.ADapi.call_service('easee/action_command',
                     namespace = self.namespace,
@@ -4135,14 +4222,14 @@ class Easee(Charger):
                     )
             except Exception as e:
                 self.ADapi.log(
-                    f"Could not Start Charging in checkIfChargingStarted for {self.charger}. Exception: {e}",
+                    f"Could not Start Charging in _check_that_charging_started for {self.charger}. Exception: {e}",
                     level = 'WARNING'
                 )
 
-    def checkIfChargingStopped(self, kwargs) -> None:
+    def _check_that_charging_stopped(self, kwargs) -> None:
         """ Check if charger was able to stop.
         """
-        if not super().checkIfChargingStopped(0):
+        if not super()._check_that_charging_stopped(0):
             try:
                 self.ADapi.call_service('easee/action_command',
                     namespace = self.namespace,
@@ -4151,7 +4238,7 @@ class Easee(Charger):
                     )
             except Exception as e:
                 self.ADapi.log(
-                    f"Could not Stop Charging in checkIfChargingStopped for {self.charger}. Exception: {e}",
+                    f"Could not Stop Charging in _check_that_charging_stopped for {self.charger}. Exception: {e}",
                     level = 'WARNING'
                 )
 
@@ -4164,12 +4251,14 @@ class Heater:
         api,
         namespace,
         heater,
-        heater_data
+        heater_data,
+        print_save_hours
     ):
         self.ADapi = api
         self.namespace = namespace
         self.heater = heater
         self.heater_data = heater_data
+        self.print_save_hours = print_save_hours
 
         # Vacation setup
         if self.heater_data.vacation is not None and self.ADapi.entity_exists(self.heater_data.vacation, namespace = self.namespace):
@@ -4223,13 +4312,13 @@ class Heater:
         """ Listen for changes in vacation switch and requests heater to set new state
         """
         self.away_state = new == 'on'
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes to automate switch and requests heater to set new state if automation is turned back on
         """
         self.automate = new == 'on'
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def heater_getNewPrices(self, kwargs) -> None:
         """ Updates time to save and spend based on ELECTRICITYPRICE.find_times_to_save()
@@ -4256,31 +4345,17 @@ class Heater:
                 startBeforePrice = 0.02, 
                 stopAtPriceIncrease = 0.01
             )
-            if self.HeatAt is not None:
-                if self.HeatAt > now:
-                    self.ADapi.run_at(self.heater_setNewValues, self.HeatAt)
-            if self.EndAt is not None:
-                if self.EndAt > now:
-                    self.ADapi.run_at(self.heater_setNewValues, self.EndAt)
 
         elif not self.away_state:
             self.HeatAt = None
             self.EndAt = None
 
-        if self.heater_data.time_to_save:
-            for item in self.heater_data.time_to_save:
-                if item.end > now:
-                    self.ADapi.run_at(self.heater_setNewValues, item.end)
-                    if item.start > now:
-                        self.ADapi.run_at(self.heater_setNewValues, item.start)
+        self.heater_setNewValues()
 
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        if self.print_save_hours and self.heater_data.time_to_save:
+            self.ADapi.log(f"{self.heater} save hours:{ELECTRICITYPRICE.print_peaks(self.heater_data.time_to_save)}")
 
-        """Logging purposes to check what hours heater turns off/down to check if behaving as expected"""
-        #if self.heater_data.time_to_save:
-        #    self.ADapi.log(f"{self.heater} save hours:{ELECTRICITYPRICE.print_peaks(self.heater_data.time_to_save)}")
-
-    def heater_setNewValues(self, kwargs) -> None:
+    def heater_setNewValues(self, kwargs=None) -> None:
         """ Turns heater on or off based on this hours electricity price.
         """
         isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
@@ -4321,6 +4396,9 @@ class Heater:
                 self.HeatAt is not None
                 and self.away_state
             ):
+                self.ADapi.log(f"{self.heater} is off and {(start := self.HeatAt) <= now < (end := self.EndAt)} "
+                    f"{ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)}"
+                )
                 if (
                     (start := self.HeatAt) <= now < (end := self.EndAt)
                     or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
@@ -4343,6 +4421,9 @@ class Heater:
             and self.HeatAt is not None
             and self.away_state
         ):
+            self.ADapi.log(f"{self.heater} is on and {(start := self.HeatAt) <= now < (end := self.EndAt)} "
+                f"{ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)}"
+            )
             if (
                 (start := self.HeatAt) <= now < (end := self.EndAt)
                 or ELECTRICITYPRICE.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
@@ -4371,7 +4452,7 @@ class Heater:
     def turn_on_heater(self) -> None:
         """ Turns heater back to normal operation after fire.
         """
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def turn_off_heater(self) -> None:
         """ Turns heater off.
@@ -4386,27 +4467,27 @@ class Heater:
         """ Set heater to previous state after overconsumption.
         """
         self.isOverconsumption = False
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def removeSaveState(self) -> None:
         """ Set heater to normal state.
         """
         self.isSaveState = False
         self.isOverconsumption = False
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def setSaveState(self) -> None:
         """ Set heater to save state when overconsumption.
         """
         self.isOverconsumption = True
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def setIncreaseState(self) -> None:
         """ Set heater to increase temperature when electricity production is higher that consumption.
         """
         self.increase_now = True
         self.isSaveState = False
-        self.ADapi.run_in(self.heater_setNewValues, 1)
+        self.heater_setNewValues()
 
     def get_heater_consumption(self) -> Tuple[float, bool]:
         if self.heater_data.validConsumptionSensor:
@@ -4522,13 +4603,14 @@ class Heater:
             consumption = 0.01 # Avoid multiplications by 0.
         if consumption < 0:
             return
-        
+        self.ADapi.log(f"Register consumption for {self.heater} with state: {self.ADapi.get_state(self.heater, namespace = self.namespace)}") ###
         if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off':
             return
 
         out_temp_str = str(floor_even(OUT_TEMP))
 
         if off_for_hours not in self.heater_data.ConsumptionData:
+            self.ADapi.log(f"{self.heater} Does not have consumptionData") ###
             self.heater_data.ConsumptionData[off_for_hours] = {}
 
         inner_dict: Dict[str, TempConsumption] = self.heater_data.ConsumptionData[
@@ -4540,6 +4622,7 @@ class Heater:
                 Consumption=round(consumption, 2),
                 Counter=1,
             )
+            self.ADapi.log(f"{self.heater} Does not have {out_temp_str} registered in consumptiondata") ###
         else:
             existing: TempConsumption = inner_dict[out_temp_str]
             counter = (existing.Counter or 0) + 1
@@ -4555,6 +4638,7 @@ class Heater:
                 counter = 10
             existing.Consumption = avg_consumption
             existing.Counter = counter
+            self.ADapi.log(f"{self.heater} Has {out_temp_str} registered in consumptiondata") ###
 
 
         # Helper functions for windows
@@ -4564,7 +4648,7 @@ class Heater:
         if self.numWindowsOpened() != 0:
             self.windows_is_open = True
             self.notify_on_window_closed = True
-            self.ADapi.run_in(self.heater_setNewValues, 1)
+            self.heater_setNewValues()
 
     def windowClosed(self, entity, attribute, old, new, kwargs) -> None:
         """ Reacts to windows closed and checks if other windows are opened.
@@ -4572,7 +4656,7 @@ class Heater:
         if self.numWindowsOpened() == 0:
             self.windows_is_open = False
             self.notify_on_window_open = True
-            self.ADapi.run_in(self.heater_setNewValues, 1)
+            self.heater_setNewValues()
 
     def numWindowsOpened(self) -> int:
         """ Returns number of windows opened.
@@ -4605,7 +4689,8 @@ class Climate(Heater):
         api,
         namespace,
         heater,
-        heater_data
+        heater_data,
+        print_save_hours
     ):
 
         # Sensors
@@ -4621,7 +4706,8 @@ class Climate(Heater):
             api = api,
             namespace = namespace,
             heater = heater,
-            heater_data = heater_data
+            heater_data = heater_data,
+            print_save_hours = print_save_hours,
         )
         self.reset_continuous_hours = True
 
@@ -4656,10 +4742,6 @@ class Climate(Heater):
             )
             self.min_temp = 5
 
-        now = self.ADapi.datetime(aware=True)
-        runtime = get_next_runtime_aware(startTime = now, offset_seconds=10, delta_in_seconds=60*15)
-        self.ADapi.run_every(self.heater_setNewValues, runtime, 60*15)
-
         # Get new prices to save and in addition to turn up heat for heaters before expensive hours
     def heater_getNewPrices(self, kwargs) -> None:
         """ Updates time to save and spend based on ELECTRICITYPRICE.find_times_to_spend()
@@ -4669,9 +4751,8 @@ class Climate(Heater):
             priceincrease = self.heater_data.priceincrease
         )
 
-        """Logging purposes to check what hours heating will be turned up"""
-        #if self.time_to_spend:
-        #    self.ADapi.log(f"{self.heater} Extra heating at: {ELECTRICITYPRICE.print_peaks(self.time_to_spend)}", level = 'INFO')
+        if self.time_to_spend and self.print_save_hours:
+            self.ADapi.log(f"{self.heater} Extra heating at: {ELECTRICITYPRICE.print_peaks(self.time_to_spend)}", level = 'INFO')
 
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch and requests heater to set new state
@@ -4689,7 +4770,7 @@ class Climate(Heater):
                 )
             except Exception as e:
                 self.ADapi.log(f"Not able to set hvac_mode to heat for {self.heater}. Exception: {e}", level = 'INFO')
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def find_target_temperatures(self) -> int:
         """ Helper function to find correct dictionary element in temperatures
@@ -4710,7 +4791,7 @@ class Climate(Heater):
             entity_id = self.heater,
             namespace = self.namespace
         )
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
     def turn_off_heater(self) -> None:
         """ Turns climate off.
@@ -4749,7 +4830,7 @@ class Climate(Heater):
                 )
                 self.ADapi.log(f"Error when trying to set temperature to {self.heater}: {ve}", level = 'DEBUG')
 
-    def heater_setNewValues(self, kwargs) -> None:
+    def heater_setNewValues(self, kwargs=None) -> None:
         """ Adjusts temperature based on weather and time to save/spend
         """
         if (
@@ -4875,6 +4956,7 @@ class Climate(Heater):
         # Holliday temperature
         elif self.away_state:
             new_temperature = vacation_temp
+            self.ADapi.log(f"{self.heater} on vacation with temp: {new_temperature} ") ###
 
         # Peak and savings temperature
         if (
@@ -4951,7 +5033,7 @@ class Climate(Heater):
         """ Reacts to target temperature for room beening updated.
         """
         self.target_indoor_temp = float(new)
-        self.ADapi.run_in(self.heater_setNewValues, 5)
+        self.heater_setNewValues()
 
 class On_off_switch(Heater):
     """ Child class of Heater
@@ -4962,14 +5044,16 @@ class On_off_switch(Heater):
         api,
         heater,
         namespace,
-        heater_data
+        heater_data,
+        print_save_hours
     ):
 
         super().__init__(
             api = api,
             namespace = namespace,
             heater = heater,
-            heater_data=heater_data,
+            heater_data = heater_data,
+            print_save_hours = print_save_hours,
         )
 
 class Notify_Mobiles:

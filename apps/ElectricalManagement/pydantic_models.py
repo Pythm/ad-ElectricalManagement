@@ -82,7 +82,6 @@ class ChargerData(BaseModel):
     volts: int = 220
     phases: int = 1
     voltPhase: int = 220
-    connected_car_name: str | None = None
 
     # Easee sensors
     max_charger_limit: Optional[str] = None
@@ -115,7 +114,7 @@ class CarData(BaseModel):
     max_kWh_charged: float = 5
     old_charge_limit: float = 100
     kWh_remain_to_charge: float = -2
-
+    connected_charger_id: str | None = None
 
 class ChargingQueueItem(BaseModel):
     vehicle_id: str

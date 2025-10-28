@@ -28,7 +28,7 @@ Major changes to storage and initialization of classes.
 
 ## 🧭 Planned Changes
 
-I will also make changes to [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) so that you configure your heaters there and import the apps to set save and spend hours with this app.
+I will make changes to [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) so that you configure your heaters there and import the apps to set save and spend hours with this app.
 
 ---
 
@@ -49,9 +49,9 @@ AppDaemon is a loosely coupled, multi-threaded, sandboxed Python execution envir
 
 The app calculates the optimal charging time for your electric car based on your historical electricity consumption. It considers factors like weather conditions, current rates, and future prices.
 
-For heating sources and hot water boilers, the app uses similar calculations to determine when to turn them on/off/down based on the lowest possible electricity rates, while still ensuring comfort needs are met. It can also turn up heating sources before a price increase.
+For heating sources and hot water boilers, the app uses similar calculations to determine when to turn them on/off/up/down based on the lowest possible electricity rates, while still ensuring comfort needs are met.
 
-The app continuously monitors your energy consumption and adjusts settings accordingly, helping you avoid peak hours when electricity rates are higher and maximize savings during off-peak hours.
+The app can also continuously monitors your energy consumption and adjusts accordingly, helping you stay within grid tariffs.
 
 ---
 
@@ -62,9 +62,6 @@ The app continuously monitors your energy consumption and adjusts settings accor
 
 > [!NOTE]  
 > Max usage limit `max_kwh_goal` is developed according to the calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2–5 kWh, 5–10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
-
-> [!TIP]  
-> If you live in a country where there is no tariff on higher usage, set `max_kwh_goal` to the same size as your main fuse in kWh. It defaults to 15.
 
 If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating.
 
@@ -199,7 +196,7 @@ def send_notification(self, **kwargs) -> None:
 
 ### 🌤️ Weather Sensors
 
-We **strongly recommend** using the [ad‑Weather](https://github.com/Pythm/ad-Weather) app for weather data:  
+I **strongly recommend** using the [ad‑Weather](https://github.com/Pythm/ad-Weather) app for weather data:  
 
 - It consolidates all your weather sensors into a single app.  
 - It **publishes events** that other apps (like ElectricalManagement) can use.  
@@ -376,9 +373,6 @@ Here you configure climate entities that you want to control based on outside te
 
 Climate entities are defined under `climate` and you configure the temperature it should heat to, based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
-> [!IMPORTANT]  
-> If no `consumptionSensor` or `kWhconsumption优化Sensor` is found or configured, the app will log with a warning to your AppDaemon log.
-
 If the heater does not have a consumption sensor, you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit and together with the kWh sensor, it calculates expected available power during charging time.
 
 > [!IMPORTANT]  
@@ -427,6 +421,11 @@ Savings are calculated based on a future drop in price, with the given `pricedro
 
 Configure `max_continuous_hours` for how long it can do savings. Defaults to 2 hours. Hot water boilers and heating cables in concrete are considered "magazines" and can be off for multiple hours before comfort is lost, so configure depending on the magazine for every climate/switch entity. You can also define a `on_for_minimum` that checks drop in price against low prices to ensure that it does not save for multiple hours without being able to heat up before prices go up again.
 
+The app will log any saving hours when you change the any of the above. You can also configure with option `print_save_hours` in heater to print every day.
+```yaml
+      options:
+        - print_save_hours
+```
 ---
 
 ### 💸 Spending Settings
@@ -538,14 +537,17 @@ Putting it all together in a configuration with example names:
 electricity:
   module: electricalManagement
   class: ElectricalUsage
-  json_path: /conf/apps/ElectricalManagement/ElectricityData.json
-  nordpool: sensor.nordpool_kwh_bergen_nok_3_10_025
+  dependencies:
+    - electricalPriceCalc
+  electricalPriceApp: electricalPriceCalc
   power_consumption: sensor.power_home
   accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
+
   max_kwh_goal: 15 # 15 is default.
   buffer: 0.4 # 0.4 is default.
   startBeforePrice: 0.01
   stopAtPriceIncrease: 0.3
+
   vacation: input_boolean.vacation
   notify_receiver:
     - mobile_app_yourphone
@@ -554,18 +556,16 @@ electricity:
   options:
     - pause_charging
     - notify_overconsumption
-  outside_temperature: sensor.netatmo_out_temperature
+
   # Cars and Chargers
   tesla:
     - charger: yourTesla
       pref_charge_limit: 90
-      battery_size: 100
       finishByHour: input_number.finishChargingAt
       priority: 3
       charge_now: input_boolean.charge_Now
     - charger: yourOtherTesla
       pref_charge_limit: 70
-      battery_size: 80
       finishByHour: input_number.yourOtherTesla_finishChargingAt
       priority: 4
       charge_now: input_boolean.yourOtherTesla_charge_Now
@@ -579,10 +579,10 @@ electricity:
       session_energy: sensor.nameOfCharger_energi_ladesesjon
       idle_current: switch.nameOfCharger_ventestrom
       guest: input_boolean.easeelader_guest_using
+
   # Climate
   climate:
-    - name: floor_thermostat
-    #- heater: climate.floor_thermostat
+    - heater: climate.floor_thermostat
       consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
@@ -613,13 +613,23 @@ electricity:
           presence:
             - person.wife
       temperatures:
-        - out: 3
-          offset: 0.5
-        - out: 7
+        - out: -4
+          offset: 2
+        - out: -3
+          offset: 1
+        - out: 2
           offset: 0
+        - out: 7
+          offset: -2
+        - out: 11
+          offset: -3
+        - out: 14
+          offset: -5
+        - out: 17
+          offset: -6
+
   heater_switches:
-    - name: hotwater
-    #- switch: switch.hotwater
+    - switch: switch.hotwater
       consumptionSensor: sensor.hotwater_electric_consumption_w
       kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8
