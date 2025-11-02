@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conlist, conint
 from dataclasses import dataclass
 
 
@@ -14,6 +14,10 @@ class MaxUsage(BaseModel):
     max_kwh_usage_pr_hour: int = 0
     topUsage: List[float] = Field(default_factory=lambda: [0, 0, 0])
 
+class HighConsumptionHour(BaseModel):
+    high_consumption_hours: conlist(
+        conint(ge=6, le=22)
+    ) = Field(default_factory=list)
 
 class TempConsumption(BaseModel):
     Consumption: float | None = None
@@ -22,7 +26,7 @@ class TempConsumption(BaseModel):
 
 
 class IdleBlock(BaseModel):
-    ConsumptionData: Dict[str, TempConsumption] = Field(default_factory=dict)
+    ConsumptionData: Dict[int, TempConsumption] = Field(default_factory=dict)
 
 
 class PeakHour(BaseModel):
@@ -60,7 +64,7 @@ class HeaterBlock(BaseModel):
     daytime_savings: Optional[List[Dict[str, Any]]] = None
     temperatures: Optional[List[Dict[str, Any]]] = None
 
-    ConsumptionData: Dict[str, Dict[str, TempConsumption]] = Field(default_factory=dict)
+    ConsumptionData: Dict[int, Dict[int, TempConsumption]] = Field(default_factory=dict)
     prev_consumption: float = 0.0
     time_to_save: List[PeakHour] = Field(default_factory=list)
 
@@ -157,6 +161,7 @@ class Decision:
 
 class PersistenceData(BaseModel):
     max_usage: MaxUsage = Field(alias="MaxUsage", default_factory=MaxUsage)
+    high_consumption: HighConsumptionHour = Field(alias="HighConsumptionHour", default_factory=HighConsumptionHour)
     idle_usage: IdleBlock = Field(alias="IdleUsage", default_factory=IdleBlock)
     charger: Dict[str, ChargerData] = Field(alias="charger", default_factory=dict)
     car: Dict[str, CarData] = Field(alias="carName", default_factory=dict)
