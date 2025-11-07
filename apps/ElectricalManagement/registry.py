@@ -87,3 +87,21 @@ class Registry:
         if car is None:
             return None
         return cls.unlink(car)
+
+    @classmethod
+    def relink_to_onboard(cls, charger: "Charger") -> Optional["Car"]:
+        """
+        Symmetric to :meth:`unlink`.  Removes the link that the charger
+        has to its car, if any.
+
+        Returns the car that was unlinked, or ``None`` if the charger had
+        no car attached.
+        """
+        car = getattr(charger, "connected_vehicle", None)
+        if car is None:
+            return None
+        charger_to_return = cls.unlink(car)
+        onboard = getattr(car, "onboard_charger", None)
+        if onboard is not None:
+            cls.set_link(car, onboard)
+        return charger_to_return
