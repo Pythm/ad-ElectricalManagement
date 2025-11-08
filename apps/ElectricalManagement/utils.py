@@ -47,7 +47,7 @@ def get_consumption_for_outside_temp(
     if not data:
         return None
 
-    even_key = str(floor_even(out_temp))
+    even_key = floor_even(out_temp)
     if even_key in data:
         return data[even_key]
 
@@ -55,7 +55,7 @@ def get_consumption_for_outside_temp(
     nearest = closest_value(data=keys, target=out_temp)
     if nearest is None:
         return None
-    return data[str(nearest)]
+    return data[nearest]
 
 def closest_value(
     data: Iterable[Any],
@@ -85,7 +85,7 @@ def closest_value(
 
     return best
 
-def closest_temp_in_dict(temp: str, data: Dict[str, TempConsumption]) -> str | None:
+def closest_temp_in_dict(temp: str, data: Dict[str, TempConsumption]) -> int | None:
     """Return the key that is numerically closest to `temp`."""
     if not data:
         return None
@@ -103,5 +103,5 @@ def diff_ok(old_val: float | None, new_val: float, max_ratio: float) -> bool:
         return new_val == 0
     return abs(old_val - new_val) / abs(old_val) <= max_ratio
 
-def floor_even(n: float) -> str:
+def floor_even(n: float) -> int:
     return int(math.floor(n / 2.0) * 2.0)
