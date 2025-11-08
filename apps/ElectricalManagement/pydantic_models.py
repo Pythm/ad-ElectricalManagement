@@ -116,6 +116,7 @@ class CarData(BaseModel):
     battery_reg_counter: int = 0
     car_limit_max_ampere: float | None = None
     max_kWh_charged: float = 5
+    current_charge_limit: float = 100
     old_charge_limit: float = 100
     kWh_remain_to_charge: float = -2
     connected_charger_id: str | None = None

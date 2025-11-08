@@ -226,6 +226,7 @@ class ElectricalUsage(ad.ADBase):
                     'battery_reg_counter':  0,
                     'car_limit_max_ampere': None,
                     'max_kWh_charged':      5,
+                    'current_charge_limit': 100,
                     'old_charge_limit':     100,
                     'kWh_remain_to_charge': -2,
                     'connected_charger_id': None,
@@ -319,6 +320,7 @@ class ElectricalUsage(ad.ADBase):
                     'battery_reg_counter':  0,
                     'car_limit_max_ampere': None,
                     'max_kWh_charged':      5,
+                    'current_charge_limit': 100,
                     'old_charge_limit':     100,
                     'kWh_remain_to_charge': -2,
                     'connected_charger_id': None,
@@ -1044,7 +1046,7 @@ class ElectricalUsage(ad.ADBase):
         if len(self.charging_scheduler.chargingQueue) == 0:
             # Check if any car has charging limit below preferred limit
             for car in self.all_cars_connected():
-                if car.car_data.pref_charge_limit > car.car_data.old_charge_limit:
+                if car.car_data.pref_charge_limit > car.car_data.current_charge_limit:
                     car.changeChargeLimit(car.car_data.pref_charge_limit)
                     self._persistence.solarChargingList.append(car.vehicle_id)
                     car.charging_on_solar = True
@@ -1231,7 +1233,7 @@ class ElectricalUsage(ad.ADBase):
                 self.ADapi.log(f"Needed to connect {self.car.carName} to onboard charger") ###
                 Registry.set_link(car, car.onboard_charger)
 
-        charging_list = [
+        charging_list[:] = [
             qid for qid in charging_list
             if qid not in to_remove
         ]

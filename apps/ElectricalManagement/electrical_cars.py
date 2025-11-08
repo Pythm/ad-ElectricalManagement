@@ -414,7 +414,7 @@ class Car:
         """
         if self.connected_charger is not None:
             try:
-                new = int(new)
+                self.car_data.current_charge_limit = int(new)
                 self.car_data.old_charge_limit = int(old)
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
@@ -561,16 +561,6 @@ class Tesla_car(Car):
         await self.ADapi.call_service('button/press',
             namespace = self.namespace,
             entity_id = self.car_data.force_data_update
-        )
-
-    def changeChargeLimit(self, chargeLimit:int = 90 ) -> None:
-        """ Change charge limit.
-        """
-        self.car_data.old_charge_limit = self.ADapi.get_state(self.car_data.charge_limit, namespace = self.namespace)
-        self.ADapi.call_service('number/set_value',
-            value = chargeLimit,
-            entity_id = self.car_data.charge_limit,
-            namespace = self.namespace
         )
 
     def destination_updated(self, entity, attribute, old, new, kwargs) -> None:
