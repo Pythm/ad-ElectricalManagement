@@ -1213,24 +1213,20 @@ class ElectricalUsage(ad.ADBase):
                         and ChargingState == 'NoPower'
                     ):
                         car.wakeMeUp()
-                        self.ADapi.log(f"{car.carName} from chargequeue has Chargestate NoPower and is connected to onboard charger") ###
                         for charger in self.all_chargers():
                             if (
                                 charger.connected_vehicle is None
                                 and charger.getChargingState() in ('Stopped', 'awaiting_start')
                             ):
-                                self.ADapi.log(f"-> Found {charger.charger} with state {charger.getChargingState()}. Will try to match with car {car.carName}") ###
                                 Registry.unlink(car)
                                 charger.findCarConnectedToCharger()
 
             elif not car.isConnected():
                 to_remove.add(queue_id)
                 self.charging_scheduler.removeFromCharging(car.vehicle_id)
-                self.ADapi.log(f"Removing {car.carName} from chargequeue. is not connected. Chargestate not Disconnetcted? {car.getCarChargerState()}") ###
                 car._handleChargeCompletion()
 
             else:
-                self.ADapi.log(f"Needed to connect {self.car.carName} to onboard charger") ###
                 Registry.set_link(car, car.onboard_charger)
 
         charging_list[:] = [
