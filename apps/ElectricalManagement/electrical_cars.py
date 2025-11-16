@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import math
+import inspect ###
+from datetime import timedelta
 from typing import Optional
 
-from utils import cancel_timer_handler, cancel_listen_handler
+from utils import cancel_timer_handler#, cancel_listen_handler
 
 from registry import Registry
 from scheduler import Scheduler
+
+UNAVAIL = ('unavailable', 'unknown')
 
 class Car:
     """ Car parent class
@@ -162,6 +166,9 @@ class Car:
 
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
+        if not self.isConnected():
+            stack = inspect.stack()
+            self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
         now = self.ADapi.datetime(aware=True)
         if self.dontStopMeNow():
             return
@@ -175,7 +182,7 @@ class Car:
             else:
                 return
         if (
-            self.isConnected() and charger_state not in ('Disconnected', 'Complete') or
+            charger_state not in ('Disconnected', 'Complete') or
             self.connected_charger.getChargingState() not in ('Disconnected', 'Complete')
         ):
             if (
@@ -256,8 +263,7 @@ class Car:
         """
         if self.getLocation() == 'home':
             if self.car_data.charger_sensor is not None:
-                if self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on':
-                    return True
+                return self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on'
             if self.connected_charger is not None:
                 return self.connected_charger.getChargingState() not in ['Disconnected']
             return True
@@ -546,7 +552,7 @@ class Tesla_car(Car):
     def SoftwareUpdates(self) -> bool:
         """ Return True if car is updating software.
         """
-        if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace) not in ('unavailable', 'unknown'):
+        if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace) not in UNAVAIL:
             if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace, attribute = 'in_progress') != False:
                 return True
         return False

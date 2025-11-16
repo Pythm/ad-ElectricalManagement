@@ -8,16 +8,17 @@ from appdaemon import adbase as ad
 
 import math
 import json
-import csv
+import importlib.util
+#import csv
 
 import bisect
-import pytz
+#import pytz
 from datetime import timedelta
 from collections import defaultdict
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass #, field, asdict
 from typing import Any, Dict, List, Tuple, Iterable, Optional
-from pydantic import BaseModel, Field
+#from pydantic import BaseModel, Field
 
 from pydantic_models import (
     PersistenceData,
@@ -89,13 +90,13 @@ class ElectricalUsage(ad.ADBase):
         self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path')
-        if not self.json_path:
-            self.ADapi.log(
-                "Path to store json not provided. "
-                "Please input a valid path with configuration 'json_path' to use persistency.",
-                level = 'WARNING'
-            )
+        self.json_path = self.args.get('json_path') 
+        """ TODO Update to
+        self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
+            if not os.path.exists(self.json_path):
+                os.makedirs(self.json_path)
+        self.json_path += 'electricalmanagement.json'
+        """ ###
 
         self._load_persistent_data()
 
@@ -292,7 +293,7 @@ class ElectricalUsage(ad.ADBase):
         for cfg in self.args.get('cars', []):
             namespace = cfg.get("namespace", self.HASS_namespace)
             if not 'carName' in cfg:
-                self.ADapi.log(f"Skipping car entry {cfg} – no carName given", level='WARNING')
+                self.ADapi.log(f"Skipping car entry {cfg} - no carName given", level='WARNING')
                 continue
 
             persisted_car = self._persistence.car.get(cfg['carName'])
@@ -486,8 +487,7 @@ class ElectricalUsage(ad.ADBase):
             heater_entity: str | None = heater_cfg.get('heater')
             print_save_hours = False
             if not heater_entity:
-                self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
-                            level='WARNING')
+                self.ADapi.log(f"Skipping heater entry {heater_cfg} no heater given", level='WARNING')
                 continue
             heater_name = heater_entity.replace('climate.', '')
             if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
@@ -615,23 +615,19 @@ class ElectricalUsage(ad.ADBase):
     def _setup_api_and_translations(self):
         self.ADapi = self.get_ad_api()
         self.HASS_namespace = self.args.get('main_namespace', 'default')
-        language = self.args.get('lightwand_language', 'en')
-        language_file = self.args.get('language_file', '/conf/apps/Lightwand/translations.json')
-        event_listen_str: str = 'MODE_CHANGE'
 
-        try:
-            with open(language_file) as lang:
-                translations = json.load(lang)
-            event_listen_str = translations[language]['MODE_CHANGE']
-            global FIRE_TRANSLATE
-            FIRE_TRANSLATE = translations[language]['fire']
-            global FALSE_ALARM_TRANSLATE
-            FALSE_ALARM_TRANSLATE = translations[language]['false-alarm']
-        except FileNotFoundError:
-            self.ADapi.log("Translation file not found. Will use default mode names", level = 'DEBUG')
+        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace=self.HASS_namespace)
+
+        # TODO Update to use Lightwand translation singelton ###
+        event_listen_str: str = 'MODE_CHANGE'
+        spec = importlib.util.find_spec('translations_lightmodes')
+        if spec is not None:
+            from translations_lightmodes import translations
+            event_listen_str = translations.MODE_CHANGE
+
 
         self.ADapi.listen_event(self.mode_event, event_listen_str, namespace = self.HASS_namespace)
-        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace=self.HASS_namespace)
+        
 
     def _init_collections(self):
         self.chargers: dict[str, Charger] = {}
@@ -645,7 +641,7 @@ class ElectricalUsage(ad.ADBase):
         self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
         self.pause_charging: bool = 'pause_charging' in self.args.get('options')
 
-        self.buffer = self.args.get('buffer', 0.4) + 0.02
+        self.buffer = self.args.get('buffer', 0.4) + 0.01
         self.max_kwh_goal = self.args.get('max_kwh_goal', 15)
 
         # Variables for different calculations
@@ -681,46 +677,32 @@ class ElectricalUsage(ad.ADBase):
 
     def _validate_current_consumption_sensor(self):
         self.current_consumption_sensor = self.args.get('power_consumption', None) # In Watt
-        if not self.current_consumption_sensor:
-            self.ADapi.log(
-                "'power_consumption' sensor not provided in configuration. Aborting Electrical Usage setup."
-                "Please provide a watt power consumption sensor to use this function"
-                "Set up Tibber Pulse or equivalent and configure a watt power consumption sensor.\n"
-                "ElectricalUsage will not adjust electricity consumption",
-                level='INFO'
-            )
-        try:
-            self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
-        except (ValueError, TypeError) as ve:
-            if self.ADapi.get_state(self.current_consumption_sensor) in UNAVAIL:
-                self.ADapi.log(f"Current consumption is unavailable at startup", level = 'DEBUG')
-            else:
-                self.ADapi.log(
-                    "power_consumption sensor is not a number on app initialization. ",
-                    level='INFO'
-                )
-            self.ADapi.log(ve, level = 'DEBUG')
+        if self.current_consumption_sensor is not None:
+            try:
+                self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
+            except (ValueError, TypeError) as ve:
+                if self.ADapi.get_state(self.current_consumption_sensor) in UNAVAIL:
+                    pass
+                else:
+                    self.ADapi.log(
+                        "power_consumption sensor is not a number on electrical management initialization. ",
+                        level='INFO'
+                    )
+                self.ADapi.log(ve, level = 'DEBUG')
 
     def _validate_accumulated_consumption_current_hour(self):
         self.accumulated_consumption_current_hour = self.args.get('accumulated_consumption_current_hour', None)
-        if self.accumulated_consumption_current_hour is None:
-            self.ADapi.log(
-                "'accumulated_consumption_current_hour' not provided in configuration. "
-                "Set up Tibber Pulse or equivalent and configure a kWh consumption for current hour.\n"
-                "ElectricalUsage will not adjust electricity consumption",
-                level='INFO'
-            )
-            return
+        if self.accumulated_consumption_current_hour is not None:
 
-        attr_last_updated = self.ADapi.get_state(
-            entity_id = self.accumulated_consumption_current_hour,
-            attribute = "last_updated"
-        )
-        if not attr_last_updated:
-            self.ADapi.log(
-                f"{self.ADapi.get_state(self.accumulated_consumption_current_hour)} has no 'last_updated' attribute. Function might fail",
-                level='INFO'
+            attr_last_updated = self.ADapi.get_state(
+                entity_id = self.accumulated_consumption_current_hour,
+                attribute = "last_updated"
             )
+            if not attr_last_updated:
+                self.ADapi.log(
+                    f"{self.ADapi.get_state(self.accumulated_consumption_current_hour)} has no 'last_updated' attribute. Function might fail",
+                    level='INFO'
+                )
 
     def _setup_power_production_sensors(self):
         self.current_production_sensor = self.args.get('power_production', None)  # Watt
@@ -1627,7 +1609,6 @@ class ElectricalUsage(ad.ADBase):
                 try:
                     hoursOffInt = time_to_save_item.duration.seconds//3600
                 except (ValueError, TypeError) as e:
-                    self.ADapi.log(f"Could not convert {time_to_save_item.duration} to a duration: {e}", level = 'DEBUG')
                     return
             if hoursOffInt > 0:
                 runtime = time_to_save_item.end + timedelta(minutes = 3)
@@ -1751,7 +1732,6 @@ class ElectricalUsage(ad.ADBase):
         try:
             self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
         except ValueError as ve:
-            self.ADapi.log(f"Current consumption is unavailable - skipping idle log", level = 'DEBUG')
             return
 
         heater_consumption: float = 0.0
@@ -1769,11 +1749,12 @@ class ElectricalUsage(ad.ADBase):
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
-            self.ADapi.log(f"idle_consumption={idle_consumption} - aborting logging Idle Consumption", level = 'DEBUG')
+            self.ADapi.log(f"idle_consumption={idle_consumption} - aborting logging Idle Consumption") ###
             return
 
         out_temp_even = floor_even(self.out_temp)
         consumption_dict = self._persistence.idle_usage.ConsumptionData
+        self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption}") ###
 
         if out_temp_even in consumption_dict:
             old = consumption_dict[out_temp_even]
@@ -1806,11 +1787,9 @@ class ElectricalUsage(ad.ADBase):
                 consumption_dict[out_temp_even] = new_entry
             else:
                 self.ADapi.log(
-                    f"Discarded idle sample at {out_temp_even} degrees - too different from existing data",
-                    level = 'DEBUG'
-                )
+                    f"Discarded idle sample at {out_temp_even} degrees - too different from existing data"
+                ) ###
                 return
-
         else:
             nearest_key = closest_temp_in_dict(out_temp_even, consumption_dict)
 
@@ -1833,9 +1812,8 @@ class ElectricalUsage(ad.ADBase):
                     if not diff_ok(nearest.Consumption, new_consumption, MAX_CONSUMPTION_RATIO_DIFFERENCE):
                         self.ADapi.log(
                             f"Discarded idle sample at {out_temp_even} degrees "
-                            f"closest data at {nearest_key} degrees is too far or too different",
-                            level = 'DEBUG'
-                        )
+                            f"closest data at {nearest_key} degrees is too far or too different"
+                        ) ###
                         return
                 new_entry = TempConsumption(
                     Consumption = new_consumption,

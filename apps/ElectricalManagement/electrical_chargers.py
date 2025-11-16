@@ -8,7 +8,7 @@ from pydantic_models import CarData
 from utils import cancel_timer_handler, cancel_listen_handler
 
 from registry import Registry
-from scheduler import Scheduler
+#from scheduler import Scheduler
 
 class Charger:
     """ Charger parent class
@@ -287,20 +287,6 @@ class Charger:
         if self.connected_vehicle is not None:
             if not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop):
                 return False
-        else: ### TESTING ONLY TODO remove
-            data = {
-                'tag' : self.charger,
-                'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {self.charger} Now' }]
-                }
-            self.notify_app.send_notification(
-                        message = f"has no vehicle when trying to stop.",
-                        message_title = f"{self.charger}",
-                        message_recipient = self.recipients,
-                        also_if_not_home = True,
-                        data = data
-                    )
-            ### Until here
-
 
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         if self.getChargingState() in ('Charging', 'Starting'):
@@ -387,8 +373,11 @@ class Charger:
             try:
                 if float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)) < 4:
                     self.connected_vehicle.pct_start_charge = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
+                else:
+                    self.ADapi.log(f"Register battery soc for calulation fails when session energy is {self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)}") ###
             except (ValueError, TypeError):
                 return
+            self.ADapi.log(f"Setting pct_start_charge for {self.charger} to {self.connected_vehicle.pct_start_charge}") ###
 
     def _calculateBatterySize(self, session: float) -> None:
         battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
@@ -764,8 +753,6 @@ class Tesla_charger(Charger):
             self.setChargingAmps(charging_amp_set = self.charger_data.min_ampere) # Set to minimum amp for preheat.
 
     def startCharging(self) -> None:
-        """ Starts charger.
-        """
         if super().startCharging():
             self.ADapi.create_task(self.start_Tesla_charging())
 
@@ -784,8 +771,20 @@ class Tesla_charger(Charger):
             self.ADapi.log(f"Car was None when trying to start charging?") ###
 
     def stopCharging(self, force_stop:bool = False) -> None:
-        """ Stops charger.
-        """
+        if self.connected_vehicle is None: ### TESTING ONLY TODO remove
+            data = {
+                'tag' : self.charger,
+                'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {self.charger} Now' }]
+                }
+            self.notify_app.send_notification(
+                        message = f"has no vehicle when trying to stop.",
+                        message_title = f"{self.charger}",
+                        message_recipient = self.recipients,
+                        also_if_not_home = True,
+                        data = data
+                    )
+            ### Until here
+
         if super().stopCharging(force_stop = force_stop):
             self.ADapi.create_task(self.stop_Tesla_charging())
 

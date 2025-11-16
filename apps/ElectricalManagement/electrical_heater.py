@@ -15,6 +15,8 @@ from utils import (
 
 from scheduler import Scheduler
 
+UNAVAIL = ('unavailable', 'unknown')
+
 class Heater:
     """ Heater
         Parent class for on_off_switch and electrical heaters
@@ -123,7 +125,7 @@ class Heater:
             and (self.HeatAt is None
             or self.electricalPriceApp.tomorrow_valid)
         ):
-            self.HeatAt, est_end, self.EndAt, self.price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
+            self.HeatAt, self.EndAt, self.price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
                 hoursTotal = 2,
                 calculateBeforeNextDayPrices = not self.electricalPriceApp.tomorrow_valid,
 		        finishByHour = 24,
