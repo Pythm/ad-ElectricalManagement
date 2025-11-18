@@ -54,6 +54,7 @@ class Charger:
         self.doNotStartMe:bool = False
         self._recheck_findCarConnectedToCharger_handler = None
         self.reason_for_no_current_handler = None
+        self.session_start_charge:float = 0.0
 
         Registry.register_charger(self)
 
@@ -371,12 +372,15 @@ class Charger:
             and self.connected_vehicle.car_data.battery_sensor is not None
         ):
             try:
-                if float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)) < 4:
-                    self.connected_vehicle.pct_start_charge = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
-                else:
-                    self.ADapi.log(f"Register battery soc for calulation fails when session energy is {self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)}") ###
+                session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace))
+                soc = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
             except (ValueError, TypeError):
                 return
+            if session < 4 or self.connected_vehicle.pct_start_charge == 100:
+                self.connected_vehicle.pct_start_charge = soc
+                self.session_start_charge = session
+            else:
+                self.ADapi.log(f"Register battery soc for calulation fails when session energy is {self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)}") ###
             self.ADapi.log(f"Setting pct_start_charge for {self.charger} to {self.connected_vehicle.pct_start_charge}") ###
 
     def _calculateBatterySize(self, session: float) -> None:
@@ -385,7 +389,7 @@ class Charger:
         self.ADapi.log(f"Session for {self.charger} is {session}. Registrating battery calculations with battery sensor: {battery_sensor} and reg_counter: {battery_reg_counter}") ###
 
         if battery_sensor is not None:
-            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.connected_vehicle.pct_start_charge
+            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
             self.ADapi.log(f"Calculated pct charged {pctCharged} for {self.connected_vehicle.carName}") ###
 
             if pctCharged > 35:
@@ -429,6 +433,7 @@ class Charger:
                         self._calculateBatterySize(session)
 
                     self.connected_vehicle.pct_start_charge = 100
+                    self.session_start_charge = 0
         self.charger_data.ampereCharging = 0
         if cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current"):
             self.reason_for_no_current_handler = None

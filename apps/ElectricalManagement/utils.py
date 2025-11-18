@@ -1,9 +1,11 @@
 import math
 from datetime import timedelta
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Callable
 from pydantic_models import (
     TempConsumption
 )
+
 def cancel_timer_handler(ADapi, handler, name) -> bool:
     if handler is not None:
         if ADapi.timer_running(handler):
@@ -105,3 +107,8 @@ def diff_ok(old_val: float | None, new_val: float, max_ratio: float) -> bool:
 
 def floor_even(n: float) -> int:
     return int(math.floor(n / 2.0) * 2.0)
+
+@dataclass(frozen=True)
+class ModeTranslations:
+    fire: str = "fire"
+    false_alarm: str = "false-alarm"

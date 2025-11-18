@@ -43,7 +43,8 @@ from utils import (
     closest_value,
     closest_temp_in_dict,
     diff_ok,
-    floor_even
+    floor_even,
+    ModeTranslations
 )
 from registry import Registry
 from scheduler import Scheduler
@@ -56,11 +57,8 @@ __version__ = "1.0.0_beta"
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
 
-# Translations from json for 'MODE_CHANGE' events
-FIRE_TRANSLATE:str = 'fire'
-FALSE_ALARM_TRANSLATE:str = 'false-alarm'
-
 UNAVAIL = ('unavailable', 'unknown')
+translations = None
 
 class ElectricalUsage(ad.ADBase):
     """ Main class of ElectricalManagement
@@ -90,13 +88,12 @@ class ElectricalUsage(ad.ADBase):
         self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path') 
-        """ TODO Update to
-        self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
+        self.json_path = self.args.get('json_path', None) 
+        if self.json_path is None:
+            self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
             if not os.path.exists(self.json_path):
                 os.makedirs(self.json_path)
-        self.json_path += 'electricalmanagement.json'
-        """ ###
+            self.json_path += 'electricalmanagement.json'
 
         self._load_persistent_data()
 
@@ -618,16 +615,14 @@ class ElectricalUsage(ad.ADBase):
 
         self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace=self.HASS_namespace)
 
-        # TODO Update to use Lightwand translation singelton ###
-        event_listen_str: str = 'MODE_CHANGE'
+        global translations
         spec = importlib.util.find_spec('translations_lightmodes')
         if spec is not None:
             from translations_lightmodes import translations
-            event_listen_str = translations.MODE_CHANGE
-
-
-        self.ADapi.listen_event(self.mode_event, event_listen_str, namespace = self.HASS_namespace)
-        
+            self.ADapi.listen_event(self.mode_event, translations.MODE_CHANGE, namespace = self.HASS_namespace)
+        else:
+            translations = ModeTranslations()
+            self.ADapi.listen_event(self.mode_event, "MODE_CHANGE", namespace = self.HASS_namespace)
 
     def _init_collections(self):
         self.chargers: dict[str, Charger] = {}
@@ -1407,7 +1402,7 @@ class ElectricalUsage(ad.ADBase):
                 return True
             if minute > 15 and remaining_minute > 12:
                 amp = car.connected_charger.charger_data.ampereCharging
-                threshold = max(car.getCarMaxAmps() - 12, 12)
+                threshold = max(car.getCarMaxAmps() - 12, 16)
                 return amp > threshold
         return False
 
@@ -1754,10 +1749,10 @@ class ElectricalUsage(ad.ADBase):
 
         out_temp_even = floor_even(self.out_temp)
         consumption_dict = self._persistence.idle_usage.ConsumptionData
-        self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption}") ###
 
         if out_temp_even in consumption_dict:
             old = consumption_dict[out_temp_even]
+            self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} to old: {old}") ###
 
             new_counter = old.Counter + 1
             new_consumption = round(
@@ -1794,6 +1789,7 @@ class ElectricalUsage(ad.ADBase):
             nearest_key = closest_temp_in_dict(out_temp_even, consumption_dict)
 
             if nearest_key is None:
+                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} with no nearest key") ###
                 new_entry = TempConsumption(
                     Consumption = idle_consumption,
                     HeaterConsumption = heater_consumption,
@@ -1804,6 +1800,7 @@ class ElectricalUsage(ad.ADBase):
             else:
                 nearest = consumption_dict[nearest_key]
                 temp_diff = abs(int(out_temp_even) - int(nearest_key))
+                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} and check against nearest:\n{nearest}") ###
 
                 new_consumption = round(idle_consumption, 2)
                 new_heater = round(heater_consumption, 2)
@@ -1899,7 +1896,7 @@ class ElectricalUsage(ad.ADBase):
             To call from another app use: self.fire_event('MODE_CHANGE', mode = 'fire')
             Set back to normal with mode 'false-alarm' """
 
-        if data['mode'] == FIRE_TRANSLATE:
+        if data['mode'] == translations.fire:
             self.houseIsOnFire = True
             for car in self.all_cars_connected():
                 if car.getCarChargerState() == 'Charging':
@@ -1912,7 +1909,7 @@ class ElectricalUsage(ad.ADBase):
                 heater.turn_off_heater()
 
 
-        elif data['mode'] == FALSE_ALARM_TRANSLATE:
+        elif data['mode'] == translations.false_alarm:
             # Fire alarm stopped
             self.houseIsOnFire = False
             for heater in self.heaters:

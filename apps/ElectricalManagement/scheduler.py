@@ -331,7 +331,6 @@ class Scheduler:
             )
             estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
             current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
-            self.ADapi.log(f"Est stop = {current_car.estimateStop}") ###
 
             has_overlap = False
             for overlapping_id in simultaneous_charge:
@@ -407,7 +406,7 @@ class Scheduler:
             stopAtPriceIncrease=self.stopAtPriceIncrease,
         )
 
-        if estimate_stop is not None:
+        if charging_stop is not None:
             for c in self.chargingQueue:
                 if c.vehicle_id in simultaneous_charge:
                     c.chargingStart = charging_at
