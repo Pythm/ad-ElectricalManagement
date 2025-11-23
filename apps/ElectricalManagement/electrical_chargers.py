@@ -386,11 +386,10 @@ class Charger:
     def _calculateBatterySize(self, session: float) -> None:
         battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
         battery_reg_counter = getattr(self.connected_vehicle.car_data, 'battery_reg_counter', 0)
-        self.ADapi.log(f"Session for {self.charger} is {session}. Registrating battery calculations with battery sensor: {battery_sensor} and reg_counter: {battery_reg_counter}") ###
 
         if battery_sensor is not None:
             pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
-            self.ADapi.log(f"Calculated pct charged {pctCharged} for {self.connected_vehicle.carName}") ###
+            self.ADapi.log(f"Calculated pct charged {pctCharged} for {self.connected_vehicle.carName}. reg_counter: {battery_reg_counter}") ###
 
             if pctCharged > 35:
                 self._updateBatterySize(session, pctCharged, battery_reg_counter)
@@ -807,11 +806,11 @@ class Tesla_charger(Charger):
     def _check_that_charging_started(self, kwargs) -> None:
         """ Check if charger was able to start.
         """
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if (
             self.getChargingState() == 'NoPower'
-            and self.connected_vehicle.connected_charger is self
+            and connected_charger is self
         ):
-            self.ADapi.log(f"Charing had not started for {self.charger}. Asleep? {self.connected_vehicle.asleep()}. NoPower detected. Disconnecting from self") ###
             Registry.unlink_by_charger(self)
 
         elif not super()._check_that_charging_started(0):

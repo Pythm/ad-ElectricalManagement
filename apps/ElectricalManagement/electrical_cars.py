@@ -124,7 +124,7 @@ class Car:
         # Functions on when to charge Car
     def _finishByHourListen(self, entity, attribute, old, new, kwargs) -> None:
         self.finish_by_hour = math.ceil(float(new))
-        if self.kWhRemaining() > 0:
+        if self.kWhRemaining() > 0 and self.isConnected():
             self.findNewChargeTime()
 
     def _chargeNowListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -136,9 +136,10 @@ class Car:
         ):
             self.startCharging()
         elif (
-            new == 'off'
-            and old == 'on'
-            and self.kWhRemaining() > 0
+            new == 'off' and
+            old == 'on' and
+            self.kWhRemaining() > 0 and
+            self.isConnected()
         ):
             self.findNewChargeTime()
 
@@ -156,19 +157,21 @@ class Car:
         if new == 'on':
             self._handleChargeCompletion()
         elif new == 'off':
-            if self.kWhRemaining() > 0:
+            if self.kWhRemaining() > 0 and self.isConnected():
                 self.findNewChargeTime()
 
         # Functions for charge times
     def findNewChargeTimeAt(self, kwargs) -> None:
         """ Function to run when initialized and when new prices arrive. """
-        self.findNewChargeTime()
+        if self.isConnected():
+            self.findNewChargeTime()
 
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
         if not self.isConnected():
             stack = inspect.stack()
             self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
+            return
         now = self.ADapi.datetime(aware=True)
         if self.dontStopMeNow():
             return
@@ -441,7 +444,7 @@ class Car:
             if battery_state > float(new):
                 self.connected_charger._CleanUpWhenChargingStopped()
 
-            elif self.kWhRemaining() > 0:
+            elif self.kWhRemaining() > 0 and self.isConnected():
                 self.findNewChargeTime()
 
     def isChargingAtMaxAmps(self) -> bool:

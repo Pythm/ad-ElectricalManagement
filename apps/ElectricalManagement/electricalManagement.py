@@ -1207,7 +1207,6 @@ class ElectricalUsage(ad.ADBase):
                 car._handleChargeCompletion()
 
             else:
-                self.ADapi.log(f"Needed to connect {self.car.carName} to onboard charger") ###
                 Registry.set_link(car, car.onboard_charger)
 
         charging_list[:] = [
@@ -1800,7 +1799,7 @@ class ElectricalUsage(ad.ADBase):
             else:
                 nearest = consumption_dict[nearest_key]
                 temp_diff = abs(int(out_temp_even) - int(nearest_key))
-                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} and check against nearest:\n{nearest}") ###
+                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} and check against nearest: {nearest_key}\n{nearest}") ###
 
                 new_consumption = round(idle_consumption, 2)
                 new_heater = round(heater_consumption, 2)
