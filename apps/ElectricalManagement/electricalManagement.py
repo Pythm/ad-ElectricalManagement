@@ -1237,6 +1237,9 @@ class ElectricalUsage(ad.ADBase):
             self.current_consumption, heater_consumption = self.get_idle_and_heater_consumption()
             if self.current_consumption is None:
                 self.current_consumption = 2000.0
+            self.ADapi.log(f"Current consumption before extra: {self.current_consumption} * {self._persistence.max_usage.calculated_difference_on_idle}") ###
+            self.current_consumption *= self._persistence.max_usage.calculated_difference_on_idle
+            self.ADapi.log(f"Current consumption after extra: {self.current_consumption}") ###
 
             for heater in self.heaters:
                 if heater.heater_data.validConsumptionSensor:
@@ -1281,6 +1284,9 @@ class ElectricalUsage(ad.ADBase):
                         f"Actual: {self.accumulated_kWh}",
                         level = 'INFO'
                     )
+                    error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
+                    self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
+                    self.ADapi.log(f"New calculated difference on idle is {self._persistence.max_usage.calculated_difference_on_idle}") ###
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1751,7 +1757,6 @@ class ElectricalUsage(ad.ADBase):
 
         if out_temp_even in consumption_dict:
             old = consumption_dict[out_temp_even]
-            self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} to old: {old}") ###
 
             new_counter = old.Counter + 1
             new_consumption = round(
@@ -1788,7 +1793,6 @@ class ElectricalUsage(ad.ADBase):
             nearest_key = closest_temp_in_dict(out_temp_even, consumption_dict)
 
             if nearest_key is None:
-                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} with no nearest key") ###
                 new_entry = TempConsumption(
                     Consumption = idle_consumption,
                     HeaterConsumption = heater_consumption,
@@ -1799,7 +1803,6 @@ class ElectricalUsage(ad.ADBase):
             else:
                 nearest = consumption_dict[nearest_key]
                 temp_diff = abs(int(out_temp_even) - int(nearest_key))
-                self.ADapi.log(f"Log idle consumption {idle_consumption} with temp {out_temp_even} and heater: {heater_consumption} and check against nearest: {nearest_key}\n{nearest}") ###
 
                 new_consumption = round(idle_consumption, 2)
                 new_heater = round(heater_consumption, 2)

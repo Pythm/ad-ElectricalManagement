@@ -241,9 +241,11 @@ class Charger:
             charging_amp_set = self.charger_data.min_ampere
         elif charging_amp_set > max_available_amps:
             charging_amp_set = max_available_amps
-            if self.connected_vehicle.onboard_charger is not None:
-               if self.connected_vehicle.connected_charger is not self.connected_vehicle.onboard_charger:
-                    self.connected_vehicle.onboard_charger.setChargingAmps(charging_amp_set = self.connected_vehicle.onboard_charger.getmaxChargingAmps())
+            onboard_charger = getattr(self.connected_vehicle, "onboard_charger", None)
+            if onboard_charger is not None:
+                connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+                if connected_charger is not onboard_charger:
+                    onboard_charger.setChargingAmps(charging_amp_set = onboard_charger.getmaxChargingAmps())
 
         stack = inspect.stack() # Check if called from child
         if stack[1].function != 'setChargingAmps':
@@ -423,7 +425,8 @@ class Charger:
         self.ADapi.log(f"Clean up for {self.charger} called from {stack[1].function} with state {self.getChargingState()}. vehicle: {self.connected_vehicle.carName}") ###
 
         if self.connected_vehicle is not None:
-            if self.connected_vehicle.connected_charger is self:
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+            if connected_charger is self:
                 if self.getChargingState() in ('Complete', 'Disconnected'):
                     self.connected_vehicle._handleChargeCompletion()
                     if self.charger_data.session_energy and self.connected_vehicle.pct_start_charge < 90:
@@ -631,9 +634,10 @@ class Tesla_charger(Charger):
             )
             return None
         # Set as connected charger if restarted after cable connected.
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if (
-            state == 'Stopped'
-            and self.connected_vehicle.connected_charger is None
+            state == 'Stopped' and
+            connected_charger is None
         ):
             Registry.set_link(self.connected_vehicle, self)
 
@@ -646,7 +650,8 @@ class Tesla_charger(Charger):
             self.connected_vehicle.isConnected()
             and self.getChargingState() not in ('Disconnected', 'Complete')
         ):
-            if self.connected_vehicle.connected_charger is self:
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+            if connected_charger is self:
                 try:
                     maxAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                         namespace = self.namespace,
@@ -698,10 +703,11 @@ class Tesla_charger(Charger):
             chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                 namespace = self.namespace))
             )
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
             if float(new) > chargingAmpere:
                 if (
-                    self.connected_vehicle.connected_charger is not self
-                    and self.connected_vehicle.connected_charger is not None
+                    connected_charger is not self and
+                    connected_charger is not None
                 ):
                     self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
 

@@ -92,8 +92,7 @@ class Car:
             #)
             self.ADapi.listen_state(self.car_ChargeCableDisconnected, self.car_data.charger_sensor,
                 namespace = self.namespace,
-                new = 'off',
-                duration = 700
+                new = 'off'
             )
 
         self.find_Chargetime_Whenhome_handler = None
@@ -249,11 +248,14 @@ class Car:
         """
         if self.connected_charger is not None:
             if self.connected_charger.getChargingState() == 'Disconnected':
-                if self.connected_charger.connected_vehicle.onboard_charger is self.connected_charger:
-                    self.connected_charger._CleanUpWhenChargingStopped()
-                else:
-                    Registry.unlink(self)
-                    Registry.set_link(self, self.onboard_charger)
+                connected_vehicle = getattr(self.connected_charger, "connected_vehicle", None)
+                if connected_vehicle is not None:
+                    onboard_charger = getattr(connected_vehicle, "onboard_charger", None)
+                    if onboard_charger is self.connected_charger:
+                        self.connected_charger._CleanUpWhenChargingStopped()
+                    else:
+                        Registry.unlink(self)
+                        Registry.set_link(self, self.onboard_charger)
 
             if self.max_range_handler is not None:
                 # TODO: Program charging to max at departure time.
