@@ -13,7 +13,7 @@ from dataclasses import dataclass
 class MaxUsage(BaseModel):
     max_kwh_usage_pr_hour: int = 0
     topUsage: List[float] = Field(default_factory=lambda: [0, 0, 0])
-    calculated_difference_on_idle: float = 1.0
+    calculated_difference_on_idle: float = 1.1
 
 class HighConsumptionHour(BaseModel):
     high_consumption_hours: conlist(

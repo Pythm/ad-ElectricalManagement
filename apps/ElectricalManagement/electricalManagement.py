@@ -658,6 +658,8 @@ class ElectricalUsage(ad.ADBase):
             self.notify_app = self.ADapi.get_app(name_of_notify_app)
         else:
             self.notify_app = Notify_Mobiles(self.ADapi, self.HASS_namespace)
+        
+        self.home_name = self.args.get('home_name', 'home')
 
     def _setup_electricity_price(self):
         if 'electricalPriceApp' in self.args:
@@ -867,10 +869,6 @@ class ElectricalUsage(ad.ADBase):
         if minute == 0:
             self._reset_hourly(now)
             return
-        elif minute == 59 and self.accumulated_kWh > self._persistence.max_usage.max_kwh_usage_pr_hour -1:
-            if not self.charging_scheduler.isChargingTime() and not self._persistence.queueChargingList:
-                if now.hour not in self._persistence.high_consumption.high_consumption_hours:
-                    self._persistence.high_consumption.high_consumption_hours.append(now.hour)
 
         self.current_production = self._get_sensor_value(self.current_production_sensor)
         self.production_kWh = self._get_sensor_value(self.accumulated_production_current_hour)
@@ -880,9 +878,9 @@ class ElectricalUsage(ad.ADBase):
         self.available_Wh = self._calc_available_Wh(now)
 
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
-            if minute < 50:
-                self.available_Wh -= remaining_minute * 50
-                self.max_target_kWh_buffer -= 1 / remaining_minute
+            sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            self.available_Wh -= sub_wh
+            self.max_target_kWh_buffer -= (sub_wh / 10000)
 
         self._dispatch_decision()
 
@@ -973,6 +971,10 @@ class ElectricalUsage(ad.ADBase):
 
             if self.notify_overconsumption:
                 self._notify_overconsumption()
+
+            if not self.charging_scheduler.isChargingTime() and remaining_minute <= 15:
+                if now.hour not in self._persistence.high_consumption.high_consumption_hours:
+                    self._persistence.high_consumption.high_consumption_hours.append(now.hour)
 
     def _act_heaters_reduced(self) -> None:
         """ Reduce charging speed to turn heaters back on """
@@ -1190,7 +1192,6 @@ class ElectricalUsage(ad.ADBase):
                         and ChargingState == 'NoPower'
                     ):
                         car.wakeMeUp()
-                        self.ADapi.log(f"{car.carName} from chargequeue has Chargestate NoPower and is connected to onboard charger") ###
                         for charger in self.all_chargers():
                             if (
                                 charger.connected_vehicle is None
@@ -1237,9 +1238,7 @@ class ElectricalUsage(ad.ADBase):
             self.current_consumption, heater_consumption = self.get_idle_and_heater_consumption()
             if self.current_consumption is None:
                 self.current_consumption = 2000.0
-            self.ADapi.log(f"Current consumption before extra: {self.current_consumption} * {self._persistence.max_usage.calculated_difference_on_idle}") ###
             self.current_consumption *= self._persistence.max_usage.calculated_difference_on_idle
-            self.ADapi.log(f"Current consumption after extra: {self.current_consumption}") ###
 
             for heater in self.heaters:
                 if heater.heater_data.validConsumptionSensor:
@@ -1264,8 +1263,8 @@ class ElectricalUsage(ad.ADBase):
         try:
             self.accumulated_kWh = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
         except (TypeError, ValueError):
-            if self.accumulated_unavailable > 9:
-                # Will try to reload Home Assistant integration if the sensor is unavailable for 10 minutes. 
+            if self.accumulated_unavailable > 15:
+                # Will try to reload Home Assistant integration if the sensor is unavailable for 15 minutes. 
                 self.accumulated_unavailable = 0
                 self.ADapi.create_task(self._reload_accumulated_consumption_sensor())
             else:
@@ -1277,16 +1276,16 @@ class ElectricalUsage(ad.ADBase):
         else:
             if self.accumulated_kWh_wasUnavailable:
                 self.accumulated_kWh_wasUnavailable = False
-                # Print out estimate during unavailable vs actual if below actual.
+
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
                     self.ADapi.log(
                         f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
                         f"Actual: {self.accumulated_kWh}",
                         level = 'INFO'
-                    )
+                    ) ###
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
                     self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
-                    self.ADapi.log(f"New calculated difference on idle is {self._persistence.max_usage.calculated_difference_on_idle}") ###
+                    self._persistence.max_usage.calculated_difference_on_idle *= 1.1
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1620,6 +1619,7 @@ class ElectricalUsage(ad.ADBase):
         self.find_next_charger_counter = 0
         if now.hour == 0 and now.day == 1:
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
+            self._persistence.max_usage.topUsage = [0, 0, 0]
 
         elif self.accumulated_kWh > self._persistence.max_usage.topUsage[0]:
             self.logHighUsage()
@@ -1749,7 +1749,7 @@ class ElectricalUsage(ad.ADBase):
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
-            self.ADapi.log(f"idle_consumption={idle_consumption} - aborting logging Idle Consumption") ###
+            self.ADapi.log(f"idle_consumption = {idle_consumption} - aborting logging Idle Consumption") ###
             return
 
         out_temp_even = floor_even(self.out_temp)
@@ -1929,7 +1929,7 @@ class ElectricalUsage(ad.ADBase):
             self.notify_about_overconsumption = False
             self.notify_app.send_notification(
                 message=(
-                    f"Turn down consumption. It's about to go over max usage "
+                    f"Turn down consumption at {self.home_name}. It's about to go over max usage "
                     f"with {round(-self.available_Wh, 0)} Wh remaining to reduce"
                 ),
                 message_title="⚡High electricity usage",
