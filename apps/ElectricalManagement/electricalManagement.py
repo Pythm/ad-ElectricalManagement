@@ -8,16 +8,18 @@ from appdaemon import adbase as ad
 
 import math
 import json
-import csv
+import os
+import importlib.util
+#import csv
 
 import bisect
-import pytz
+#import pytz
 from datetime import timedelta
 from collections import defaultdict
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass #, field, asdict
 from typing import Any, Dict, List, Tuple, Iterable, Optional
-from pydantic import BaseModel, Field
+#from pydantic import BaseModel, Field
 
 from pydantic_models import (
     PersistenceData,
@@ -26,23 +28,24 @@ from pydantic_models import (
     ChargerData,
     CarData,
     HeaterBlock,
-    IdleBlock,
-    MaxUsage,
+    #IdleBlock, ###
+    #MaxUsage,
     TempConsumption,
-    ChargingQueueItem,
+    #ChargingQueueItem,
     WattSlot,
     Decision,
-    PeakHour
+    #PeakHour
 )
 from utils import (
     cancel_timer_handler,
-    cancel_listen_handler,
+    #cancel_listen_handler, ###
     get_next_runtime_aware,
     get_consumption_for_outside_temp,
     closest_value,
     closest_temp_in_dict,
     diff_ok,
-    floor_even
+    floor_even,
+    ModeTranslations
 )
 from registry import Registry
 from scheduler import Scheduler
@@ -55,11 +58,8 @@ __version__ = "1.0.0_beta"
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
 
-# Translations from json for 'MODE_CHANGE' events
-FIRE_TRANSLATE:str = 'fire'
-FALSE_ALARM_TRANSLATE:str = 'false-alarm'
-
 UNAVAIL = ('unavailable', 'unknown')
+translations = None
 
 class ElectricalUsage(ad.ADBase):
     """ Main class of ElectricalManagement
@@ -89,13 +89,12 @@ class ElectricalUsage(ad.ADBase):
         self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path')
-        if not self.json_path:
-            self.ADapi.log(
-                "Path to store json not provided. "
-                "Please input a valid path with configuration 'json_path' to use persistency.",
-                level = 'WARNING'
-            )
+        self.json_path = self.args.get('json_path', None) 
+        if self.json_path is None:
+            self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
+            if not os.path.exists(self.json_path):
+                os.makedirs(self.json_path)
+            self.json_path += 'electricalmanagement.json'
 
         self._load_persistent_data()
 
@@ -292,7 +291,7 @@ class ElectricalUsage(ad.ADBase):
         for cfg in self.args.get('cars', []):
             namespace = cfg.get("namespace", self.HASS_namespace)
             if not 'carName' in cfg:
-                self.ADapi.log(f"Skipping car entry {cfg} – no carName given", level='WARNING')
+                self.ADapi.log(f"Skipping car entry {cfg} - no carName given", level='WARNING')
                 continue
 
             persisted_car = self._persistence.car.get(cfg['carName'])
@@ -486,8 +485,7 @@ class ElectricalUsage(ad.ADBase):
             heater_entity: str | None = heater_cfg.get('heater')
             print_save_hours = False
             if not heater_entity:
-                self.ADapi.log(f"Skipping heater entry {heater_cfg}  no heater given",
-                            level='WARNING')
+                self.ADapi.log(f"Skipping heater entry {heater_cfg} no heater given", level='WARNING')
                 continue
             heater_name = heater_entity.replace('climate.', '')
             if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
@@ -517,8 +515,8 @@ class ElectricalUsage(ad.ADBase):
                     'save_temp_offset':               heater_cfg.get('save_temp_offset',None),
                     'save_temp':                      heater_cfg.get('save_temp',None),
                     'vacation_temp':                  heater_cfg.get('vacation_temp',None),
-                    'rain_level':                     heater_cfg.get('rain_level',self.rain_level),
-                    'anemometer_speed':               heater_cfg.get('anemometer_speed',self.anemometer_speed),
+                    'rain_level':                     heater_cfg.get('rain_level',3),
+                    'anemometer_speed':               heater_cfg.get('anemometer_speed',40),
                     'getting_cold':                   heater_cfg.get('getting_cold',18),
                     'priceincrease':                  heater_cfg.get('priceincrease',1),
                     'windowsensors':                  heater_cfg.get('windowsensors',[]),
@@ -615,23 +613,17 @@ class ElectricalUsage(ad.ADBase):
     def _setup_api_and_translations(self):
         self.ADapi = self.get_ad_api()
         self.HASS_namespace = self.args.get('main_namespace', 'default')
-        language = self.args.get('lightwand_language', 'en')
-        language_file = self.args.get('language_file', '/conf/apps/Lightwand/translations.json')
-        event_listen_str: str = 'MODE_CHANGE'
 
-        try:
-            with open(language_file) as lang:
-                translations = json.load(lang)
-            event_listen_str = translations[language]['MODE_CHANGE']
-            global FIRE_TRANSLATE
-            FIRE_TRANSLATE = translations[language]['fire']
-            global FALSE_ALARM_TRANSLATE
-            FALSE_ALARM_TRANSLATE = translations[language]['false-alarm']
-        except FileNotFoundError:
-            self.ADapi.log("Translation file not found. Will use default mode names", level = 'DEBUG')
-
-        self.ADapi.listen_event(self.mode_event, event_listen_str, namespace = self.HASS_namespace)
         self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace=self.HASS_namespace)
+
+        global translations
+        spec = importlib.util.find_spec('translations_lightmodes')
+        if spec is not None:
+            from translations_lightmodes import translations
+            self.ADapi.listen_event(self.mode_event, translations.MODE_CHANGE, namespace = self.HASS_namespace)
+        else:
+            translations = ModeTranslations()
+            self.ADapi.listen_event(self.mode_event, "MODE_CHANGE", namespace = self.HASS_namespace)
 
     def _init_collections(self):
         self.chargers: dict[str, Charger] = {}
@@ -645,7 +637,7 @@ class ElectricalUsage(ad.ADBase):
         self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
         self.pause_charging: bool = 'pause_charging' in self.args.get('options')
 
-        self.buffer = self.args.get('buffer', 0.4) + 0.02
+        self.buffer = self.args.get('buffer', 0.4) + 0.01
         self.max_kwh_goal = self.args.get('max_kwh_goal', 15)
 
         # Variables for different calculations
@@ -667,6 +659,8 @@ class ElectricalUsage(ad.ADBase):
             self.notify_app = self.ADapi.get_app(name_of_notify_app)
         else:
             self.notify_app = Notify_Mobiles(self.ADapi, self.HASS_namespace)
+        
+        self.home_name = self.args.get('home_name', 'home')
 
     def _setup_electricity_price(self):
         if 'electricalPriceApp' in self.args:
@@ -681,46 +675,32 @@ class ElectricalUsage(ad.ADBase):
 
     def _validate_current_consumption_sensor(self):
         self.current_consumption_sensor = self.args.get('power_consumption', None) # In Watt
-        if not self.current_consumption_sensor:
-            self.ADapi.log(
-                "'power_consumption' sensor not provided in configuration. Aborting Electrical Usage setup."
-                "Please provide a watt power consumption sensor to use this function"
-                "Set up Tibber Pulse or equivalent and configure a watt power consumption sensor.\n"
-                "ElectricalUsage will not adjust electricity consumption",
-                level='INFO'
-            )
-        try:
-            self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
-        except (ValueError, TypeError) as ve:
-            if self.ADapi.get_state(self.current_consumption_sensor) in UNAVAIL:
-                self.ADapi.log(f"Current consumption is unavailable at startup", level = 'DEBUG')
-            else:
-                self.ADapi.log(
-                    "power_consumption sensor is not a number on app initialization. ",
-                    level='INFO'
-                )
-            self.ADapi.log(ve, level = 'DEBUG')
+        if self.current_consumption_sensor is not None:
+            try:
+                self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
+            except (ValueError, TypeError) as ve:
+                if self.ADapi.get_state(self.current_consumption_sensor) in UNAVAIL:
+                    pass
+                else:
+                    self.ADapi.log(
+                        "power_consumption sensor is not a number on electrical management initialization. ",
+                        level='INFO'
+                    )
+                self.ADapi.log(ve, level = 'DEBUG')
 
     def _validate_accumulated_consumption_current_hour(self):
         self.accumulated_consumption_current_hour = self.args.get('accumulated_consumption_current_hour', None)
-        if self.accumulated_consumption_current_hour is None:
-            self.ADapi.log(
-                "'accumulated_consumption_current_hour' not provided in configuration. "
-                "Set up Tibber Pulse or equivalent and configure a kWh consumption for current hour.\n"
-                "ElectricalUsage will not adjust electricity consumption",
-                level='INFO'
-            )
-            return
+        if self.accumulated_consumption_current_hour is not None:
 
-        attr_last_updated = self.ADapi.get_state(
-            entity_id = self.accumulated_consumption_current_hour,
-            attribute = "last_updated"
-        )
-        if not attr_last_updated:
-            self.ADapi.log(
-                f"{self.ADapi.get_state(self.accumulated_consumption_current_hour)} has no 'last_updated' attribute. Function might fail",
-                level='INFO'
+            attr_last_updated = self.ADapi.get_state(
+                entity_id = self.accumulated_consumption_current_hour,
+                attribute = "last_updated"
             )
+            if not attr_last_updated:
+                self.ADapi.log(
+                    f"{self.ADapi.get_state(self.accumulated_consumption_current_hour)} has no 'last_updated' attribute. Function might fail",
+                    level='INFO'
+                )
 
     def _setup_power_production_sensors(self):
         self.current_production_sensor = self.args.get('power_production', None)  # Watt
@@ -890,10 +870,6 @@ class ElectricalUsage(ad.ADBase):
         if minute == 0:
             self._reset_hourly(now)
             return
-        elif minute == 59 and self.accumulated_kWh > self._persistence.max_usage.max_kwh_usage_pr_hour -1:
-            if not self.charging_scheduler.isChargingTime() and not self._persistence.queueChargingList:
-                if now.hour not in self._persistence.high_consumption.high_consumption_hours:
-                    self._persistence.high_consumption.high_consumption_hours.append(now.hour)
 
         self.current_production = self._get_sensor_value(self.current_production_sensor)
         self.production_kWh = self._get_sensor_value(self.accumulated_production_current_hour)
@@ -903,9 +879,9 @@ class ElectricalUsage(ad.ADBase):
         self.available_Wh = self._calc_available_Wh(now)
 
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
-            if minute < 50:
-                self.available_Wh -= remaining_minute * 50
-                self.max_target_kWh_buffer -= 1 / remaining_minute
+            sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            self.available_Wh -= sub_wh
+            self.max_target_kWh_buffer -= (sub_wh / 10000)
 
         self._dispatch_decision()
 
@@ -996,6 +972,10 @@ class ElectricalUsage(ad.ADBase):
 
             if self.notify_overconsumption:
                 self._notify_overconsumption()
+
+            if not self.charging_scheduler.isChargingTime() and remaining_minute <= 15:
+                if now.hour not in self._persistence.high_consumption.high_consumption_hours:
+                    self._persistence.high_consumption.high_consumption_hours.append(now.hour)
 
     def _act_heaters_reduced(self) -> None:
         """ Reduce charging speed to turn heaters back on """
@@ -1257,6 +1237,7 @@ class ElectricalUsage(ad.ADBase):
             self.current_consumption, heater_consumption = self.get_idle_and_heater_consumption()
             if self.current_consumption is None:
                 self.current_consumption = 2000.0
+            self.current_consumption *= self._persistence.max_usage.calculated_difference_on_idle
 
             for heater in self.heaters:
                 if heater.heater_data.validConsumptionSensor:
@@ -1281,8 +1262,8 @@ class ElectricalUsage(ad.ADBase):
         try:
             self.accumulated_kWh = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
         except (TypeError, ValueError):
-            if self.accumulated_unavailable > 9:
-                # Will try to reload Home Assistant integration if the sensor is unavailable for 10 minutes. 
+            if self.accumulated_unavailable > 15:
+                # Will try to reload Home Assistant integration if the sensor is unavailable for 15 minutes. 
                 self.accumulated_unavailable = 0
                 self.ADapi.create_task(self._reload_accumulated_consumption_sensor())
             else:
@@ -1294,11 +1275,14 @@ class ElectricalUsage(ad.ADBase):
         else:
             if self.accumulated_kWh_wasUnavailable:
                 self.accumulated_kWh_wasUnavailable = False
-                # Print out estimate during unavailable vs actual if below actual.
+
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
+                    error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
+                    self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
+                    self._persistence.max_usage.calculated_difference_on_idle *= 1.1
                     self.ADapi.log(
                         f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
-                        f"Actual: {self.accumulated_kWh}",
+                        f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
                         level = 'INFO'
                     )
             self.last_accumulated_kWh = self.accumulated_kWh
@@ -1421,7 +1405,7 @@ class ElectricalUsage(ad.ADBase):
                 return True
             if minute > 15 and remaining_minute > 12:
                 amp = car.connected_charger.charger_data.ampereCharging
-                threshold = max(car.getCarMaxAmps() - 12, 12)
+                threshold = max(car.getCarMaxAmps() - 12, 16)
                 return amp > threshold
         return False
 
@@ -1457,12 +1441,6 @@ class ElectricalUsage(ad.ADBase):
                             continue # Finishing charging on priority cars.
                         car.stopCharging()
                         if car.car_data.kWh_remain_to_charge > 1:
-                            self.ADapi.log(
-                                f"Was not able to finish charging {car.carName} with {round(car.car_data.kWh_remain_to_charge,2)} kWh remaining before prices increased. "
-                                f"Consider adjusting startBeforePrice {self.charging_scheduler.startBeforePrice} and "
-                                f"stopAtPriceIncrease {self.charging_scheduler.stopAtPriceIncrease} in configuration.",
-                                level = 'INFO'
-                            )
                             data = {
                                 'tag' : 'charging' + str(car.carName),
                                 'actions' : [{ 'action' : 'find_new_chargetime'+str(car.carName), 'title' : f'Find new chargetime for {car.carName}' }]
@@ -1623,7 +1601,6 @@ class ElectricalUsage(ad.ADBase):
                 try:
                     hoursOffInt = time_to_save_item.duration.seconds//3600
                 except (ValueError, TypeError) as e:
-                    self.ADapi.log(f"Could not convert {time_to_save_item.duration} to a duration: {e}", level = 'DEBUG')
                     return
             if hoursOffInt > 0:
                 runtime = time_to_save_item.end + timedelta(minutes = 3)
@@ -1635,6 +1612,7 @@ class ElectricalUsage(ad.ADBase):
         self.find_next_charger_counter = 0
         if now.hour == 0 and now.day == 1:
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
+            self._persistence.max_usage.topUsage = [0, 0, 0]
 
         elif self.accumulated_kWh > self._persistence.max_usage.topUsage[0]:
             self.logHighUsage()
@@ -1747,7 +1725,6 @@ class ElectricalUsage(ad.ADBase):
         try:
             self.current_consumption = float(self.ADapi.get_state(self.current_consumption_sensor))
         except ValueError as ve:
-            self.ADapi.log(f"Current consumption is unavailable - skipping idle log", level = 'DEBUG')
             return
 
         heater_consumption: float = 0.0
@@ -1765,7 +1742,7 @@ class ElectricalUsage(ad.ADBase):
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
-            self.ADapi.log(f"idle_consumption={idle_consumption} - aborting logging Idle Consumption", level = 'DEBUG')
+            self.ADapi.log(f"idle_consumption = {idle_consumption} - aborting logging Idle Consumption") ###
             return
 
         out_temp_even = floor_even(self.out_temp)
@@ -1802,11 +1779,9 @@ class ElectricalUsage(ad.ADBase):
                 consumption_dict[out_temp_even] = new_entry
             else:
                 self.ADapi.log(
-                    f"Discarded idle sample at {out_temp_even} degrees - too different from existing data",
-                    level = 'DEBUG'
-                )
+                    f"Discarded idle sample at {out_temp_even} degrees - too different from existing data"
+                ) ###
                 return
-
         else:
             nearest_key = closest_temp_in_dict(out_temp_even, consumption_dict)
 
@@ -1829,9 +1804,8 @@ class ElectricalUsage(ad.ADBase):
                     if not diff_ok(nearest.Consumption, new_consumption, MAX_CONSUMPTION_RATIO_DIFFERENCE):
                         self.ADapi.log(
                             f"Discarded idle sample at {out_temp_even} degrees "
-                            f"closest data at {nearest_key} degrees is too far or too different",
-                            level = 'DEBUG'
-                        )
+                            f"closest data at {nearest_key} degrees is too far or too different"
+                        ) ###
                         return
                 new_entry = TempConsumption(
                     Consumption = new_consumption,
@@ -1917,7 +1891,7 @@ class ElectricalUsage(ad.ADBase):
             To call from another app use: self.fire_event('MODE_CHANGE', mode = 'fire')
             Set back to normal with mode 'false-alarm' """
 
-        if data['mode'] == FIRE_TRANSLATE:
+        if data['mode'] == translations.fire:
             self.houseIsOnFire = True
             for car in self.all_cars_connected():
                 if car.getCarChargerState() == 'Charging':
@@ -1930,7 +1904,7 @@ class ElectricalUsage(ad.ADBase):
                 heater.turn_off_heater()
 
 
-        elif data['mode'] == FALSE_ALARM_TRANSLATE:
+        elif data['mode'] == translations.false_alarm:
             # Fire alarm stopped
             self.houseIsOnFire = False
             for heater in self.heaters:
@@ -1948,7 +1922,7 @@ class ElectricalUsage(ad.ADBase):
             self.notify_about_overconsumption = False
             self.notify_app.send_notification(
                 message=(
-                    f"Turn down consumption. It's about to go over max usage "
+                    f"Turn down consumption at {self.home_name}. It's about to go over max usage "
                     f"with {round(-self.available_Wh, 0)} Wh remaining to reduce"
                 ),
                 message_title="⚡High electricity usage",

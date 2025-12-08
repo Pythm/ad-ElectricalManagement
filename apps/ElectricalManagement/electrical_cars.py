@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import math
+import inspect ###
+from datetime import timedelta
 from typing import Optional
 
-from utils import cancel_timer_handler, cancel_listen_handler
+from utils import cancel_timer_handler#, cancel_listen_handler
 
 from registry import Registry
 from scheduler import Scheduler
+
+UNAVAIL = ('unavailable', 'unknown')
 
 class Car:
     """ Car parent class
@@ -88,8 +92,7 @@ class Car:
             #)
             self.ADapi.listen_state(self.car_ChargeCableDisconnected, self.car_data.charger_sensor,
                 namespace = self.namespace,
-                new = 'off',
-                duration = 700
+                new = 'off'
             )
 
         self.find_Chargetime_Whenhome_handler = None
@@ -120,7 +123,7 @@ class Car:
         # Functions on when to charge Car
     def _finishByHourListen(self, entity, attribute, old, new, kwargs) -> None:
         self.finish_by_hour = math.ceil(float(new))
-        if self.kWhRemaining() > 0:
+        if self.kWhRemaining() > 0 and self.isConnected():
             self.findNewChargeTime()
 
     def _chargeNowListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -132,9 +135,10 @@ class Car:
         ):
             self.startCharging()
         elif (
-            new == 'off'
-            and old == 'on'
-            and self.kWhRemaining() > 0
+            new == 'off' and
+            old == 'on' and
+            self.kWhRemaining() > 0 and
+            self.isConnected()
         ):
             self.findNewChargeTime()
 
@@ -152,16 +156,21 @@ class Car:
         if new == 'on':
             self._handleChargeCompletion()
         elif new == 'off':
-            if self.kWhRemaining() > 0:
+            if self.kWhRemaining() > 0 and self.isConnected():
                 self.findNewChargeTime()
 
         # Functions for charge times
     def findNewChargeTimeAt(self, kwargs) -> None:
         """ Function to run when initialized and when new prices arrive. """
-        self.findNewChargeTime()
+        if self.isConnected():
+            self.findNewChargeTime()
 
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
+        if not self.isConnected():
+            stack = inspect.stack()
+            self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
+            return
         now = self.ADapi.datetime(aware=True)
         if self.dontStopMeNow():
             return
@@ -175,7 +184,7 @@ class Car:
             else:
                 return
         if (
-            self.isConnected() and charger_state not in ('Disconnected', 'Complete') or
+            charger_state not in ('Disconnected', 'Complete') or
             self.connected_charger.getChargingState() not in ('Disconnected', 'Complete')
         ):
             if (
@@ -239,11 +248,14 @@ class Car:
         """
         if self.connected_charger is not None:
             if self.connected_charger.getChargingState() == 'Disconnected':
-                if self.connected_charger.connected_vehicle.onboard_charger is self.connected_charger:
-                    self.connected_charger._CleanUpWhenChargingStopped()
-                else:
-                    Registry.unlink(self)
-                    Registry.set_link(self, self.onboard_charger)
+                connected_vehicle = getattr(self.connected_charger, "connected_vehicle", None)
+                if connected_vehicle is not None:
+                    onboard_charger = getattr(connected_vehicle, "onboard_charger", None)
+                    if onboard_charger is self.connected_charger:
+                        self.connected_charger._CleanUpWhenChargingStopped()
+                    else:
+                        Registry.unlink(self)
+                        Registry.set_link(self, self.onboard_charger)
 
             if self.max_range_handler is not None:
                 # TODO: Program charging to max at departure time.
@@ -256,8 +268,7 @@ class Car:
         """
         if self.getLocation() == 'home':
             if self.car_data.charger_sensor is not None:
-                if self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on':
-                    return True
+                return self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) == 'on'
             if self.connected_charger is not None:
                 return self.connected_charger.getChargingState() not in ['Disconnected']
             return True
@@ -435,7 +446,7 @@ class Car:
             if battery_state > float(new):
                 self.connected_charger._CleanUpWhenChargingStopped()
 
-            elif self.kWhRemaining() > 0:
+            elif self.kWhRemaining() > 0 and self.isConnected():
                 self.findNewChargeTime()
 
     def isChargingAtMaxAmps(self) -> bool:
@@ -545,7 +556,7 @@ class Tesla_car(Car):
     def SoftwareUpdates(self) -> bool:
         """ Return True if car is updating software.
         """
-        if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace) not in ('unavailable', 'unknown'):
+        if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace) not in UNAVAIL:
             if self.ADapi.get_state(self.car_data.software_update, namespace = self.namespace, attribute = 'in_progress') != False:
                 return True
         return False

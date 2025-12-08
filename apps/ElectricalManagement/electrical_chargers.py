@@ -8,7 +8,7 @@ from pydantic_models import CarData
 from utils import cancel_timer_handler, cancel_listen_handler
 
 from registry import Registry
-from scheduler import Scheduler
+#from scheduler import Scheduler
 
 class Charger:
     """ Charger parent class
@@ -54,6 +54,7 @@ class Charger:
         self.doNotStartMe:bool = False
         self._recheck_findCarConnectedToCharger_handler = None
         self.reason_for_no_current_handler = None
+        self.session_start_charge:float = 0.0
 
         Registry.register_charger(self)
 
@@ -237,9 +238,11 @@ class Charger:
             charging_amp_set = self.charger_data.min_ampere
         elif charging_amp_set > max_available_amps:
             charging_amp_set = max_available_amps
-            if self.connected_vehicle.onboard_charger is not None:
-               if self.connected_vehicle.connected_charger is not self.connected_vehicle.onboard_charger:
-                    self.connected_vehicle.onboard_charger.setChargingAmps(charging_amp_set = self.connected_vehicle.onboard_charger.getmaxChargingAmps())
+            onboard_charger = getattr(self.connected_vehicle, "onboard_charger", None)
+            if onboard_charger is not None:
+                connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+                if connected_charger is not onboard_charger:
+                    onboard_charger.setChargingAmps(charging_amp_set = onboard_charger.getmaxChargingAmps())
 
         stack = inspect.stack() # Check if called from child
         if stack[1].function != 'setChargingAmps':
@@ -367,17 +370,20 @@ class Charger:
             and self.connected_vehicle.car_data.battery_sensor is not None
         ):
             try:
-                if float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)) < 4:
-                    self.connected_vehicle.pct_start_charge = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
+                session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace))
+                soc = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
             except (ValueError, TypeError):
                 return
+            if session < 4 or self.connected_vehicle.pct_start_charge == 100:
+                self.connected_vehicle.pct_start_charge = soc
+                self.session_start_charge = session
 
     def _calculateBatterySize(self, session: float) -> None:
         battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
         battery_reg_counter = getattr(self.connected_vehicle.car_data, 'battery_reg_counter', 0)
 
         if battery_sensor is not None:
-            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.connected_vehicle.pct_start_charge
+            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
 
             if pctCharged > 35:
                 self._updateBatterySize(session, pctCharged, battery_reg_counter)
@@ -407,9 +413,9 @@ class Charger:
         self.connected_vehicle.car_data.battery_size = avg
 
     def _CleanUpWhenChargingStopped(self) -> None:
-
         if self.connected_vehicle is not None:
-            if self.connected_vehicle.connected_charger is self:
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+            if connected_charger is self:
                 if self.getChargingState() in ('Complete', 'Disconnected'):
                     self.connected_vehicle._handleChargeCompletion()
                     if self.charger_data.session_energy and self.connected_vehicle.pct_start_charge < 90:
@@ -418,6 +424,7 @@ class Charger:
                         self._calculateBatterySize(session)
 
                     self.connected_vehicle.pct_start_charge = 100
+                    self.session_start_charge = 0
         self.charger_data.ampereCharging = 0
         if cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current"):
             self.reason_for_no_current_handler = None
@@ -616,9 +623,10 @@ class Tesla_charger(Charger):
             )
             return None
         # Set as connected charger if restarted after cable connected.
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if (
-            state == 'Stopped'
-            and self.connected_vehicle.connected_charger is None
+            state == 'Stopped' and
+            connected_charger is None
         ):
             Registry.set_link(self.connected_vehicle, self)
 
@@ -631,7 +639,8 @@ class Tesla_charger(Charger):
             self.connected_vehicle.isConnected()
             and self.getChargingState() not in ('Disconnected', 'Complete')
         ):
-            if self.connected_vehicle.connected_charger is self:
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+            if connected_charger is self:
                 try:
                     maxAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                         namespace = self.namespace,
@@ -682,10 +691,11 @@ class Tesla_charger(Charger):
             chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                 namespace = self.namespace))
             )
+            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
             if float(new) > chargingAmpere:
                 if (
-                    self.connected_vehicle.connected_charger is not self
-                    and self.connected_vehicle.connected_charger is not None
+                    connected_charger is not self and
+                    connected_charger is not None
                 ):
                     self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
 
@@ -740,8 +750,6 @@ class Tesla_charger(Charger):
             self.setChargingAmps(charging_amp_set = self.charger_data.min_ampere) # Set to minimum amp for preheat.
 
     def startCharging(self) -> None:
-        """ Starts charger.
-        """
         if super().startCharging():
             self.ADapi.create_task(self.start_Tesla_charging())
 
@@ -758,8 +766,6 @@ class Tesla_charger(Charger):
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
 
     def stopCharging(self, force_stop:bool = False) -> None:
-        """ Stops charger.
-        """
         if super().stopCharging(force_stop = force_stop):
             self.ADapi.create_task(self.stop_Tesla_charging())
 
@@ -777,9 +783,10 @@ class Tesla_charger(Charger):
     def _check_that_charging_started(self, kwargs) -> None:
         """ Check if charger was able to start.
         """
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if (
             self.getChargingState() == 'NoPower'
-            and self.connected_vehicle.connected_charger is self
+            and connected_charger is self
         ):
             Registry.unlink_by_charger(self)
 

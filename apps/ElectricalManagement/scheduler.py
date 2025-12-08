@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import bisect
+import math
+from datetime import timedelta
 from typing import Iterable, List, Optional, Tuple
 
 # Local imports – adjust the module names to your actual project layout
@@ -317,7 +319,6 @@ class Scheduler:
         for i, current_car in enumerate(self.chargingQueue):
             (
                 current_car.chargingStart,
-                current_car.estimateStop,
                 current_car.chargingStop,
                 current_car.price,
             ) = self.electricalPriceApp.get_Continuous_Cheapest_Time(
@@ -327,6 +328,8 @@ class Scheduler:
                 startBeforePrice=self.startBeforePrice,
                 stopAtPriceIncrease=self.stopAtPriceIncrease,
             )
+            estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
+            current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
 
             has_overlap = False
             for overlapping_id in simultaneous_charge:
@@ -392,7 +395,6 @@ class Scheduler:
 
         (
             charging_at,
-            estimate_stop,
             charging_stop,
             price,
         ) = self.electricalPriceApp.get_Continuous_Cheapest_Time(
@@ -403,11 +405,10 @@ class Scheduler:
             stopAtPriceIncrease=self.stopAtPriceIncrease,
         )
 
-        if estimate_stop is not None:
+        if charging_stop is not None:
             for c in self.chargingQueue:
                 if c.vehicle_id in simultaneous_charge:
                     c.chargingStart = charging_at
-                    c.estimateStop = estimate_stop
                     c.chargingStop = charging_stop
                     c.price = price
 
