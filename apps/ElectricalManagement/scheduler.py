@@ -491,8 +491,6 @@ class Scheduler:
             )
             info_text = price_msg
 
-        self.ADapi.log(info_text) ###
-
         if self.infotext not in (None, "Charge "):
             info_text.strip()
             self.ADapi.call_service(

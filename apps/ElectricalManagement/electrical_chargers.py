@@ -381,9 +381,6 @@ class Charger:
             if session < 4 or self.connected_vehicle.pct_start_charge == 100:
                 self.connected_vehicle.pct_start_charge = soc
                 self.session_start_charge = session
-            else:
-                self.ADapi.log(f"Register battery soc for calulation fails when session energy is {self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)}") ###
-            self.ADapi.log(f"Setting pct_start_charge for {self.charger} to {self.connected_vehicle.pct_start_charge}") ###
 
     def _calculateBatterySize(self, session: float) -> None:
         battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
@@ -391,7 +388,6 @@ class Charger:
 
         if battery_sensor is not None:
             pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
-            self.ADapi.log(f"Calculated pct charged {pctCharged} for {self.connected_vehicle.carName}. reg_counter: {battery_reg_counter}") ###
 
             if pctCharged > 35:
                 self._updateBatterySize(session, pctCharged, battery_reg_counter)
@@ -421,9 +417,6 @@ class Charger:
         self.connected_vehicle.car_data.battery_size = avg
 
     def _CleanUpWhenChargingStopped(self) -> None:
-        stack = inspect.stack() ###
-        self.ADapi.log(f"Clean up for {self.charger} called from {stack[1].function} with state {self.getChargingState()}. vehicle: {self.connected_vehicle.carName}") ###
-
         if self.connected_vehicle is not None:
             connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
             if connected_charger is self:
@@ -781,20 +774,6 @@ class Tesla_charger(Charger):
             self.ADapi.log(f"Car was None when trying to start charging?") ###
 
     def stopCharging(self, force_stop:bool = False) -> None:
-        if self.connected_vehicle is None: ### TESTING ONLY TODO remove
-            data = {
-                'tag' : self.charger,
-                'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {self.charger} Now' }]
-                }
-            self.notify_app.send_notification(
-                        message = f"has no vehicle when trying to stop.",
-                        message_title = f"{self.charger}",
-                        message_recipient = self.recipients,
-                        also_if_not_home = True,
-                        data = data
-                    )
-            ### Until here
-
         if super().stopCharging(force_stop = force_stop):
             self.ADapi.create_task(self.stop_Tesla_charging())
 

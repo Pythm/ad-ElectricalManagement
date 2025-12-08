@@ -8,6 +8,7 @@ from appdaemon import adbase as ad
 
 import math
 import json
+import os
 import importlib.util
 #import csv
 
@@ -27,17 +28,17 @@ from pydantic_models import (
     ChargerData,
     CarData,
     HeaterBlock,
-    IdleBlock,
-    MaxUsage,
+    #IdleBlock, ###
+    #MaxUsage,
     TempConsumption,
-    ChargingQueueItem,
+    #ChargingQueueItem,
     WattSlot,
     Decision,
-    PeakHour
+    #PeakHour
 )
 from utils import (
     cancel_timer_handler,
-    cancel_listen_handler,
+    #cancel_listen_handler, ###
     get_next_runtime_aware,
     get_consumption_for_outside_temp,
     closest_value,
@@ -514,8 +515,8 @@ class ElectricalUsage(ad.ADBase):
                     'save_temp_offset':               heater_cfg.get('save_temp_offset',None),
                     'save_temp':                      heater_cfg.get('save_temp',None),
                     'vacation_temp':                  heater_cfg.get('vacation_temp',None),
-                    'rain_level':                     heater_cfg.get('rain_level',self.rain_level),
-                    'anemometer_speed':               heater_cfg.get('anemometer_speed',self.anemometer_speed),
+                    'rain_level':                     heater_cfg.get('rain_level',3),
+                    'anemometer_speed':               heater_cfg.get('anemometer_speed',40),
                     'getting_cold':                   heater_cfg.get('getting_cold',18),
                     'priceincrease':                  heater_cfg.get('priceincrease',1),
                     'windowsensors':                  heater_cfg.get('windowsensors',[]),
@@ -1197,7 +1198,6 @@ class ElectricalUsage(ad.ADBase):
                                 charger.connected_vehicle is None
                                 and charger.getChargingState() in ('Stopped', 'awaiting_start')
                             ):
-                                self.ADapi.log(f"-> Found {charger.charger} with state {charger.getChargingState()}. Will try to match with car {car.carName}") ###
                                 Registry.unlink(car)
                                 charger.findCarConnectedToCharger()
 
@@ -1278,14 +1278,14 @@ class ElectricalUsage(ad.ADBase):
                 self.accumulated_kWh_wasUnavailable = False
 
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
-                    self.ADapi.log(
-                        f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
-                        f"Actual: {self.accumulated_kWh}",
-                        level = 'INFO'
-                    ) ###
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
                     self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
                     self._persistence.max_usage.calculated_difference_on_idle *= 1.1
+                    self.ADapi.log(
+                        f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
+                        f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
+                        level = 'INFO'
+                    )
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1442,12 +1442,6 @@ class ElectricalUsage(ad.ADBase):
                             continue # Finishing charging on priority cars.
                         car.stopCharging()
                         if car.car_data.kWh_remain_to_charge > 1:
-                            self.ADapi.log(
-                                f"Was not able to finish charging {car.carName} with {round(car.car_data.kWh_remain_to_charge,2)} kWh remaining before prices increased. "
-                                f"Consider adjusting startBeforePrice {self.charging_scheduler.startBeforePrice} and "
-                                f"stopAtPriceIncrease {self.charging_scheduler.stopAtPriceIncrease} in configuration.",
-                                level = 'INFO'
-                            )
                             data = {
                                 'tag' : 'charging' + str(car.carName),
                                 'actions' : [{ 'action' : 'find_new_chargetime'+str(car.carName), 'title' : f'Find new chargetime for {car.carName}' }]
