@@ -130,9 +130,6 @@ class Charger:
             if self.charger_data.session_energy:
                 if self.guestCharging:
                     kWh_remain = self.connected_vehicle.car_data.kWh_remain_to_charge - (float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)))
-                    self.ADapi.log(
-                        f"Guest charging when trying to calculate kWh Remaining: {kWh_remain}"
-                    ) ###
                     if kWh_remain > 2:
                         return kWh_remain
                     else:
@@ -341,7 +338,6 @@ class Charger:
         """ Charger started charging. Check if controlling car and if chargetime has been set up """
 
         if self.connected_vehicle is None:
-            self.ADapi.log(f"No connected vehicle when {self.charger} started charging") ###
             if not self.findCarConnectedToCharger():
                 return
 
@@ -650,7 +646,6 @@ class Tesla_charger(Charger):
                         namespace = self.namespace,
                         attribute = 'max'))
                     )
-                    self.ADapi.log(f"maxAmpere {maxAmpere} updated for {self.charger}. Was {self.charger_data.maxChargerAmpere}") ###
                     self.charger_data.maxChargerAmpere = maxAmpere
 
                 except (ValueError, TypeError) as ve:
@@ -717,7 +712,6 @@ class Tesla_charger(Charger):
             self.noPowerDetected_handler = None
 
         if self.connected_vehicle is None:
-            self.ADapi.log(f"{self.charger} did not have connected vehicle when charge cable connected") ###
             if not self.findCarConnectedToCharger():
                 return
 
@@ -770,8 +764,6 @@ class Tesla_charger(Charger):
                 await self.connected_vehicle._force_API_update()
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
-        else:
-            self.ADapi.log(f"Car was None when trying to start charging?") ###
 
     def stopCharging(self, force_stop:bool = False) -> None:
         if super().stopCharging(force_stop = force_stop):
@@ -918,15 +910,9 @@ class Easee(Charger):
             if self.connected_vehicle is None:
                 if self.findCarConnectedToCharger():
                     if self.connected_vehicle is not None:
-                        self.ADapi.log(f"{self.connected_vehicle.carName} connected to {self.charger} in StatusChange. New status: {new}") ###
                         self.kWhRemaining() # Update kWh remaining to charge
                         self.connected_vehicle.findNewChargeTime()
                         return
-                    else:
-                        self.ADapi.log(f"No car connected when cable conneted to {self.charger} in StatusChange. New status: {new}") ###
-            else: # Temporarily disconnected an connected again:
-                start, stop = self.charging_scheduler.getChargingTime(vehicle_id = self.connected_vehicle.vehicle_id) ###
-                self.ADapi.log(f"{self.charger} was disconnected. Car: is {self.connected_vehicle.carName}. Has charging scheduled? Start {start} Stop {stop}") ###
             return
 
         elif (
@@ -988,9 +974,7 @@ class Easee(Charger):
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
-                
-            else: ###
-                self.ADapi.log(f"{self.charger} still disconnected with no car connected. Should not see this unless state was complete") ###
+
         elif self.connected_vehicle is not None: # Check if new car is connected.
             if self.connected_vehicle.getCarChargerState() == 'Disconnected':
                 self._CleanUpWhenChargingStopped()
@@ -1017,7 +1001,6 @@ class Easee(Charger):
                 and chargingAmpere >= 6
             ):
                 self.connected_vehicle.car_data.car_limit_max_ampere = chargingAmpere
-                self.ADapi.log(f"Updated {self.connected_vehicle.carName} limit max ampere charging to {chargingAmpere} in Easee charger") ###
 
     def setmaxChargingAmps(self) -> bool:
         """ Set maxChargerAmpere from charger sensors

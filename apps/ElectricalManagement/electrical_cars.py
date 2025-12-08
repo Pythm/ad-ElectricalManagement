@@ -484,7 +484,6 @@ class Car:
                 return state
         
         if self.connected_charger is not None:
-            self.ADapi.log(f"Returning connected charger state {self.connected_charger.getChargingState()} for {self.carName} in getCarChargerState") ###
             return self.connected_charger.getChargingState()
         return None
 
@@ -586,8 +585,3 @@ class Tesla_car(Car):
             )
             if energy_at_arrival > 0:
                 self.car_data.kWh_remain_to_charge = self.car_data.pref_charge_limit - energy_at_arrival
-                self.ADapi.log(
-                    f"Arrival UTC: {self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.arrival_time, namespace = self.namespace))} "
-                    f"Timedelta: {self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.arrival_time, namespace = self.namespace)) - self.ADapi.datetime(aware=True)} "
-                    f"Energy at Arrival: {energy_at_arrival}. To charge: {self.car_data.kWh_remain_to_charge}"
-                )###

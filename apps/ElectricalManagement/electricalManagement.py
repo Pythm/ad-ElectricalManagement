@@ -1204,7 +1204,6 @@ class ElectricalUsage(ad.ADBase):
             elif not car.isConnected():
                 to_remove.add(queue_id)
                 self.charging_scheduler.removeFromCharging(car.vehicle_id)
-                self.ADapi.log(f"Removing {car.carName} from chargequeue. is not connected. Chargestate not Disconnetcted? {car.getCarChargerState()}") ###
                 car._handleChargeCompletion()
 
             else:
