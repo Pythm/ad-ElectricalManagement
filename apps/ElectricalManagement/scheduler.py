@@ -174,7 +174,6 @@ class Scheduler:
                 kWhRemaining = kWh_to_charge,
                 totalW_AllChargers = total_power
             )
-            self.ADapi.log(f"Calculated est hours to charge: {est_hours} in _update_prices_for_future_hours") ###
         else:
             est_hours = sum(c.estHourCharge for c in self.chargingQueue if c.estHourCharge)
 

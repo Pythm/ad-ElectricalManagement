@@ -97,12 +97,6 @@ class Car:
 
         self.find_Chargetime_Whenhome_handler = None
 
-        if self.car_data.location_tracker is None:
-            self.ADapi.log(
-                f"Car not configured up with 'location_tracker'. Please update your config, or you might experience charging stopping when not home",
-                level = 'WARNING'
-                )
-
         """ TODO Departure / Maxrange handling: To be re-written before implementation
             Set a departure time in a HA datetime sensor for when car will be finished charging to 100%,
             to have a optimal battery when departing.
@@ -133,7 +127,7 @@ class Car:
             and old == 'off'
             and self.connected_charger is not None
         ):
-            self.startCharging()
+            self.startChargingCar()
         elif (
             new == 'off' and
             old == 'on' and
@@ -211,14 +205,14 @@ class Car:
                     match start:
                         case None:
                             if not self.charging_scheduler.isChargingTime(vehicle_id = self.vehicle_id):
-                                self.stopCharging()
+                                self.stopChargingCar()
                         case _ if start - timedelta(minutes=12) > now:
-                            self.stopCharging()
+                            self.stopChargingCar()
                 elif (
                     charger_state in ('NoPower', 'Stopped')
                     and startcharge
                 ):
-                    self.startCharging()
+                    self.startChargingCar()
 
     def removeFromQueue(self) -> None:
         """ Removes car from chargequeue
@@ -359,19 +353,8 @@ class Car:
                     self.car_data.kWh_remain_to_charge = -1
                     if self.getLocation() in ('home', 'unknown'):
                         self.wakeMeUp() # Wake up car to get proper value.
-                else:
-                    self.ADapi.log(
-                        f"Not able to calculate kWh Remaining To Charge based on battery soc: {battery_pct} and limit: {limit_pct} for {self.carName}. "
-                        f"Return existing value: {self.car_data.kWh_remain_to_charge}. ValueError: {ve}",
-                        level = 'DEBUG'
-                    )
                 return kWhRemain
             except Exception as e:
-                self.ADapi.log(
-                    f"Not able to calculate kWh Remaining To Charge based on battery soc: {battery_pct} and limit: {limit_pct} for {self.carName}. "
-                    f"Return existing value: {self.car_data.kWh_remain_to_charge}. Exception: {e}",
-                    level = 'WARNING'
-                )
                 return self.car_data.kWh_remain_to_charge
 
             if battery_pct < limit_pct:
@@ -394,11 +377,6 @@ class Car:
                     f"{self.carName} Not able to get SOC. Trying alternative calculations. ValueError: {ve}",
                     level = 'DEBUG'
                 )
-            except Exception as e:
-                self.ADapi.log(
-                    f"{self.carName} Not able to get SOC. Trying alternative calculations. Exception: {e}",
-                    level = 'WARNING'
-                )
         if SOC == -1:
             try:
                 kWhRemain = float(self.car_data.kWh_remain_to_charge)
@@ -406,7 +384,7 @@ class Car:
                 kWhRemain = -1
             if kWhRemain == -1:
                 SOC = 100
-            else: # TODO: Find a way to calculate
+            else:
                 SOC = 10
         return SOC
 
@@ -484,11 +462,10 @@ class Car:
                 return state
         
         if self.connected_charger is not None:
-            self.ADapi.log(f"Returning connected charger state {self.connected_charger.getChargingState()} for {self.carName} in getCarChargerState") ###
             return self.connected_charger.getChargingState()
         return None
 
-    def startCharging(self) -> None:
+    def startChargingCar(self) -> None:
         """ Starts controlling charger.
         """
         if (
@@ -499,7 +476,7 @@ class Car:
         elif self.getCarChargerState() == 'Complete':
             self.connected_charger._CleanUpWhenChargingStopped()
 
-    def stopCharging(self, force_stop:bool = False) -> None:
+    def stopChargingCar(self, force_stop:bool = False) -> None:
         """ Stops controlling charger.
         """
         if self.connected_charger.getChargingState() in ('Charging', 'Starting'):

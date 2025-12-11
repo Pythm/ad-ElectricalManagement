@@ -1,9 +1,9 @@
 
 # ad-Electrical Management
 
-The purpose of this app is to help reduce your electricity bill by:
+The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
-- Automating charging times for electric vehicles (EVs), so they charge during off-peak hours when electricity rates are lower.
+- Automating charging times for electric vehicles (EVs), so they charge when electricity rates are lower.
 - Turning up/down heating sources and on/off hot water boilers based on electricity prices.
 - Stay within hourly max kWh consumption based on grid tariffs if applicable.
 
@@ -13,6 +13,7 @@ The purpose of this app is to help reduce your electricity bill by:
 
 ### **1.0.0** - A complete rewrite
 Please update all configurations in the breaking change upgrading to version 1.0.0 or later from earlier versions.
+
 - **Calculation of electricityprice**
 As of release 1.0.0, the calculations for electricity prices are now handled by another app. Please install the [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) version 0.1.6 or later. Configure the ElectricalPriceCalc app and add it to `ElectricalManagement` with `electricalPriceApp` like this:
 
@@ -20,16 +21,19 @@ As of release 1.0.0, the calculations for electricity prices are now handled by 
 electricalPriceApp: electricalPriceCalc # name of the app
 ```
 
-The separation is to make it easier to maintain and continue development. There are some big changes under the hood, such as support for Nordpool prices every 15 minutes, and datetime objects are now timezone aware.
+The separation is to make it easier to maintain and continue development and creates posibilities to use the price calculations in other apps as well. There are some big changes under the hood, such as support for Nordpool prices every 15 minutes, and datetime objects are now timezone aware.
 
 - **Spelling Correction**
 Changed `notify_reciever` → `notify_receiver`.
 
 - **Json Storage**
 A json file will be created in `{self.AD.config_dir}/persistent/electricity/` or your defined location using the `json_path` in configuration.
-The persistent data will be updated with key data and configuration of your entities and has changed a lot during rewrite.
+The persistent data will be updated with key data and configuration of your entities.
 
-Please us a new location or backup and delete your old json file.
+Please use a new location or backup and delete your old json file upgrading from pre 1.0 or a beta version.
+
+- **Definig climate and heater switches**
+Defining climate and heater_switches can now only be done with the entity, not a name. Configuration with name could potentially find wrong sensors.
 
 - **Weather sensors**
 Electrical Management app is fully relying on the [ad‑Weather](https://github.com/Pythm/ad-Weather) app for weather data. No configuration for weather sensors in app anymore.
@@ -37,7 +41,7 @@ Electrical Management app is fully relying on the [ad‑Weather](https://github.
 
 ## 🧭 Planned Changes
 
-I plan to make changes to [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) so that you configure your heaters there and import the apps to set save and spend hours with this app.
+I plan to make changes to integrate [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) with ElectricalManagement.
 
 ---
 
@@ -70,15 +74,20 @@ The app can also continuously monitors your energy consumption and adjusts accor
 > I use sensors from Tibber Pulse connected to HAN port. Check out https://tibber.com/ If you're interested in changing your electricity provider to Tibber, you can ask me for a invite link to get a startup bonus.
 
 > [!NOTE]  
-> Max usage limit `max_kwh_goal` is developed according to the calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 2–5 kWh, 5–10 kWh, etc. This should be adaptable to other tariffs with some modifications. Please make a request with information on how to set up limitations on usage.
+> Max usage limit `max_kwh_goal` is developed according to the calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 5-10 kWh, 10-15 kWh, etc. This should be adaptable to other tariffs with some modifications.
 
 If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production.
 
-I do not have solar panels installed and this feature is only tested with manual input of test data. Please consider this untested and report any unexpected behavior.
+> [!NOTE]  
+> I do not have solar panels installed and this feature is only tested with manual input of test data. Please consider this untested and report any unexpected behavior.
 
 ---
 
-## 🔌 Dependencies
+## 📦 Dependencies
+
+You'll need to clone and configure:
+- [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc)
+- [ad‑Weather](https://github.com/Pythm/ad-Weather)
 
 You only need the following optional components if they are configured in your setup. Currently supported directly in app:
 
@@ -99,14 +108,7 @@ electricity:
   module: electricalManagement
   class: ElectricalUsage
   electricalPriceApp: electricalPriceCalc # Your ElectricalPriceCalc app
-  power_consumption: sensor.power_home
-  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
 ```
-
-Provide a consumption sensor `power_consumption` and an accumulated consumption per hour sensor `accumulated_consumption_current_hour` to calculate and adjust electricity usage.
-
-> [!IMPORTANT]  
-> `accumulated_consumption_current_hour` is a kWh sensor that resets to zero every hour.
 
 ---
 
@@ -121,26 +123,22 @@ The persistent data will be updated with key data and configuration of your enti
 
 ### 🔌 Grid tariffs
 
+Provide a consumption sensor `power_consumption` and an accumulated consumption per hour sensor `accumulated_consumption_current_hour` to calculate and adjust electricity usage.
+
+> [!IMPORTANT]  
+> `accumulated_consumption_current_hour` is a kWh sensor that resets to zero every hour.
+
 Set a maximum kWh limit using `max_kwh_goal` and define a `buffer`. Buffer size depends on how much of your electricity usage is controllable, and how strict you set your max kWh usage. It defaults to 0.4 as it should be a good starting point. The top three hours is stored under `topUsage` in the json file.
 
 > [!IMPORTANT]  
 > The maximum usage limit per hour, `max_kwh_goal`, is by default 15 kWh. If the average of the 3 highest consumption hours exceeds this limit, it will increase by 5 kWh. If the limit is set too low, it may reduce heating, turn off switches, and change the charge current. Please define a proper value for `max_kwh_goal` according to your normal electricity usage.
 
 ```yaml
+  power_consumption: sensor.power_home
+  accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
   max_kwh_goal: 15
   buffer: 0.4
 ```
-
-#### 📌 Reducing Consumption to Stay Below Max kWh Goal
-
-The app checks power consumptions and reacts to prevent using more than defined with `max_kwh_goal`. It reduces charging speed on car(s) currently charging to a minimum, before turning down heater_switches and climate entities. If it is still going over the app can pause charging if `pause_charging` is configured under `options`.
-
-```yaml
-  options:
-    - pause_charging
-```
-
----
 
 ### 🏖️ Setting Vacation Mode
 
@@ -152,16 +150,26 @@ Set a main `vacation` switch to lower temperature when away. This can be configu
 
 ---
 
-### 📢 Notifications and Information
+### 📌 Defining options
+
+#### 🔌 Reducing Consumption to Stay Below Max kWh Goal
+
+The app checks power consumptions and reacts to prevent using more than defined with `max_kwh_goal`. It reduces charging speed on car(s) currently charging to a minimum, before turning down heater_switches and climate entities. If it is still going over the app can pause charging if `pause_charging` is configured under `options`.
+
+
+#### 📢 Notifications and Information
 
 Receive notifications about charge time to your devices with `notify_receiver`. It will also notify if you left a window open and it is getting cold, or if it is getting quite hot and the window is closed if you configure windows with heaters.
 
 You can also create and configure an Home Assistant input_text with `infotext` to display currently planned charge time in Home Assistant or some external displays.
 
+Running multiple ElectricalManagement instances? Configure a home_name so you know where the notifications comes from.
+
 ```yaml
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
+  home_name: home
   infotext: input_text.information
   options:
     - notify_overconsumption
@@ -237,16 +245,16 @@ self.fire_event("MODE_CHANGE", mode = 'your_mode_name')
 
 ## 🔋 Charging
 
-The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature. If an SOC sensor or battery size isn't provided, it will be based on the maximum charged during one session on the charger.
+The app calculates electric vehicle (EV) charging time based on the State of Charge (SOC), battery size, and outside temperature.
 
 > [!NOTE]  
 > If you have other high electricity consumption in combination with a low limit, it may reduce charging down to the minimum allowed by the charger, or even stop charging if you configure with option `pause_charging`. This could result in unfinished charging if the limit is too low or consumption is too high during the calculated charge time.
 
-The app supports controlling Tesla vehicles directly and Easee wall chargers. Documentation on how to implement other vehicles and chargers will be published upon request.
+The app supports controlling Tesla vehicles directly and via Easee wall chargers. There is also a possibility to configure your car with sensors.
 
 ---
 
-### 🔌 Customizing strict charging
+#### 🔌 Customizing strict charging
 
 The app calculates the optimal charging price and schedule based on data from [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc), ensuring a coherent time frame from start to finish. Vehicles will charge when the price is cheaper than the calculated rate. Additionally, you can customize the charging behavior by specifying a price difference between the calculated charging period with `startBeforePrice` (default 0.01) to start earlier if prices are still low, ensuring enough time to charge even with limited data for maximum kWh usage per hour. You can also force stop charging with `stopAtPriceIncrease` (default 0.3) if the charging isn't completed within the calculated time.
 
@@ -262,11 +270,11 @@ The app calculates the optimal charging price and schedule based on data from [E
 
 Create Home Assistant helpers to manage charging:
 
-1. **Guest Function**: There is a `guest` function defined with an `input_boolean` on chargers. This allows bypassing smart charging and avoids registering the maximum charged during one session and maximum amperage the car can charge. You will need to set up a phone to receive nofication and long press the received notification to select either charge now, or input estimated kWh to charge.
+1. **Guest Function**: There is a `guest` function defined with an `input_boolean` on chargers. This allows guests to charge. You will need to set up a phone to receive nofication and long press the received notification to select either charge now, or input estimated kWh to charge.
 
 ---
 
-### 🚘 Easee Charger
+### 🚘 Easee Chargers
 
 > [!IMPORTANT]  
 > Locking Easee charger to 3-phase IT net (230V) requires a minimum of 11A to charge. The app can turn down charging as low as 6A, and if so, the charging will stop. To avoid this, set Phase mode to Automatic in your Easee app.
@@ -315,14 +323,17 @@ The app will calculate battery size. It defaults to 100kWh to start with. If you
 
 You can configure `battery_size` for your car, but then the calculations will be reset to that value on every restart.
 
+> [!TIP]
+> Configure the battery_size once and it will be stored to persistent data (json) and remove it so calculations can overwrite the value.
+
 ---
 
-### 🚘 Configuring Tesla
+### 🚘 Configuring Teslas
 
 > :warning: **WARNING**  
 > It is necessary to restart the Tesla integration, and in some cases, reboot the vehicle to re-establish communications with the Tesla API after any service visits and also changes/reconfiguration of the integration in Home Assistant, such as if you need to update the API key.
 
-Input the name of your Tesla using the `car` option. Check logs for any errors and provide missing sensors.
+Input the name of your Tesla using the `car` option. Check logs for any errors and provide missing sensors. The app will automatically find all sensors listed in the cars section below.
 
 ```yaml
   tesla:
@@ -335,28 +346,42 @@ Input the name of your Tesla using the `car` option. Check logs for any errors a
 
 ---
 
-### 🚗 Defining Another Vehicle to Charge
+### 🚗 Defining Other Vehicles to Charge
 
-If you have a vehicle you can define it with the following sensors under `cars`:
+Please try configure your other cars with the following sensors under `cars`:
 
-- `carName`: Name of car.
-- `charger_sensor`: Charge cable Connected or Disconnected
-- `charge_limit`: SOC limit sensor in %
-- `battery_sensor`: SOC (State Of Charge) in %
-- `asleep_sensor`: If car is sleeping
-- `online_sensor`: If car is online
-- `location_tracker`: Location of car/charger.
-- `software_update`: If cars updates software it probably can't change charge speed or stop charging
-- `force_data_update`: Button to Force Home Assistant to pull new data
-- `polling_switch`: Home Assistant input_boolean to disable pulling data from car
-- `data_last_update_time`: Last time Home Assistant pulled data
-- `battery_size`: Size of battery in kWh
-- `pref_charge_limit`: Preferred chargelimit
+```yaml
+  cars:
+    - carName: name-your-car
+      charger_sensor: binary_sensor._charger
+      charge_limit: number._charge_limit
+      battery_sensor: sensor._battery
+      asleep_sensor: binary_sensor._asleep
+      online_sensor: binary_sensor._online
+      location_tracker: device_tracker._location_tracker
+      destination_location_tracker: device_tracker._destination_location_tracker
+      arrival_time: sensor._arrival_time
+      software_update: update._software_update
+      force_data_update: button._force_data_update
+      polling_switch: switch._polling
+      data_last_update_time: sensor._data_last_update_time
+
+      charger_switch: switch._charger
+      charging_amps: number._charging_amps
+      charger_power: sensor._charger_power
+      session_energy: sensor._energy_added
+      maxChargerAmpere: 32
+      volts: 220
+      phases: 3
+
+```
 
 In addition to the HA helpers.
 
 > [!WARNING]  
-> The default location if no sensor for location is provided, is 'home'. This will stop charging if you are controlling your car and not a wall charger if it is not charge time. Please make sure your location sensor is functioning properly. If your car does not provide a location you can use your phone, or make sure you have configured a `charge_now` to force charging when not home.
+> The default location if no sensor for location is provided, is 'home'. This will stop charging if you are controlling your car and not a wall charger if it is not charge time. Please make sure your location sensor is functioning properly. If your car does not provide a location you can use another tracker, or make sure you have configured a `charge_now` to force charging when not home.
+
+If the sensors does not work for your car, please open an issue.
 
 ---
 
@@ -457,12 +482,11 @@ Define custom recipients per climate or use recipients defined in the main confi
 
 ### 📄 Example Configuration
 
-Define either `name` of your heater, or input climate entity with `heater`.
+Define climate entity with `heater`.
 
 ```yaml
   climate:
-    - name: floor_thermostat
-    #- heater: climate.floor_thermostat
+    - heater: climate.floor_thermostat
       consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
@@ -505,12 +529,11 @@ Define either `name` of your heater, or input climate entity with `heater`.
 
 Hot-water boilers with no temperature sensors and only an on/off switch can also be controlled using the app's functionality. It will utilize ElectricityPrice functions to find optimal times for heating or turning on the heater. If a power consumption sensor is provided, it will enable more accurate calculations to avoid exceeding the maximum usage limit in ElectricalUsage.
 
-Define either `name` of your heater, or input switch entity with `switch`.
+Define switch entity with `switch`.
 
 ```yaml
   heater_switches:
-    - name: hotwater
-    #- switch: switch.hotwater
+    - switch: switch.hotwater
       consumptionSensor: sensor.hotwater_electric_consumption_w
       kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8
@@ -524,9 +547,15 @@ Define either `name` of your heater, or input switch entity with `switch`.
 
 ---
 
+## 📄 Contributions
+
+Pull request against the dev branch is much appriciated.
+
+---
+
 ## 📄 Example App Configuration
 
-Putting it all together in a configuration with example names:
+Putting it all together in a configuration. All numbers are default values
 
 ```yaml
 electricity:
@@ -535,35 +564,39 @@ electricity:
   dependencies:
     - electricalPriceCalc
   electricalPriceApp: electricalPriceCalc
+
+  # Control maximum electricity usage
   power_consumption: sensor.power_home
   accumulated_consumption_current_hour: sensor.accumulated_consumption_current_hour_home
+  max_kwh_goal: 15
+  buffer: 0.4
 
-  max_kwh_goal: 15 # 15 is default.
-  buffer: 0.4 # 0.4 is default.
-  startBeforePrice: 0.01
-  stopAtPriceIncrease: 0.3
-
+  # Set home in vacation mode and turn down temperatures
   vacation: input_boolean.vacation
+
+  # Notification options
   notify_receiver:
     - mobile_app_yourphone
     - mobile_app_yourotherphone
   infotext: input_text.information
+  home_name: home
+
+  # Configuration options
   options:
     - pause_charging
     - notify_overconsumption
 
   # Cars and Chargers
+  startBeforePrice: 0.01
+  stopAtPriceIncrease: 0.3
+
   tesla:
     - charger: yourTesla
       pref_charge_limit: 90
       finishByHour: input_number.finishChargingAt
       priority: 3
       charge_now: input_boolean.charge_Now
-    - charger: yourOtherTesla
-      pref_charge_limit: 70
-      finishByHour: input_number.yourOtherTesla_finishChargingAt
-      priority: 4
-      charge_now: input_boolean.yourOtherTesla_charge_Now
+
   easee:
     - charger: nameOfCharger
       reason_for_no_current: sensor.nameOfCharger_arsak_til_at_det_ikke_lades
@@ -636,3 +669,10 @@ electricity:
       #recipient: Define other recipients that configured in main configuration.
 ```
 
+---
+
+## 📄 Still got questions?
+
+Let me know so I can update this readme
+
+---
