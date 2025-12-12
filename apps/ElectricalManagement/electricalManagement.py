@@ -13,8 +13,6 @@ import importlib.util
 
 import bisect
 from datetime import timedelta
-#from collections import defaultdict
-#from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Iterable, Optional
 
@@ -45,7 +43,7 @@ from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.0_beta"
+__version__ = "1.0.0"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
