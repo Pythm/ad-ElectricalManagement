@@ -162,8 +162,8 @@ class Car:
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
         if not self.isConnected():
-            stack = inspect.stack()
-            self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
+            #stack = inspect.stack() ###
+            #self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
             return
         now = self.ADapi.datetime(aware=True)
         if self.dontStopMeNow():
@@ -555,7 +555,6 @@ class Tesla_car(Car):
         """ Get arrival time if destination == 'home'
             and use estimated battery on arrival to calculate chargetime.
         """
-        ### TODO: Actual calculation based on arrival time
         if new == 'home':
             energy_at_arrival= self.ADapi.get_state(self.car_data.arrival_time,
                 namespace = self.namespace,
@@ -563,3 +562,4 @@ class Tesla_car(Car):
             )
             if energy_at_arrival > 0:
                 self.car_data.kWh_remain_to_charge = self.car_data.pref_charge_limit - energy_at_arrival
+                ### TODO: Verify and add to charge queue based on arrival time

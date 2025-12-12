@@ -1353,7 +1353,7 @@ class ElectricalUsage(ad.ADBase):
 
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
-                    self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
+                    #self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
                     if error_ratio > 0:
                         if error_ratio > 2:
                             error_ratio = 2  
