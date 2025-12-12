@@ -563,8 +563,3 @@ class Tesla_car(Car):
             )
             if energy_at_arrival > 0:
                 self.car_data.kWh_remain_to_charge = self.car_data.pref_charge_limit - energy_at_arrival
-                self.ADapi.log(
-                    f"Arrival UTC: {self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.arrival_time, namespace = self.namespace))} "
-                    f"Timedelta: {self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.arrival_time, namespace = self.namespace)) - self.ADapi.datetime(aware=True)} "
-                    f"Energy at Arrival: {energy_at_arrival}. To charge: {self.car_data.kWh_remain_to_charge}"
-                )###
