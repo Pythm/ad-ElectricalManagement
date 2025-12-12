@@ -10,16 +10,11 @@ import math
 import json
 import os
 import importlib.util
-#import csv
 
 import bisect
-#import pytz
 from datetime import timedelta
-from collections import defaultdict
-from pathlib import Path
-from dataclasses import dataclass #, field, asdict
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Iterable, Optional
-#from pydantic import BaseModel, Field
 
 from pydantic_models import (
     PersistenceData,
@@ -28,17 +23,12 @@ from pydantic_models import (
     ChargerData,
     CarData,
     HeaterBlock,
-    #IdleBlock, ###
-    #MaxUsage,
     TempConsumption,
-    #ChargingQueueItem,
     WattSlot,
     Decision,
-    #PeakHour
 )
 from utils import (
     cancel_timer_handler,
-    #cancel_listen_handler, ###
     get_next_runtime_aware,
     get_consumption_for_outside_temp,
     closest_value,
@@ -50,10 +40,10 @@ from utils import (
 from registry import Registry
 from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car
-from electrical_chargers import Charger, Tesla_charger, Easee
+from electrical_chargers import Charger, Tesla_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.0_beta"
+__version__ = "1.0.0"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -120,36 +110,47 @@ class ElectricalUsage(ad.ADBase):
         # --------------------------------------------------------------------------- #
 
         CAR_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_sensor",           "binary_sensor", "_charger"),
-            ("charge_limit",             "number",        "_charge_limit"),
-            ("asleep_sensor",            "binary_sensor", "_asleep"),
-            ("online_sensor",            "binary_sensor", "_online"),
-            ("battery_sensor",           "sensor",        "_battery"),
-            ("location_tracker",         "device_tracker","_location_tracker"),
-            ("destination_location_tracker", "device_tracker","_destination_location_tracker"),
-            ("arrival_time",             "sensor",        "_arrival_time"),
-            ("software_update",          "update",        "_software_update"),
-            ("force_data_update",        "button",        "_force_data_update"),
-            ("polling_switch",           "switch",        "_polling"),
-            ("data_last_update_time",    "sensor",        "_data_last_update_time"),
+            ('charger_sensor',           'binary_sensor', '_charger'),
+            ('charge_limit',             'number',        '_charge_limit'),
+            ('asleep_sensor',            'binary_sensor', '_asleep'),
+            ('online_sensor',            'binary_sensor', '_online'),
+            ('battery_sensor',           'sensor',        '_battery'),
+            ('location_tracker',         'device_tracker','_location_tracker'),
+            ('destination_location_tracker', 'device_tracker','_destination_location_tracker'),
+            ('arrival_time',             'sensor',        '_arrival_time'),
+            ('software_update',          'update',        '_software_update'),
+            ('force_data_update',        'button',        '_force_data_update'),
+            ('polling_switch',           'switch',        '_polling'),
+            ('data_last_update_time',    'sensor',        '_data_last_update_time'),
         ]
 
         CHARGER_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_switch",           "switch",        "_charger"),
-            ("charging_amps",            "number",        "_charging_amps"),
-            ("charger_power",            "sensor",        "_charger_power"),
-            ("session_energy",           "sensor",        "_energy_added"),
+            ('charger_switch',           'switch',        '_charger'),
+            ('charging_amps',            'number',        '_charging_amps'),
+            ('charger_power',            'sensor',        '_charger_power'),
+            ('session_energy',           'sensor',        '_energy_added'),
         ]
 
         EASEE_SPECS: List[Tuple[str, str, str]] = [
-            ("charger_sensor",          "sensor",   "_status"),
-            ("reason_for_no_current",   "sensor",   "_reason_for_no_current"),
-            ("charging_amps",           "sensor",   "_current"),
-            ("charger_power",           "sensor",   "_power"),
-            ("session_energy",          "sensor",   "_energy_added"),
-            ("voltage",                 "sensor",   "_voltage"),
-            ("max_charger_limit",       "sensor",   "_max_charger_limit"),
-            ("idle_current",            "sensor",   "_idle_current"),
+            ('charger_sensor',          'sensor',   '_status'),
+            ('reason_for_no_current',   'sensor',   '_reason_for_no_current'),
+            ('charging_amps',           'sensor',   '_current'),
+            ('charger_power',           'sensor',   '_power'),
+            ('session_energy',          'sensor',   '_energy_added'),
+            ('voltage',                 'sensor',   '_voltage'),
+            ('max_charger_limit',       'sensor',   '_max_charger_limit'),
+            ('idle_current',            'sensor',   '_idle_current'),
+        ]
+
+        common_car_keys = [
+            'battery_size', 'pref_charge_limit', 'priority',
+            'finish_by_hour', 'charge_now', 'charge_only_on_solar',
+            'departure'
+        ]
+
+        common_charger_keys = [
+            'idle_current', 'guest', 'min_ampere',
+            'maxChargerAmpere', 'volts', 'phases'
         ]
 
         def merge_config_with_persistent(
@@ -159,7 +160,7 @@ class ElectricalUsage(ad.ADBase):
             persistent_data,
         ) -> None:
 
-            namespace = cfg.get("namespace", self.HASS_namespace)
+            namespace = cfg.get('namespace', self.HASS_namespace)
 
             for key, domain, suffix in specs:
                 value = str(f"{domain}.{name}{suffix}")
@@ -178,13 +179,8 @@ class ElectricalUsage(ad.ADBase):
                         level = 'INFO'
                     )
 
-        def _update_persistence_from_cfg(cfg: dict, persistent_data) -> None:
+        def _update_persistence_from_cfg(cfg: dict, persistent_data, common_keys:list) -> None:
             if persistent_data:
-                common_keys = [
-                    'battery_size', 'pref_charge_limit', 'priority',
-                    'finish_by_hour', 'charge_now', 'charge_only_on_solar',
-                    'departure'
-                ]
                 for key in common_keys:
                     value = getattr(persistent_data, key, None)
                     if key in cfg and cfg[key] is not None:
@@ -239,7 +235,8 @@ class ElectricalUsage(ad.ADBase):
                                          persistent_data = self._persistence.car[carName])
 
             _update_persistence_from_cfg(cfg = cfg,
-                                         persistent_data = self._persistence.car[carName])
+                                         persistent_data = self._persistence.car[carName],
+                                         common_keys = common_car_keys)
 
             tesla_car = Tesla_car(
                 api = self.ADapi,
@@ -251,7 +248,6 @@ class ElectricalUsage(ad.ADBase):
             self.cars[tesla_car.vehicle_id] = tesla_car
 
             persisted_charger = self._persistence.charger.get(carName)
-
             if not persisted_charger:
                 defaults: dict[str, Any] = {
                     'charger_sensor':        cfg.get('charger_sensor'),
@@ -259,10 +255,10 @@ class ElectricalUsage(ad.ADBase):
                     'charging_amps':         cfg.get('charging_amps'),
                     'charger_power':         cfg.get('charger_power'),
                     'session_energy':        cfg.get('session_energy'),
-                    'idle_current':          cfg.get('idle_current', False),
-                    'guest':                 cfg.get('guest', False),
+                    'idle_current':          False,
+                    'guest':                 False,
                     'ampereCharging':        0.0,
-                    'min_ampere':            6,
+                    'min_ampere':            5,
                     'maxChargerAmpere':      0,
                     'volts':                 220,
                     'phases':                1,
@@ -277,7 +273,7 @@ class ElectricalUsage(ad.ADBase):
                                          persistent_data = self._persistence.charger.get(carName))
 
             tesla_charger = Tesla_charger(
-                api = self.ADapi,
+                api = self,
                 Car = tesla_car,
                 namespace = namespace,
                 charger = carName,
@@ -327,6 +323,15 @@ class ElectricalUsage(ad.ADBase):
                 cfg.update({k: v for k, v in defaults.items() if k not in cfg})
                 self._persistence.car[cfg['carName']] = CarData(**cfg)
 
+            merge_config_with_persistent(cfg = cfg,
+                                         name = cfg['carName'],
+                                         specs = CAR_SPECS,
+                                         persistent_data = self._persistence.car.get(cfg['carName']))
+
+            _update_persistence_from_cfg(cfg = cfg,
+                                         persistent_data = self._persistence.car[cfg['carName']],
+                                         common_keys = common_car_keys)
+
             car = Car(
                 api = self.ADapi,
                 namespace = namespace,
@@ -336,6 +341,49 @@ class ElectricalUsage(ad.ADBase):
                 charging_scheduler = self.charging_scheduler,
             )
             self.cars[cfg['carName']] = car
+
+            persisted_charger = self._persistence.charger.get(cfg['carName'])
+            if not persisted_charger:
+                defaults: dict[str, Any] = {
+                    'charger_sensor':        cfg.get('charger_sensor'),
+                    'charger_switch':        cfg.get('charger_switch'),
+                    'charging_amps':         cfg.get('charging_amps'),
+                    'charger_power':         cfg.get('charger_power'),
+                    'session_energy':        cfg.get('session_energy'),
+                    'idle_current':          cfg.get('idle_current', False),
+                    'guest':                 cfg.get('guest', False),
+                    'ampereCharging':        0.0,
+                    'min_ampere':            6,
+                    'maxChargerAmpere':      cfg.get('maxChargerAmpere', 32),
+                    'volts':                 cfg.get('volts', 220),
+                    'phases':                cfg.get('phases', 1),
+                    'voltPhase':             220,
+                }
+                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                self._persistence.charger[cfg['carName']] = ChargerData(**cfg)
+
+            merge_config_with_persistent(cfg = cfg,
+                                         name = cfg['carName'],
+                                         specs = CHARGER_SPECS,
+                                         persistent_data = self._persistence.charger.get(cfg['carName']))
+
+            _update_persistence_from_cfg(cfg = cfg,
+                                         persistent_data = self._persistence.charger[cfg['carName']],
+                                         common_keys = common_charger_keys)
+
+            charger = Onboard_charger(
+                api = self,
+                Car = car,
+                namespace = namespace,
+                charger = cfg['carName'],
+                charger_id = cfg['carName'],
+                charger_data = self._persistence.charger[cfg['carName']],
+                charging_scheduler = self.charging_scheduler,
+                notify_app = self.notify_app,
+                recipients = self.recipients,
+            )
+
+            self.chargers[cfg['carName']] = charger
 
 
         for cfg in self.args.get('easee', []):
@@ -378,7 +426,7 @@ class ElectricalUsage(ad.ADBase):
                                          persistent_data = self._persistence.charger.get(charger))
 
             easee = Easee(
-                api = self.ADapi,
+                api = self,
                 cars = self.all_cars(),
                 namespace = namespace,
                 charger = charger,
@@ -778,6 +826,16 @@ class ElectricalUsage(ad.ADBase):
 
         return self.cars.values()
 
+    def add_car(self, car: Car) -> None:
+        """Add a guest car to the system """
+
+        self.cars[car.vehicle_id] = car
+
+    def remove_car(self, vehicle_id: str) -> None:
+        """Remove a guest car from the system """
+
+        popped_car = self.cars.pop(vehicle_id, None)
+
     def all_cars_connected(self) -> Iterable[Car]:
         """ Yield only cars that are actually connected and have a charger """
 
@@ -806,8 +864,15 @@ class ElectricalUsage(ad.ADBase):
                         charger.findCarConnectedToCharger()
 
             elif ChargingState != 'Disconnected':
-                Registry.set_link(car, car.onboard_charger)
-
+                if car.onboard_charger is not None:
+                    Registry.set_link(car, car.onboard_charger)
+                else:
+                    for charger in self.all_chargers():
+                        if (
+                            charger.connected_vehicle is None
+                            and charger._guest_car == car
+                        ):
+                            Registry.set_link(car, charger)
 
     def _get_new_prices(self, kwargs) -> None:
         """ Fetches new prices and finds charge time """
@@ -1078,7 +1143,7 @@ class ElectricalUsage(ad.ADBase):
                     )
                     car.charging_on_solar = False
                     car.changeChargeLimit(car.car_data.old_charge_limit)
-                    car.stopCharging()
+                    car.stopChargingCar()
                     to_remove.add(queue_id)
 
                 if overproduction_Wh > 0:
@@ -1207,7 +1272,15 @@ class ElectricalUsage(ad.ADBase):
                 car._handleChargeCompletion()
 
             else:
-                Registry.set_link(car, car.onboard_charger)
+                if car.onboard_charger is not None:
+                    Registry.set_link(car, car.onboard_charger)
+                else:
+                    for charger in self.all_chargers():
+                        if (
+                            charger.connected_vehicle is None
+                            and charger._guest_car == car
+                        ):
+                            Registry.set_link(car, charger)
 
         charging_list[:] = [
             qid for qid in charging_list
@@ -1278,13 +1351,17 @@ class ElectricalUsage(ad.ADBase):
 
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
-                    self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
-                    self._persistence.max_usage.calculated_difference_on_idle *= 1.1
-                    self.ADapi.log(
-                        f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
-                        f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
-                        level = 'INFO'
-                    )
+                    #self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
+                    if error_ratio > 0:
+                        if error_ratio > 2:
+                            error_ratio = 2  
+                        self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
+                        self._persistence.max_usage.calculated_difference_on_idle *= 1.1
+                        self.ADapi.log(
+                            f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
+                            f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
+                            level = 'INFO'
+                        )
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1376,7 +1453,7 @@ class ElectricalUsage(ad.ADBase):
                     not car.dontStopMeNow()
                     and car.getCarChargerState() == 'Charging'
                 ):
-                    car.stopCharging()
+                    car.stopChargingCar()
             return False
         return True
 
@@ -1386,7 +1463,7 @@ class ElectricalUsage(ad.ADBase):
         if remaining_minute > 3:
             car = Registry.get_car(vehicle_id)
             if car is not None:
-                car.startCharging()
+                car.startChargingCar()
                 #AmpereToCharge = math.floor(self.available_Wh / car.connected_charger.charger_data.voltPhase)
                 #car.connected_charger.setChargingAmps(charging_amp_set = AmpereToCharge)
                 self.charging_scheduler.markAsCharging(car.vehicle_id)
@@ -1439,7 +1516,7 @@ class ElectricalUsage(ad.ADBase):
                     if self.charging_scheduler.isPastChargingTime(vehicle_id = car.vehicle_id):
                         if car.car_data.priority == 1 or car.car_data.priority == 2:
                             continue # Finishing charging on priority cars.
-                        car.stopCharging()
+                        car.stopChargingCar()
                         if car.car_data.kWh_remain_to_charge > 1:
                             data = {
                                 'tag' : 'charging' + str(car.carName),
@@ -1501,7 +1578,7 @@ class ElectricalUsage(ad.ADBase):
                 self.available_Wh += (
                     car.connected_charger.charger_data.ampereCharging * car.connected_charger.charger_data.voltPhase
                 )
-                car.stopCharging(force_stop = True)
+                car.stopChargingCar(force_stop = True)
                 if self.available_Wh > -100:
                     return True
         return False
@@ -1742,7 +1819,6 @@ class ElectricalUsage(ad.ADBase):
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
-            self.ADapi.log(f"idle_consumption = {idle_consumption} - aborting logging Idle Consumption") ###
             return
 
         out_temp_even = floor_even(self.out_temp)
@@ -1778,9 +1854,6 @@ class ElectricalUsage(ad.ADBase):
                 )
                 consumption_dict[out_temp_even] = new_entry
             else:
-                self.ADapi.log(
-                    f"Discarded idle sample at {out_temp_even} degrees - too different from existing data"
-                ) ###
                 return
         else:
             nearest_key = closest_temp_in_dict(out_temp_even, consumption_dict)
@@ -1802,10 +1875,6 @@ class ElectricalUsage(ad.ADBase):
 
                 if temp_diff <= MAX_TEMP_DIFFERENCE and nearest.Counter > 2:
                     if not diff_ok(nearest.Consumption, new_consumption, MAX_CONSUMPTION_RATIO_DIFFERENCE):
-                        self.ADapi.log(
-                            f"Discarded idle sample at {out_temp_even} degrees "
-                            f"closest data at {nearest_key} degrees is too far or too different"
-                        ) ###
                         return
                 new_entry = TempConsumption(
                     Consumption = new_consumption,
@@ -1895,7 +1964,7 @@ class ElectricalUsage(ad.ADBase):
             self.houseIsOnFire = True
             for car in self.all_cars_connected():
                 if car.getCarChargerState() == 'Charging':
-                    car.stopCharging(force_stop = True)
+                    car.stopChargingCar(force_stop = True)
             
             for charger in self.all_chargers():
                 charger.doNotStartMe = True
