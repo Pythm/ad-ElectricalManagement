@@ -176,6 +176,9 @@ Running multiple ElectricalManagement instances? Configure a home_name so you kn
     - pause_charging
 ```
 
+> [!TIP]  
+> Long press notifications for options
+
 You can also configure `electricalManagement` to use your own Notification app instead with `notify_app`. You'll need to have a function in your app to receive. App sends one call with kwargs: message, message_title, message_recipient, and also_if_not_home. Data might contain tag to replace old notifications. More kwargs can be added later or on request.
 
 ```python
@@ -237,7 +240,7 @@ To set mode from another Appdaemon app simply use:
 self.fire_event("MODE_CHANGE", mode = 'your_mode_name')
 ```
 
-> [!TIP]  
+> [!TIP]
 > `ElectricalManagement` now supports the same translation on Modes as Lightwand. Check out the documentation for Lightwand in the [translation section](https://github.com/Pythm/ad-Lightwand?tab=readme-ov-file#translating-or-changing-modes) to listen for another event than `"MODE_CHANGE"` or use your own names for the pre defined mode names and change `"fire"` and `"false-alarm"` to comply with rest of your smart home. To adopt the translation one lightwand app needs to be configured with the translation configuration.
 
 ---

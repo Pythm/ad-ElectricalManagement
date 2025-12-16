@@ -1036,11 +1036,8 @@ class ElectricalUsage(ad.ADBase):
                     return
 
             if self.notify_overconsumption:
-                self._notify_overconsumption()
+                self._notify_overconsumption(hour = now.hour)
 
-            if not self.charging_scheduler.isChargingTime() and remaining_minute <= 15:
-                if now.hour not in self._persistence.high_consumption.high_consumption_hours:
-                    self._persistence.high_consumption.high_consumption_hours.append(now.hour)
 
     def _act_heaters_reduced(self) -> None:
         """ Reduce charging speed to turn heaters back on """
@@ -1351,17 +1348,17 @@ class ElectricalUsage(ad.ADBase):
 
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
-                    #self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
-                    if error_ratio > 0:
-                        if error_ratio > 2:
-                            error_ratio = 2  
-                        self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
-                        self._persistence.max_usage.calculated_difference_on_idle *= 1.1
-                        self.ADapi.log(
-                            f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
-                            f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
-                            level = 'INFO'
-                        )
+                    self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
+                    if error_ratio > 2:
+                        error_ratio = 2
+                    else:
+                        error_ratio += 0.1
+                    self._persistence.max_usage.calculated_difference_on_idle *= error_ratio
+                    self.ADapi.log(
+                        f"Accumulated kWh was unavailable. Estimated: {round(self.last_accumulated_kWh + (self.current_consumption/60000),2)}. "
+                        f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
+                        level = 'INFO'
+                    )
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1986,31 +1983,46 @@ class ElectricalUsage(ad.ADBase):
                 if car.kWhRemaining() > 0:
                     car.findNewChargeTime()
 
-    def _notify_overconsumption(self) -> None:
+    def _notify_overconsumption(self, hour) -> None:
         if self.notify_about_overconsumption:
             self.notify_about_overconsumption = False
+            if hour not in self._persistence.high_consumption.high_consumption_hours:
+                data = {"tag": "overconsumption",
+                        'actions' : [{ 'action' : 'high_consumption_hours',
+                        'title' : f'Add Hour {hour} to High Consumption',
+                        'hour' : hour
+                        }]
+                    }
+            else:
+                data = {"tag": "overconsumption"}
             self.notify_app.send_notification(
-                message=(
+                message = (
                     f"Turn down consumption at {self.home_name}. It's about to go over max usage "
                     f"with {round(-self.available_Wh, 0)} Wh remaining to reduce"
                 ),
-                message_title="⚡High electricity usage",
-                message_recipient=self.recipients,
-                also_if_not_home=False,
-                data={"tag": "overconsumption"},
+                message_title = "⚡High electricity usage",
+                message_recipient = self.recipients,
+                also_if_not_home = False,
+                data = data
             )
         else:
             self.notify_about_overconsumption = True
 
     def _notify_event(self, event_name, data, **kwargs) -> None:
+        action = data['action']
+
+        if action == 'add_high_consumption_hours':
+            hour = int(data['hour'])
+            self.ADapi.log(f"Adding {hour} from add_high: {data}") ###
+            self._persistence.high_consumption.high_consumption_hours.append(hour)
         for car in self.all_cars():
-            if data['action'] == 'find_new_chargetime'+str(car.carName):
+            if action == 'find_new_chargetime'+str(car.carName):
                 car.kWhRemaining()
                 car.findNewChargeTime()
                 return
         
         for charger in self.all_chargers():
-            if data['action'] == 'kWhremaining'+str(charger.charger):
+            if action == 'kWhremaining'+str(charger.charger):
                 try:
                     charger.connected_vehicle.car_data.kWh_remain_to_charge = float(data['reply_text'])
                 except (ValueError, TypeError):
@@ -2023,7 +2035,7 @@ class ElectricalUsage(ad.ADBase):
                 charger.connected_vehicle.findNewChargeTime()
                 return
 
-            if data['action'] == 'chargeNow'+str(charger.charger):
+            if action == 'chargeNow'+str(charger.charger):
                 charger.connected_vehicle.charge_now = True
                 charger.startCharging()
                 return
