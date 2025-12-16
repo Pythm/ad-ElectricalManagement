@@ -1348,7 +1348,6 @@ class ElectricalUsage(ad.ADBase):
 
                 if self.last_accumulated_kWh + (self.current_consumption/60000) < self.accumulated_kWh:
                     error_ratio = self.accumulated_kWh / (self.last_accumulated_kWh + (self.current_consumption/60000))
-                    self.ADapi.log(f"Error ratio on unavailable: {error_ratio}") ###
                     if error_ratio > 2:
                         error_ratio = 2
                     else:
@@ -2013,7 +2012,6 @@ class ElectricalUsage(ad.ADBase):
 
         if action == 'add_high_consumption_hours':
             hour = int(data['hour'])
-            self.ADapi.log(f"Adding {hour} from add_high: {data}") ###
             self._persistence.high_consumption.high_consumption_hours.append(hour)
         for car in self.all_cars():
             if action == 'find_new_chargetime'+str(car.carName):
