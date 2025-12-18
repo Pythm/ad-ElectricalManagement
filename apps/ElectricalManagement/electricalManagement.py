@@ -1946,7 +1946,7 @@ class ElectricalUsage(ad.ADBase):
 
         if heaters_to_remove:
             for key in heaters_to_remove:
-                del persistence.consumption[key]
+                del persistence.heater[key]
 
         self.totalWattAllHeaters = total_power
 
