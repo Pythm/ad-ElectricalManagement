@@ -682,7 +682,8 @@ class ElectricalUsage(ad.ADBase):
         self.heatersRedusedConsumption:list = []
         self.lastTimeHeaterWasReduced = self.ADapi.datetime(aware = True) - timedelta(minutes = 5)
 
-        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
+        self.notify_overconsumption_when_away: bool = 'notify_overconsumption_also_when_away' in self.args.get('options')
+        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options') or self.notify_overconsumption_when_away
         self.pause_charging: bool = 'pause_charging' in self.args.get('options')
 
         self.buffer = self.args.get('buffer', 0.4) + 0.01
@@ -2002,7 +2003,7 @@ class ElectricalUsage(ad.ADBase):
                 ),
                 message_title = "⚡High electricity usage",
                 message_recipient = self.recipients,
-                also_if_not_home = False,
+                also_if_not_home = self.notify_overconsumption_when_away,
                 data = data
             )
         else:
