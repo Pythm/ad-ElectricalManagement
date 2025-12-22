@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import inspect ###
 from datetime import timedelta
 from typing import Optional
 
@@ -162,8 +161,6 @@ class Car:
     def findNewChargeTime(self) -> None:
         """ Find new chargetime for car. """
         if not self.isConnected():
-            stack = inspect.stack() ###
-            self.ADapi.log(f"Find New Chargetime called for {self.carName} from {stack[1].function} when car is not connected.") ###
             return
         now = self.ADapi.datetime(aware=True)
         if self.dontStopMeNow():

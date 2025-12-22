@@ -426,11 +426,6 @@ class Charger:
         if self.connected_vehicle.car_data.battery_reg_counter > 100:
             self.connected_vehicle.car_data.battery_reg_counter = 10
 
-        self.ADapi.log(
-            f"pct Charged for {self.connected_vehicle.carName} is {pctCharged}. kWh: {round(session,2)}. Est battery size: {round((session / pctCharged)*100,2)} "
-            f"Old calc: {self.connected_vehicle.car_data.battery_size}. counter: {self.connected_vehicle.car_data.battery_reg_counter}. New avg: {avg}"
-        ) ###
-
         self.connected_vehicle.car_data.battery_size = avg
 
     def _CleanUpWhenChargingStopped(self) -> None:
