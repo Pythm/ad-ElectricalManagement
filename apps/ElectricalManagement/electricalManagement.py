@@ -682,7 +682,8 @@ class ElectricalUsage(ad.ADBase):
         self.heatersRedusedConsumption:list = []
         self.lastTimeHeaterWasReduced = self.ADapi.datetime(aware = True) - timedelta(minutes = 5)
 
-        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options')
+        self.notify_overconsumption_when_away: bool = 'notify_overconsumption_also_when_away' in self.args.get('options')
+        self.notify_overconsumption: bool = 'notify_overconsumption' in self.args.get('options') or self.notify_overconsumption_when_away
         self.pause_charging: bool = 'pause_charging' in self.args.get('options')
 
         self.buffer = self.args.get('buffer', 0.4) + 0.01
@@ -697,6 +698,7 @@ class ElectricalUsage(ad.ADBase):
         self.totalWattAllHeaters:float = 0
         self.houseIsOnFire:bool = False
         self.find_next_charger_counter:int = 0
+        self.hour_to_add_to_high_consumption_hours = -1
 
         self.checkIdleConsumption_Handler = None
 
@@ -1945,7 +1947,7 @@ class ElectricalUsage(ad.ADBase):
 
         if heaters_to_remove:
             for key in heaters_to_remove:
-                del persistence.consumption[key]
+                del persistence.heater[key]
 
         self.totalWattAllHeaters = total_power
 
@@ -1986,14 +1988,14 @@ class ElectricalUsage(ad.ADBase):
         if self.notify_about_overconsumption:
             self.notify_about_overconsumption = False
             if hour not in self._persistence.high_consumption.high_consumption_hours:
-                data = {"tag": "overconsumption",
-                        'actions' : [{ 'action' : 'high_consumption_hours',
-                        'title' : f'Add Hour {hour} to High Consumption',
-                        'hour' : hour
+                self.hour_to_add_to_high_consumption_hours = hour
+                data = {'tag': 'overconsumption',
+                        'actions' : [{ 'action' : 'add_high_consumption_hours',
+                        'title' : f'Add Hour {hour} to High Consumption'
                         }]
                     }
             else:
-                data = {"tag": "overconsumption"}
+                data = {'tag': 'overconsumption'}
             self.notify_app.send_notification(
                 message = (
                     f"Turn down consumption at {self.home_name}. It's about to go over max usage "
@@ -2001,7 +2003,7 @@ class ElectricalUsage(ad.ADBase):
                 ),
                 message_title = "⚡High electricity usage",
                 message_recipient = self.recipients,
-                also_if_not_home = False,
+                also_if_not_home = self.notify_overconsumption_when_away,
                 data = data
             )
         else:
@@ -2011,8 +2013,7 @@ class ElectricalUsage(ad.ADBase):
         action = data['action']
 
         if action == 'add_high_consumption_hours':
-            hour = int(data['hour'])
-            self._persistence.high_consumption.high_consumption_hours.append(hour)
+            self._persistence.high_consumption.high_consumption_hours.append(self.hour_to_add_to_high_consumption_hours)
         for car in self.all_cars():
             if action == 'find_new_chargetime'+str(car.carName):
                 car.kWhRemaining()
