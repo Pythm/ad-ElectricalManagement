@@ -101,7 +101,7 @@ class ElectricalUsage(ad.ADBase):
             available_watt = self._persistence.available_watt,
         )
 
-        self.away_state = self._get_vacation_state()
+        main_away_sensor = self._get_vacation_state()
         self.automate = self.args.get('automate', True) # Default Automate switch for all heaters
         self._setup_weather_sensors()
 
@@ -458,6 +458,15 @@ class ElectricalUsage(ad.ADBase):
                 ]
                 for key in common_keys:
                     value = getattr(persisted_heater, key, None)
+                    if key == 'vacation': ### Temporary fix wrongly set vacation in persistence
+                        if isinstance(value, bool) or value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, main_away_sensor)
+                                value_changed = True
+                                continue
+                            else:
+                                self.ADapi.log(f"Failed to update vacation") ###
+
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
                             setattr(persisted_heater, key, heater_cfg[key])
@@ -552,7 +561,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
                     'pricedrop':                      heater_cfg.get('pricedrop',1),
                     'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       heater_cfg.get('vacation',self.away_state),
+                    'vacation':                       heater_cfg.get('vacation',main_away_sensor),
                     'automate':                       heater_cfg.get('automate',self.automate),
                     'recipient':                      heater_cfg.get('recipient',self.recipients),
                     'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
@@ -622,7 +631,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
                     'pricedrop':                      heater_cfg.get('pricedrop',1),
                     'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       heater_cfg.get('vacation',self.away_state),
+                    'vacation':                       heater_cfg.get('vacation',main_away_sensor),
                     'automate':                       heater_cfg.get('automate',self.automate),
                     'recipient':                      heater_cfg.get('recipient',self.recipients),
                     'daytime_savings':                heater_cfg.get('daytime_savings',[]),
@@ -762,18 +771,17 @@ class ElectricalUsage(ad.ADBase):
         if self._persistence.max_usage.max_kwh_usage_pr_hour == 0:
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
 
-    def _get_vacation_state(self):
-        away_state = self.args.get('away_state') or self.args.get('vacation')
-        if not away_state and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
-            away_state = 'input_boolean.vacation'
+    def _get_vacation_state(self) -> str:
+        main_away_sensor = self.args.get('away_state') or self.args.get('vacation')
+        if not main_away_sensor and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
+            main_away_sensor = 'input_boolean.vacation'
 
         # Set up listener for state changes
-        if away_state:
-            self.ADapi.listen_state(self._awayStateListen_Main, away_state,
+        if main_away_sensor:
+            self.ADapi.listen_state(self._awayStateListen_Main, main_away_sensor,
                 namespace=self.HASS_namespace)
-            return self.ADapi.get_state(away_state, namespace = self.HASS_namespace)  == 'on'
-
-        return False
+            self.away_state = self.ADapi.get_state(main_away_sensor, namespace = self.HASS_namespace)  == 'on'
+        return main_away_sensor
 
     def _setup_weather_sensors(self):
         self.out_temp:float = 10
