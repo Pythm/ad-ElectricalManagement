@@ -464,8 +464,6 @@ class ElectricalUsage(ad.ADBase):
                                 setattr(persisted_heater, key, main_away_sensor)
                                 value_changed = True
                                 continue
-                            else:
-                                self.ADapi.log(f"Failed to update vacation") ###
 
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
