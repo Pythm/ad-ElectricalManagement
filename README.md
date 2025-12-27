@@ -199,6 +199,8 @@ def send_notification(self, **kwargs) -> None:
         )
 ```
 
+If you use your own app the notify_overconsumption will only notify you when home. To also receive notifications when away use `notify_overconsumption_also_when_away`
+
 ---
 
 ### 🌤️ Weather Sensors
