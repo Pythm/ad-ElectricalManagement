@@ -1991,7 +1991,7 @@ class ElectricalUsage(ad.ADBase):
                     car.findNewChargeTime()
 
     def _notify_overconsumption(self, hour) -> None:
-        if self.notify_about_overconsumption:
+        if self.notify_about_overconsumption and not self.accumulated_kWh_wasUnavailable:
             self.notify_about_overconsumption = False
             if hour not in self._persistence.high_consumption.high_consumption_hours:
                 self.hour_to_add_to_high_consumption_hours = hour
