@@ -194,7 +194,6 @@ class Heater:
                 self.isSaveState = False
                 return
             else:
-                self.ADapi.log(f"Turns on {self.heater} when not away") ###
                 self.ADapi.call_service('switch/turn_on',
                     entity_id = self.heater,
                     namespace = self.namespace
@@ -210,7 +209,6 @@ class Heater:
                 (start := self.HeatAt) <= now < (end := self.EndAt)
                 or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
             ):
-                #self.ADapi.log(f"{self.heater} is on and time/price ok to keep on when away") ###
                 return
             if self.heater_data.validConsumptionSensor:
                 if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
@@ -218,15 +216,11 @@ class Heater:
                         namespace = self.namespace,
                         constrain_state=lambda x: float(x) < 20
                     )
-                    self.ADapi.log(
-                        f"Vacation heating waiting for consumption {self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)} "
-                        f"from {self.heater_data.consumptionSensor}") ###
                     return
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
             )
-            self.ADapi.log(f"Turns off {self.heater} when away") ###
 
     def turnOffHeaterAfterConsumption(self, entity, attribute, old, new, kwargs) -> None:
         """ Turns off heater after consumption is below 20W
