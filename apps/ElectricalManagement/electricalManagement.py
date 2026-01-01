@@ -614,25 +614,25 @@ class ElectricalUsage(ad.ADBase):
                 self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
                 continue
             heater_name = heater_entity.replace('switch.', '')
-            if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
+            if 'options' in switch_cfg and 'print_save_hours' in switch_cfg['options']:
                 print_save_hours = True
 
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
                 validConsumptionSensor, normal_power = _add_heater_missing(switch_cfg, heater_name, namespace, is_switch=True)
                 defaults: dict[str, Any] = {
-                    'consumptionSensor':              heater_cfg['consumptionSensor'],
+                    'consumptionSensor':              switch_cfg['consumptionSensor'],
                     'validConsumptionSensor':         validConsumptionSensor,
                     'normal_power':                   normal_power,
-                    'kWhconsumptionSensor':           heater_cfg['kWhconsumptionSensor'],
-                    'max_continuous_hours':           heater_cfg.get('max_continuous_hours',2),
-                    'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
-                    'pricedrop':                      heater_cfg.get('pricedrop',1),
-                    'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       heater_cfg.get('vacation',main_away_sensor),
-                    'automate':                       heater_cfg.get('automate',self.automate),
-                    'recipient':                      heater_cfg.get('recipient',self.recipients),
-                    'daytime_savings':                heater_cfg.get('daytime_savings',[]),
+                    'kWhconsumptionSensor':           switch_cfg['kWhconsumptionSensor'],
+                    'max_continuous_hours':           switch_cfg.get('max_continuous_hours',2),
+                    'on_for_minimum':                 switch_cfg.get('on_for_minimum',6),
+                    'pricedrop':                      switch_cfg.get('pricedrop',1),
+                    'pricedifference_increase':       switch_cfg.get('pricedifference_increase',1.07),
+                    'vacation':                       switch_cfg.get('vacation',main_away_sensor),
+                    'automate':                       switch_cfg.get('automate',self.automate),
+                    'recipient':                      switch_cfg.get('recipient',self.recipients),
+                    'daytime_savings':                switch_cfg.get('daytime_savings',[]),
                     'ConsumptionData':                {},
                     'prev_consumption':               0,
                     'time_to_save':                   [],
