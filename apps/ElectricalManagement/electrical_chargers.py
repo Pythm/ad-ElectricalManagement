@@ -1110,3 +1110,147 @@ class Onboard_charger(Charger):
         self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_sensor,
             namespace = self.namespace
         )
+
+class Audi_charger(Charger):
+    """ Audi Connect
+        Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha. Easiest installation is via HACS. """
+
+    def __init__(self, api,
+        Car,
+        namespace:str,
+        charger:str,
+        vehicle_id,
+        charger_data,
+        charging_scheduler,
+        notify_app,
+        recipients,
+    ):
+
+        self._cars:list = [Car]
+
+        super().__init__(
+            api = api,
+            namespace = namespace,
+            charger = charger,
+            charger_id = vehicle_id,
+            charger_data = charger_data,
+            charging_scheduler = charging_scheduler,
+            notify_app = notify_app,
+            recipients = recipients,
+        )
+        ### SET DEFAULT VALUES:
+        self.charger_data.voltPhase = 230
+        self.charger_data.min_ampere = 16
+        self.charger_data.ampereCharging = 16
+        self.charger_data.maxChargerAmpere = 16
+        ###
+
+        self.noPowerDetected_handler = None
+
+        Registry.set_onboard_link(Car, self)
+
+        self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_sensor,
+            namespace = self.namespace,
+            new = 'on',
+            duration = 10
+        )
+        self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_sensor,
+            namespace = self.namespace,
+            new = 'off'
+        )
+        self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_switch,
+            namespace = self.namespace
+        )
+
+        """ End initialization Audi Charger Class """
+
+    def getChargingState(self) -> str:
+        """ Returns the charging state of the charger.
+            Valid returns: 'Complete' / 'None' / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower'. 
+            States in sensor: 'notReadyForCharging' """
+
+        try:
+            state = self.ADapi.get_state(self.charger_data.charger_sensor,
+                namespace = self.namespace,
+            )
+            if state == 'Starting':
+                state = 'Charging'
+        except (ValueError, TypeError) as ve:
+            return None
+        except Exception as e:
+            self.ADapi.log(
+                f"{self.charger} Could not get charging_state from: "
+                f"{self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace)} "
+                f"Exception: {e}",
+                level = 'WARNING'
+            )
+            return None
+        # Set as connected charger if restarted after cable connected.
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+
+        if (
+            state == 'Stopped' and
+            connected_charger is None
+        ):
+            Registry.set_link(self.connected_vehicle, self)
+
+        if state == 'notReadyForCharging':
+            return 'Disconnected'
+        else:
+            self.ADapi.log(f"{self.charger} has state: {state}") ###
+        #elif not status == 'ready_to_charge':
+        #    self.ADapi.log(f"Status: {status} for {self.charger} is not defined", level = 'WARNING')
+        
+        return state
+
+    def setChargingAmps(self, charging_amp_set:int = 16) -> int:
+        """ Function to set ampere charging to received value.
+            returns actual restricted within min/max ampere. """
+
+        pass # Does not support setting ampere
+
+    def startCharging(self) -> None:
+        if super().startCharging():
+            self.start_Audi_charging()
+
+    def start_Audi_charging(self):
+        if self.connected_vehicle is not None:
+            try:
+                self.ADapi.call_service('audiconnect/execute_vehicle_action',
+                    namespace = self.namespace,
+                    vin = self.charger_id,
+                    action = "start_charger"
+                )
+                #self.ADapi.create_task(self.connected_vehicle._force_API_update())
+            except Exception as e:
+                self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
+
+    def stopCharging(self, force_stop:bool = False) -> None:
+        if super().stopCharging(force_stop = force_stop):
+            self.stop_Audi_charging()
+
+    def stop_Audi_charging(self):
+        try:
+                self.ADapi.call_service('audiconnect/execute_vehicle_action',
+                    namespace = self.namespace,
+                    vin = self.charger_id,
+                    action = "stop_charger"
+                )
+            #self.ADapi.create_task(self.connected_vehicle._force_API_update())
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
+
+    def _check_that_charging_started(self, kwargs) -> None:
+        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+        if (
+            self.getChargingState() == 'NoPower'
+            and connected_charger is self
+        ):
+            Registry.unlink_by_charger(self)
+
+        elif not super()._check_that_charging_started(0):
+            self.start_Audi_charging()
+
+    def _check_that_charging_stopped(self, kwargs) -> None:
+        if not super()._check_that_charging_stopped(0):
+            self.stop_Tesla_charging()

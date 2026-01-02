@@ -40,10 +40,10 @@ from utils import (
 from registry import Registry
 from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car
-from electrical_chargers import Charger, Tesla_charger, Easee, Onboard_charger
+from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -131,6 +131,21 @@ class ElectricalUsage(ad.ADBase):
             ('session_energy',           'sensor',        '_energy_added'),
         ]
 
+        AUDI_SPECS: List[Tuple[str, str, str]] = [
+            ('charger_sensor',           'sensor',        '_plug_state'),
+            ('charge_limit',             'sensor',        '_target_state_of_charge'),
+            ('battery_sensor',           'sensor',        '_primary_engine_percent'),
+            ('location_tracker',         'device_tracker','_position'),
+            ('data_last_update_time',    'sensor',        '_last_update'),
+        ]
+
+        AUDI_CHARGER_SPECS: List[Tuple[str, str, str]] = [
+            ('charger_sensor',           'sensor',        '_charging_state'),
+            ('charger_switch',           'binary_sensor', '_plug_state'),
+            ('charger_power',            'sensor',        '_charging_power'),
+            #('session_energy',           'sensor',        '_energy_added'),
+        ]
+
         EASEE_SPECS: List[Tuple[str, str, str]] = [
             ('charger_sensor',          'sensor',   '_status'),
             ('reason_for_no_current',   'sensor',   '_reason_for_no_current'),
@@ -187,7 +202,8 @@ class ElectricalUsage(ad.ADBase):
                         if value != cfg[key]:
                             setattr(persistent_data, key, cfg[key])
                         continue
-        
+
+        # Tesla
         for cfg in self.args.get('tesla', []):
             namespace = cfg.get('namespace', self.HASS_namespace)
 
@@ -284,6 +300,112 @@ class ElectricalUsage(ad.ADBase):
             )
             self.chargers[tesla_charger.charger_id] = tesla_charger
 
+        # Audi
+        for cfg in self.args.get('audi', []):
+            namespace = cfg.get('namespace', self.HASS_namespace)
+
+            carName = cfg.get('car')
+            if 'plug_state' in cfg and not carName:
+                sensor_id = cfg['plug_state']
+                carName = sensor_id.replace('binary_sensor.', '').replace('_plug_state', '')
+
+            persisted_car = self._persistence.car.get(carName)
+            if not persisted_car:
+                defaults: dict[str, Any] = {
+                    'charger_sensor':              cfg.get('charger_sensor', None), # _plug_state
+                    'charge_limit':                cfg.get('charge_limit', None), # _target_state_of_charge
+                    'battery_sensor':              cfg.get('battery_sensor', None), # _primary_engine_percent
+                    'asleep_sensor':               cfg.get('asleep_sensor', None),
+                    'online_sensor':               cfg.get('online_sensor', None),
+                    'location_tracker':            cfg.get('location_tracker', None), # _position # Has Vin
+                    'destination_location_tracker':cfg.get('destination_location_tracker', None),
+                    'arrival_time':                cfg.get('arrival_time', None),
+                    'software_update':             cfg.get('software_update', None),
+                    'force_data_update':           cfg.get('force_data_update', None),
+                    'polling_switch':              cfg.get('polling_switch', None),
+                    'data_last_update_time':       cfg.get('data_last_update_time', None), # _last_update
+                    'battery_size':                cfg.get('battery_size', 100),
+                    'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'priority':                    cfg.get('priority', 3),
+                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'charge_now':                  cfg.get('charge_now', False),
+                    'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
+                    'departure':                   cfg.get('departure', None),
+                    'battery_reg_counter':  0,
+                    'car_limit_max_ampere': None,
+                    'max_kWh_charged':      5,
+                    'current_charge_limit': 100,
+                    'old_charge_limit':     100,
+                    'kWh_remain_to_charge': -2,
+                    'connected_charger_id': None,
+                }
+                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                self._persistence.car[carName] = CarData(**cfg)
+
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = AUDI_SPECS,
+                                         persistent_data = self._persistence.car[carName])
+
+            _update_persistence_from_cfg(cfg = cfg,
+                                         persistent_data = self._persistence.car[carName],
+                                         common_keys = common_car_keys)
+            
+            vehicle_id = self.ADapi.get_state(car_data.location_tracker,
+                namespace = namespace,
+                attribute = 'Vin'
+            )
+            self.ADapi.log(f"id from {carName} is {vehicle_id}") ###
+
+            audi_car = Car(
+                api = self.ADapi,
+                namespace = namespace,
+                carName = carName,
+                vehicle_id = vehicle_id,
+                car_data = self._persistence.car[carName],
+                charging_scheduler = self.charging_scheduler,
+            )
+            self.cars[audi_car.vehicle_id] = audi_car
+
+            persisted_charger = self._persistence.charger.get(carName)
+            if not persisted_charger:
+                defaults: dict[str, Any] = {
+                    'charger_sensor':        cfg.get('charger_sensor'), # _charging_state
+                    'charger_switch':        cfg.get('charger_switch'), # _plug_state
+                    'charging_amps':         cfg.get('charging_amps'), 
+                    'charger_power':         cfg.get('charger_power'), # _charging_power
+                    'session_energy':        cfg.get('session_energy'),
+                    'idle_current':          False,
+                    'guest':                 False,
+                    'ampereCharging':        0.0,
+                    'min_ampere':            5,
+                    'maxChargerAmpere':      0,
+                    'volts':                 220,
+                    'phases':                1,
+                    'voltPhase':             220,
+                }
+                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                self._persistence.charger[carName] = ChargerData(**cfg)
+
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = AUDI_CHARGER_SPECS,
+                                         persistent_data = self._persistence.charger.get(carName))
+
+            audi_charger = Audi_charger(
+                api = self,
+                Car = audi_car,
+                namespace = namespace,
+                charger = carName,
+                vehicle_id = vehicle_id,
+                charger_data = self._persistence.charger[carName],
+                charging_scheduler = self.charging_scheduler,
+                notify_app = self.notify_app,
+                recipients = self.recipients,
+            )
+            self.chargers[audi_charger.charger_id] = audi_charger
+
+        # Cars
         for cfg in self.args.get('cars', []):
             namespace = cfg.get("namespace", self.HASS_namespace)
             if not 'carName' in cfg:
