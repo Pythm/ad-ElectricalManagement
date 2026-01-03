@@ -74,12 +74,12 @@ class ElectricalUsage(ad.ADBase):
         self._init_collections()
         self._setup_notify_app()
         self._setup_electricity_price()
-        
+
         self._validate_current_consumption_sensor()
         self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path', None) 
+        self.json_path = self.args.get('json_path', None)
         if self.json_path is None:
             self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
             if not os.path.exists(self.json_path):
@@ -189,7 +189,7 @@ class ElectricalUsage(ad.ADBase):
                     setattr(persistent_data, key, cfg[key])
                 else:
                     self.ADapi.log(
-                        f"Could not automatically find {key} when setting up {name} in "
+                        f"Could not automatically find {key}: {domain}.{name}{suffix}  when setting up {name} in "
                         f"{namespace} namespace. Please update your configuration with the missing sensor.",
                         level = 'INFO'
                     )
@@ -350,12 +350,11 @@ class ElectricalUsage(ad.ADBase):
             _update_persistence_from_cfg(cfg = cfg,
                                          persistent_data = self._persistence.car[carName],
                                          common_keys = common_car_keys)
-            
+
             vehicle_id = self.ADapi.get_state(self._persistence.car[carName].location_tracker,
                 namespace = namespace,
-                attribute = 'Vin'
+                attribute = 'vin'
             )
-            self.ADapi.log(f"id from {carName} is {vehicle_id}") ###
 
             audi_car = Car(
                 api = self.ADapi,
