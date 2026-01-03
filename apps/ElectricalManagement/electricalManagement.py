@@ -312,7 +312,7 @@ class ElectricalUsage(ad.ADBase):
             persisted_car = self._persistence.car.get(carName)
             if not persisted_car:
                 defaults: dict[str, Any] = {
-                    'charger_sensor':              cfg.get('charger_sensor', None), # _plug_state
+                    'charger_sensor':              cfg.get('plug_state', None), # _plug_state
                     'charge_limit':                cfg.get('charge_limit', None), # _target_state_of_charge
                     'battery_sensor':              cfg.get('battery_sensor', None), # _primary_engine_percent
                     'asleep_sensor':               cfg.get('asleep_sensor', None),
@@ -351,7 +351,7 @@ class ElectricalUsage(ad.ADBase):
                                          persistent_data = self._persistence.car[carName],
                                          common_keys = common_car_keys)
             
-            vehicle_id = self.ADapi.get_state(car_data.location_tracker,
+            vehicle_id = self.ADapi.get_state(self._persistence.car[carName].location_tracker,
                 namespace = namespace,
                 attribute = 'Vin'
             )
