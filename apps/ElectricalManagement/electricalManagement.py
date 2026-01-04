@@ -791,8 +791,11 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = print_save_hours,
             )
             self.heaters.append(switch)
-        
+
         self._refresh_heaters()
+        for heater in self._persistence.heater.values():
+            heater.sort_temperatures()
+
         self.ADapi.run_in(self._create_runners, 60)
         self.ADapi.run_in(self._get_new_prices, 60)
 

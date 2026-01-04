@@ -72,6 +72,11 @@ class HeaterBlock(BaseModel):
     prev_consumption: float = 0.0
     time_to_save: List[PeakHour] = Field(default_factory=list)
 
+    def sort_temperatures(self) -> None:
+        """Sort the `temperatures` list by the `out` key. """
+        if not self.temperatures:
+            return
+        self.temperatures.sort(key=lambda d: d.get('out', float('-inf')))
 
 class ChargerData(BaseModel):
     # Sensors:
