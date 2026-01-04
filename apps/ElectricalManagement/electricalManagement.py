@@ -730,6 +730,7 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = print_save_hours,
             )
             self.heaters.append(climate)
+            climate.out_temp = self._persistence.weather.out_temp
 
 
         for switch_cfg in self.args.get('heater_switches', []):
@@ -913,7 +914,6 @@ class ElectricalUsage(ad.ADBase):
         return main_vacation_sensor
 
     def _setup_weather_sensors(self):
-        self.out_temp:float = 10
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.HASS_namespace)
 
     def _create_runners(self, kwargs):
@@ -1771,7 +1771,7 @@ class ElectricalUsage(ad.ADBase):
 
     def get_idle_and_heater_consumption(self) -> Tuple[float | None, float | None]:
         data = self._persistence.idle_usage.ConsumptionData
-        tmp  = get_consumption_for_outside_temp(data, self.out_temp)
+        tmp  = get_consumption_for_outside_temp(data, self._persistence.weather.out_temp)
         if tmp is None:
             return None, None
         try:
@@ -1852,7 +1852,7 @@ class ElectricalUsage(ad.ADBase):
         reduce_avg_idle_watt   = 1.0
         idle_block = persistence.idle_usage
         if idle_block and idle_block.ConsumptionData:
-            idle_consumption = get_consumption_for_outside_temp(idle_block.ConsumptionData, self.out_temp)
+            idle_consumption = get_consumption_for_outside_temp(idle_block.ConsumptionData, self._persistence.weather.out_temp)
             if idle_consumption:
                 reduce_avg_heater_watt = float(idle_consumption.HeaterConsumption or 0)
                 reduce_avg_idle_watt   = float(idle_consumption.Consumption or 0)
@@ -1891,7 +1891,7 @@ class ElectricalUsage(ad.ADBase):
                         continue
                     nested = heater_block.ConsumptionData[closest]
 
-                temp_consumption = get_consumption_for_outside_temp(nested, self.out_temp)
+                temp_consumption = get_consumption_for_outside_temp(nested, self._persistence.weather.out_temp)
                 if temp_consumption is None:
                     continue
 
@@ -1899,7 +1899,7 @@ class ElectricalUsage(ad.ADBase):
                     expected_kwh = float(temp_consumption.Consumption or 0) * 1000
                 except Exception:
                     temp_keys = [int(k) for k in nested.keys()]
-                    closest_temp = closest_value(data = temp_keys, target = self.out_temp)
+                    closest_temp = closest_value(data = temp_keys, target = self._persistence.weather.out_temp)
                     if closest_temp is None:
                         continue
                     expected_kwh = float(nested[closest_temp].Consumption or 0) * 1000
@@ -1956,7 +1956,7 @@ class ElectricalUsage(ad.ADBase):
         if idle_consumption <= 0:
             return
 
-        out_temp_even = floor_even(self.out_temp)
+        out_temp_even = floor_even(self._persistence.weather.out_temp)
         consumption_dict = self._persistence.idle_usage.ConsumptionData
 
         if out_temp_even in consumption_dict:
@@ -2065,7 +2065,7 @@ class ElectricalUsage(ad.ADBase):
     def weather_event(self, event_name, data, **kwargs) -> None:
         """ Listens for weather change from the weather app """
 
-        self.out_temp = float(data['temp'])
+        self._persistence.weather.out_temp = float(data['temp'])
 
     def _refresh_heaters(self) -> None:
         """Remove orphan heater blocks and recompute the total wattage."""

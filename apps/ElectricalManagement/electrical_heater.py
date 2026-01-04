@@ -146,6 +146,7 @@ class Heater:
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Turns heater on or off based on this hours electricity price.
         """
+        self.ADapi.log(f"Set values for {self.heater}") ###
         isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
         now = self.ADapi.datetime(aware = True)
 

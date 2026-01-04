@@ -35,6 +35,8 @@ class PeakHour(BaseModel):
     end: datetime
     duration: timedelta
 
+class WeatherData(BaseModel):
+    out_temp: float = 10.0
 
 class HeaterBlock(BaseModel):
     heater: str | None = None
@@ -173,6 +175,7 @@ class PersistenceData(BaseModel):
     queueChargingList: List[Any] = Field(alias="queueChargingList", default_factory=list)
     solarChargingList: List[Any] = Field(alias="solarChargingList", default_factory=list)
     available_watt: List[WattSlot] = Field(alias="available_watt", default_factory=list)
+    weather: WeatherData = Field(default_factory=WeatherData)
 
     model_config = {
         "arbitrary_types_allowed": True,
