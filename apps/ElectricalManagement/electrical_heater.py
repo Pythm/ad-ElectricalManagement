@@ -203,15 +203,15 @@ class Heater:
                 self.isSaveState = False
                 return
         elif(
-            isOn
-            and self.HeatAt is not None
-            and self.vacation_state
+            isOn and
+            self.vacation_state and
+            (self.HeatAt is not None or self.heater_data.vacation_keep_off)
         ):
             if (
                 (start := self.HeatAt) <= now < (end := self.EndAt)
                 or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
             ):
-                if self.heater_data.vacation_keep_off:
+                if not self.heater_data.vacation_keep_off:
                     return
             if self.heater_data.validConsumptionSensor:
                 if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
