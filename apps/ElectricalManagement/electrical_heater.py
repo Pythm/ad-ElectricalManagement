@@ -197,11 +197,8 @@ class Heater:
             self.isSaveState = True
             return
         elif not isOn:
-            if (
-                self.HeatAt is not None
-                and self.vacation_state
-            ):
-                if not self.heater_data.vacation_keep_off:
+            if self.vacation_state:
+                if not self.heater_data.vacation_keep_off and self.HeatAt is not None:
                     if (
                         (start := self.HeatAt) <= now < (end := self.EndAt)
                         or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
@@ -210,7 +207,7 @@ class Heater:
                             entity_id = self.heater,
                             namespace = self.namespace
                         )
-                    self.isSaveState = False
+                        self.isSaveState = False
                 return
             else:
                 self.ADapi.call_service('switch/turn_on',
@@ -495,7 +492,7 @@ class Heater:
         """ Return the index of the *last* temperature entry whose ``out`` value
         is less-than or equal to ``self.out_temp``. """
 
-        if not out_values:
+        if not self.heater_data.temperatures:
             return 0
 
         out_values = [t['out'] for t in self.heater_data.temperatures]
