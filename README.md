@@ -11,6 +11,44 @@ The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
+### **v1.0.2** – “away” → “vacation”
+
+Renamed the **away** temperature mode to **vacation**:
+
+| Old name | New name | Reason |
+|----------|----------|--------|
+| `away`   | `vacation` | Keeps terminology consistent and matches the word we actually use for the same concept |
+
+> ⚠️ **If you’re still using the old `away` or `away_temp` key it will be ignored.**  
+> Update your config to avoid unexpected behaviour.
+
+---
+
+#### Setting a global vacation temperature
+
+You can set a single temperature that will use the offset from out temp:
+
+```yaml
+vacation_temp: 13
+temperatures:
+  - out:  3
+    offset: 0.5
+  - out:  7
+    offset: 0
+  - out: 10
+    offset: -1
+```
+
+Or you can define a vacation temp for each outdoor temperature to gain more control:
+```yaml
+      temperatures:
+        - out: -4
+          normal: 20
+          save: 13
+          vacation: 14
+```
+
+
 ### **1.0.0** - A complete rewrite
 Please update all configurations in the breaking change upgrading to version 1.0.0 or later from earlier versions.
 
