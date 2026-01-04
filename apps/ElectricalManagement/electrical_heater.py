@@ -759,7 +759,6 @@ class Climate(Heater):
         elif self.vacation_state:
             if self.heater_data.vacation_keep_off:
                 self.turn_off_heater()
-                self.ADapi.log(f"Turns off {self.heater} from vacation keep off") ###
                 return
             new_temperature = vacation_temp
 
