@@ -57,6 +57,7 @@ class HeaterBlock(BaseModel):
     save_temp_offset: Optional[float] = None
     save_temp: Optional[int] = None
     vacation_temp: Optional[int] = None
+    vacation_keep_off: bool = False
     rain_level: Optional[float] = None
     anemometer_speed: Optional[float] = None
     getting_cold: Optional[int] = 18

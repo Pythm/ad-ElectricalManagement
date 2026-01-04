@@ -659,14 +659,13 @@ class ElectricalUsage(ad.ADBase):
         for heater_cfg in self.args.get('climate', []):
             namespace = heater_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = heater_cfg.get('heater')
-            print_save_hours = False
+
             if not heater_entity:
                 self.ADapi.log(f"Skipping heater entry {heater_cfg} no heater given", level='WARNING')
                 continue
             heater_name = heater_entity.replace('climate.', '')
-            if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
-                print_save_hours = True
 
+            print_save_hours = False
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
                 normal_power = 0.0
@@ -710,9 +709,15 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = True
 
             value_changed = _merge_heater_cfg(heater_cfg, persisted_heater)
-            value_changed = _merge_climate_cfg(heater_cfg, persisted_heater)
-            if value_changed:
+            value_change2 = _merge_climate_cfg(heater_cfg, persisted_heater)
+            if value_changed or value_change2:
                 print_save_hours = True
+
+            if 'options' in heater_cfg:
+                if 'print_save_hours' in heater_cfg['options']:
+                    print_save_hours = True
+                if 'vacation_keep_off' in heater_cfg['options']:
+                    self._persistence.heater[heater_entity].vacation_keep_off = True
 
             climate = Climate(
                 api = self.ADapi,
@@ -730,14 +735,13 @@ class ElectricalUsage(ad.ADBase):
         for switch_cfg in self.args.get('heater_switches', []):
             namespace = switch_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = switch_cfg.get('switch')
-            print_save_hours = False
+
             if not heater_entity:
                 self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
                 continue
             heater_name = heater_entity.replace('switch.', '')
-            if 'options' in switch_cfg and 'print_save_hours' in switch_cfg['options']:
-                print_save_hours = True
 
+            print_save_hours = False
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
                 validConsumptionSensor, normal_power = _add_heater_missing(switch_cfg, heater_name, namespace, is_switch=True)
@@ -768,6 +772,12 @@ class ElectricalUsage(ad.ADBase):
             value_changed = _merge_heater_cfg(switch_cfg, persisted_heater)
             if value_changed:
                 print_save_hours = True
+
+            if 'options' in switch_cfg:
+                if 'print_save_hours' in switch_cfg['options']:
+                    print_save_hours = True
+                if 'vacation_keep_off' in switch_cfg['options']:
+                    self._persistence.heater[heater_entity].vacation_keep_off = True
 
             switch = On_off_switch(
                 api = self.ADapi,

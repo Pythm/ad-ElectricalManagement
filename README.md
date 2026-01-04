@@ -499,8 +499,14 @@ Spending hours occur before price increases and the temperature is increased to 
 
 ### 🏖️ Vacation State
 
-Turns down temperature to `vacation` setting. Uses the default vacation switch if left blank.
+Turns down temperature to `vacation` setting. Heater uses the default vacation switch if not configured for heater.
 
+You can define `vacation_keep_off`in options to keep the switch / climate off during vacation.
+
+```yaml
+      options:
+        - vacation_keep_off
+```
 ---
 
 ### 🪟 Window Sensors

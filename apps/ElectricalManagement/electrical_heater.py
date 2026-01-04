@@ -124,6 +124,7 @@ class Heater:
             self.vacation_state
             and (self.HeatAt is None
             or self.electricalPriceApp.tomorrow_valid)
+            and not self.heater_data.vacation_keep_off
         ):
             self.HeatAt, self.EndAt, self.price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
                 hoursTotal = 2,
@@ -183,15 +184,16 @@ class Heater:
                 self.HeatAt is not None
                 and self.vacation_state
             ):
-                if (
-                    (start := self.HeatAt) <= now < (end := self.EndAt)
-                    or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-                ):
-                    self.ADapi.call_service('switch/turn_on',
-                        entity_id = self.heater,
-                        namespace = self.namespace
-                    )
-                self.isSaveState = False
+                if not self.heater_data.vacation_keep_off:
+                    if (
+                        (start := self.HeatAt) <= now < (end := self.EndAt)
+                        or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
+                    ):
+                        self.ADapi.call_service('switch/turn_on',
+                            entity_id = self.heater,
+                            namespace = self.namespace
+                        )
+                    self.isSaveState = False
                 return
             else:
                 self.ADapi.call_service('switch/turn_on',
@@ -209,7 +211,8 @@ class Heater:
                 (start := self.HeatAt) <= now < (end := self.EndAt)
                 or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
             ):
-                return
+                if self.heater_data.vacation_keep_off:
+                    return
             if self.heater_data.validConsumptionSensor:
                 if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
                     self.ADapi.listen_state(self.turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
@@ -482,7 +485,7 @@ class Climate(Heater):
         electricalPriceApp,
         charging_scheduler,
         notify_app,
-        print_save_hours
+        print_save_hours,
     ):
 
         # Sensors
@@ -754,6 +757,10 @@ class Climate(Heater):
 
         # Holliday temperature
         elif self.vacation_state:
+            if self.heater_data.vacation_keep_off:
+                self.turn_off_heater()
+                self.ADapi.log(f"Turns off {self.heater} from vacation keep off") ###
+                return
             new_temperature = vacation_temp
 
         # Peak and savings temperature
@@ -846,7 +853,7 @@ class On_off_switch(Heater):
         electricalPriceApp,
         charging_scheduler,
         notify_app,
-        print_save_hours
+        print_save_hours,
     ):
 
         super().__init__(
