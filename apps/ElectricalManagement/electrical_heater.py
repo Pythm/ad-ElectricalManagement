@@ -601,21 +601,31 @@ class Climate(Heater):
         """ Set heater to save state when overconsumption.
         """
         self.isOverconsumption = True
-        if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'heat':
+        if self.ADapi.get_state(self.heater, namespace = self.namespace) in ('heat', 'cool'):
             target_num = self.find_target_temperatures()
             target_temp = self.heater_data.temperatures[target_num]
+
             if self.heater_data.save_temp is not None:
                 save_temp = self.heater_data.save_temp + target_temp['offset']
             elif 'save' in target_temp:
                 save_temp = target_temp['save']
             else:
                 save_temp = 10
+
+            if self.heater_data.vacation_temp is not None:
+                vacation_temp = self.heater_data.vacation_temp + target_temp['offset']
+            elif 'vacation' in target_temp:
+                vacation_temp = target_temp['vacation']
+            else:
+                vacation_temp = 10
+
+            new_temp = min(save_temp, vacation_temp)
             try:
                 if float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='temperature')) > save_temp:
                     self.ADapi.call_service('climate/set_temperature',
                         namespace = self.namespace,
                         entity_id = self.heater,
-                        temperature = save_temp
+                        temperature = new_temp
                     )
             except (TypeError, AttributeError) as ve:
                 self.ADapi.call_service('climate/set_temperature',
@@ -643,12 +653,6 @@ class Climate(Heater):
             self.ADapi.log(
                 f"Error when trying to get currently set temperature to {self.heater}: {ve}",
                 level = 'DEBUG'
-            )
-            heater_temp = self.target_indoor_temp
-        except Exception as e:
-            self.ADapi.log(
-                f"Error when trying to get currently set temperature to {self.heater}. Exception: {e}",
-                level = 'INFO'
             )
             heater_temp = self.target_indoor_temp
 
@@ -686,10 +690,10 @@ class Climate(Heater):
 
         if self.heater_data.vacation_temp is not None:
             vacation_temp = self.heater_data.vacation_temp + target_temp['offset']
-        elif 'away' in target_temp:
-            vacation_temp = target_temp['away']
+        elif 'vacation' in target_temp:
+            vacation_temp = target_temp['vacation']
         else:
-            vacation_temp = 5
+            vacation_temp = 10
 
         # Adjust temperature based on weather
         if self.rain_amount >= self.heater_data.rain_level:
