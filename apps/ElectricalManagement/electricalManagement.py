@@ -101,7 +101,7 @@ class ElectricalUsage(ad.ADBase):
             available_watt = self._persistence.available_watt,
         )
 
-        main_away_sensor = self._get_vacation_state()
+        main_vacation_sensor = self._get_vacation_state()
         self.automate = self.args.get('automate', True) # Default Automate switch for all heaters
         self._setup_weather_sensors()
 
@@ -582,7 +582,7 @@ class ElectricalUsage(ad.ADBase):
                     if key == 'vacation': ### Temporary fix wrongly set vacation in persistence
                         if isinstance(value, bool) or value is None:
                             if key not in heater_cfg or heater_cfg[key] is None:
-                                setattr(persisted_heater, key, main_away_sensor)
+                                setattr(persisted_heater, key, main_vacation_sensor)
                                 value_changed = True
                                 continue
 
@@ -680,7 +680,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
                     'pricedrop':                      heater_cfg.get('pricedrop',1),
                     'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       heater_cfg.get('vacation',main_away_sensor),
+                    'vacation':                       heater_cfg.get('vacation',main_vacation_sensor),
                     'automate':                       heater_cfg.get('automate',self.automate),
                     'recipient':                      heater_cfg.get('recipient',self.recipients),
                     'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
@@ -750,7 +750,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 switch_cfg.get('on_for_minimum',6),
                     'pricedrop':                      switch_cfg.get('pricedrop',1),
                     'pricedifference_increase':       switch_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       switch_cfg.get('vacation',main_away_sensor),
+                    'vacation':                       switch_cfg.get('vacation',main_vacation_sensor),
                     'automate':                       switch_cfg.get('automate',self.automate),
                     'recipient':                      switch_cfg.get('recipient',self.recipients),
                     'daytime_savings':                switch_cfg.get('daytime_savings',[]),
@@ -891,16 +891,16 @@ class ElectricalUsage(ad.ADBase):
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
 
     def _get_vacation_state(self) -> str:
-        main_away_sensor = self.args.get('away_state') or self.args.get('vacation')
-        if not main_away_sensor and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
-            main_away_sensor = 'input_boolean.vacation'
+        main_vacation_sensor = self.args.get('away_state') or self.args.get('vacation')
+        if not main_vacation_sensor and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
+            main_vacation_sensor = 'input_boolean.vacation'
 
         # Set up listener for state changes
-        if main_away_sensor:
-            self.ADapi.listen_state(self._awayStateListen_Main, main_away_sensor,
+        if main_vacation_sensor:
+            self.ADapi.listen_state(self._awayStateListen_Main, main_vacation_sensor,
                 namespace=self.HASS_namespace)
-            self.away_state = self.ADapi.get_state(main_away_sensor, namespace = self.HASS_namespace)  == 'on'
-        return main_away_sensor
+            self.vacation_state = self.ADapi.get_state(main_vacation_sensor, namespace = self.HASS_namespace)  == 'on'
+        return main_vacation_sensor
 
     def _setup_weather_sensors(self):
         self.out_temp:float = 10
@@ -1031,7 +1031,7 @@ class ElectricalUsage(ad.ADBase):
             self.checkIdleConsumption_Handler = None
 
         if (
-            not self.away_state
+            not self.vacation_state
             and self.ADapi.now_is_between('00:00:00', '03:30:00')
             and not self._persistence.queueChargingList
         ):
@@ -1323,7 +1323,7 @@ class ElectricalUsage(ad.ADBase):
                     car.connected_charger._CleanUpWhenChargingStopped()
                     if (
                         len(self.charging_scheduler.chargingQueue) == 0 and
-                        not self.away_state and
+                        not self.vacation_state and
                         self.ADapi.now_is_between('01:00:00', '05:00:00')
                     ):
                         if self.charging_scheduler.findNextChargerToStart(check_if_charging_time = check_if_charging_time) is None:
@@ -1790,7 +1790,7 @@ class ElectricalUsage(ad.ADBase):
         hoursOffInt = 0
         now_notAware = self.ADapi.datetime()
 
-        if not heater.away_state:
+        if not heater.vacation_state:
             for daytime in heater.heater_data.daytime_savings:
                 if 'start' in daytime and 'stop' in daytime:
                     if not 'presence' in daytime:
@@ -2169,7 +2169,7 @@ class ElectricalUsage(ad.ADBase):
     def _awayStateListen_Main(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch """
 
-        self.away_state = new == 'on'
+        self.vacation_state = new == 'on'
 
 
 class Notify_Mobiles:

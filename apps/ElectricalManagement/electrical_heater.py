@@ -43,12 +43,12 @@ class Heater:
 
         # Vacation setup
         if self.heater_data.vacation is not None and self.ADapi.entity_exists(self.heater_data.vacation, namespace = self.namespace):
-            self.away_state = self.ADapi.get_state(self.heater_data.vacation, namespace = self.namespace)  == 'on'
+            self.vacation_state = self.ADapi.get_state(self.heater_data.vacation, namespace = self.namespace)  == 'on'
             self.ADapi.listen_state(self._awayStateListen_Heater, self.heater_data.vacation,
                 namespace = self.namespace
             )
         else:
-            self.away_state = False
+            self.vacation_state = False
 
         # Automate setup
         if isinstance(self.heater_data.automate, str):
@@ -98,7 +98,7 @@ class Heater:
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch and requests heater to set new state
         """
-        self.away_state = new == 'on'
+        self.vacation_state = new == 'on'
         self.heater_setNewValues()
 
     def automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -121,7 +121,7 @@ class Heater:
             previous_save_hours = self.heater_data.time_to_save
         )
         if (
-            self.away_state
+            self.vacation_state
             and (self.HeatAt is None
             or self.electricalPriceApp.tomorrow_valid)
         ):
@@ -133,7 +133,7 @@ class Heater:
                 stopAtPriceIncrease = 0.01
             )
 
-        elif not self.away_state:
+        elif not self.vacation_state:
             self.HeatAt = None
             self.EndAt = None
 
@@ -181,7 +181,7 @@ class Heater:
         elif not isOn:
             if (
                 self.HeatAt is not None
-                and self.away_state
+                and self.vacation_state
             ):
                 if (
                     (start := self.HeatAt) <= now < (end := self.EndAt)
@@ -203,7 +203,7 @@ class Heater:
         elif(
             isOn
             and self.HeatAt is not None
-            and self.away_state
+            and self.vacation_state
         ):
             if (
                 (start := self.HeatAt) <= now < (end := self.EndAt)
@@ -304,7 +304,7 @@ class Heater:
         if (
             (self.ADapi.get_state(self.heater, namespace = self.namespace) != 'off' or
             self.isOverconsumption)
-            and not self.away_state
+            and not self.vacation_state
             and self.automate
         ):
             kWh_consumption = self.get_heater_kWh_consumption()
@@ -552,7 +552,7 @@ class Climate(Heater):
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch and requests heater to set new state
         """
-        self.away_state = new == 'on'
+        self.vacation_state = new == 'on'
         if (
             self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
             and new == 'off'
@@ -753,7 +753,7 @@ class Climate(Heater):
                 self.notify_on_window_open = False
 
         # Holliday temperature
-        elif self.away_state:
+        elif self.vacation_state:
             new_temperature = vacation_temp
 
         # Peak and savings temperature
