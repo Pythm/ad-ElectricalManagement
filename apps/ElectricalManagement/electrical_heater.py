@@ -207,11 +207,11 @@ class Heater:
             self.vacation_state and
             (self.HeatAt is not None or self.heater_data.vacation_keep_off)
         ):
-            if (
-                (start := self.HeatAt) <= now < (end := self.EndAt)
-                or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-            ):
-                if not self.heater_data.vacation_keep_off:
+            if self.HeatAt is not None:
+                if (
+                    (start := self.HeatAt) <= now < (end := self.EndAt)
+                    or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
+                ):
                     return
             if self.heater_data.validConsumptionSensor:
                 if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
