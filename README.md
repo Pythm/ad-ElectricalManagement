@@ -11,6 +11,44 @@ The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
+### **v1.0.2** – “away” → “vacation”
+
+Renamed the **away** temperature mode to **vacation**:
+
+| Old name | New name | Reason |
+|----------|----------|--------|
+| `away`   | `vacation` | Keeps terminology consistent and matches the word we actually use for the same concept |
+
+> ⚠️ **If you’re still using the old `away` or `away_temp` key it will be ignored.**  
+> Update your config to avoid unexpected behaviour.
+
+---
+
+#### Setting a global vacation temperature
+
+You can set a single temperature that will use the offset from out temp:
+
+```yaml
+vacation_temp: 13
+temperatures:
+  - out:  3
+    offset: 0.5
+  - out:  7
+    offset: 0
+  - out: 10
+    offset: -1
+```
+
+Or you can define a vacation temp for each outdoor temperature to gain more control:
+```yaml
+      temperatures:
+        - out: -4
+          normal: 20
+          save: 13
+          vacation: 14
+```
+
+
 ### **1.0.0** - A complete rewrite
 Please update all configurations in the breaking change upgrading to version 1.0.0 or later from earlier versions.
 
@@ -411,11 +449,11 @@ The climate is programmed to react to outdoor conditions configured with [Weathe
 
 The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. Version 0.1.5 introduces additional ways to set climate temperatures.
 
-Easiest way is to define `offset` ± degrees based on outside temperature. The offset also applies to `save_temp` and `away_temp`. Alternative to save temp you can define saving temperature with a `save_temp_offset` if you are using an input_number to set target.
+Easiest way is to define `offset` ± degrees based on outside temperature. The offset also applies to `save_temp` and `vacation_temp`. Alternative to save temp you can define saving temperature with a `save_temp_offset` if you are using an input_number to set target.
 
 ```yaml
       save_temp_offset: -0.5
-      away_temp: 13
+      vacation_temp: 13
       temperatures:
         - out: 3
           offset: 0.5
@@ -425,14 +463,14 @@ Easiest way is to define `offset` ± degrees based on outside temperature. The o
           offset: -1
 ```
 
-If you like to have more control over the save and away temperatures you can build your dictionary this way. This includes a `normal` operations temperature, an `away` setting for vacations, and a `save` mode for when electricity prices are high.
+If you like to have more control over the save and away temperatures you can build your dictionary this way. This includes a `normal` operations temperature, an `vacation` setting for vacations, and a `save` mode for when electricity prices are high.
 
 ```yaml
       temperatures:
         - out: -4
           normal: 20
           save: 13
-          away: 14
+          vacation: 14
 ```
 
 > [!TIP]  
@@ -461,13 +499,19 @@ Spending hours occur before price increases and the temperature is increased to 
 
 ### 🏖️ Vacation State
 
-Turns down temperature to `away` setting. Uses the default vacation switch if left blank.
+Turns down temperature to `vacation` setting. Heater uses the default vacation switch if not configured for heater.
 
+You can define `vacation_keep_off`in options to keep the switch / climate off during vacation.
+
+```yaml
+      options:
+        - vacation_keep_off
+```
 ---
 
 ### 🪟 Window Sensors
 
-The app will set the climate temperature to the `away` setting for as long as windows are open. It will also notify if the indoor temperature drops below the `normal` threshold. You can also specify a temperature threshold with `getting_cold` to only get notifications if a window is open and the temperature outside is below getting cold. This defaults to 18 degrees.
+The app will lower the climate temperature for as long as windows are open. It will also notify if the indoor temperature drops below the `getting_cold` threshold. The threshold defaults to 18 degrees.
 
 Define a window temperature sensor as `window_temp` to react quicker to sunny days and turn down heating before it gets too hot, with `window_offset` as an offset from target temperature. This is default to -3.
 
@@ -508,7 +552,7 @@ Define climate entity with `heater`.
       target_indoor_temp: 23
       save_temp_offset: -3
       save_temp: 12
-      away_temp: 13
+      vacation_temp: 13
       rain_level: 3
       anemometer_speed: 40
       low_price_max_continuous_hours: 3
@@ -632,7 +676,7 @@ electricity:
       target_indoor_temp: 23
       save_temp_offset: -3
       save_temp: 12
-      away_temp: 13
+      vacation_temp: 13
       rain_level: 3
       anemometer_speed: 40
       low_price_max_continuous_hours: 3

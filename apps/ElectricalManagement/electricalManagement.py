@@ -40,10 +40,10 @@ from utils import (
 from registry import Registry
 from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car
-from electrical_chargers import Charger, Tesla_charger, Easee, Onboard_charger
+from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -74,12 +74,12 @@ class ElectricalUsage(ad.ADBase):
         self._init_collections()
         self._setup_notify_app()
         self._setup_electricity_price()
-        
+
         self._validate_current_consumption_sensor()
         self._validate_accumulated_consumption_current_hour()
         self._setup_power_production_sensors()
 
-        self.json_path = self.args.get('json_path', None) 
+        self.json_path = self.args.get('json_path', None)
         if self.json_path is None:
             self.json_path:str = f"{self.AD.config_dir}/persistent/electricity/"
             if not os.path.exists(self.json_path):
@@ -101,7 +101,7 @@ class ElectricalUsage(ad.ADBase):
             available_watt = self._persistence.available_watt,
         )
 
-        main_away_sensor = self._get_vacation_state()
+        main_vacation_sensor = self._get_vacation_state()
         self.automate = self.args.get('automate', True) # Default Automate switch for all heaters
         self._setup_weather_sensors()
 
@@ -129,6 +129,21 @@ class ElectricalUsage(ad.ADBase):
             ('charging_amps',            'number',        '_charging_amps'),
             ('charger_power',            'sensor',        '_charger_power'),
             ('session_energy',           'sensor',        '_energy_added'),
+        ]
+
+        AUDI_SPECS: List[Tuple[str, str, str]] = [
+            ('charger_sensor',           'sensor',        '_plug_state'),
+            ('charge_limit',             'sensor',        '_target_state_of_charge'),
+            ('battery_sensor',           'sensor',        '_primary_engine_percent'),
+            ('location_tracker',         'device_tracker','_position'),
+            ('data_last_update_time',    'sensor',        '_last_update'),
+        ]
+
+        AUDI_CHARGER_SPECS: List[Tuple[str, str, str]] = [
+            ('charger_sensor',           'sensor',        '_charging_state'),
+            ('charger_switch',           'binary_sensor', '_plug_state'),
+            ('charger_power',            'sensor',        '_charging_power'),
+            #('session_energy',           'sensor',        '_energy_added'),
         ]
 
         EASEE_SPECS: List[Tuple[str, str, str]] = [
@@ -174,7 +189,7 @@ class ElectricalUsage(ad.ADBase):
                     setattr(persistent_data, key, cfg[key])
                 else:
                     self.ADapi.log(
-                        f"Could not automatically find {key} when setting up {name} in "
+                        f"Could not automatically find {key}: {domain}.{name}{suffix}  when setting up {name} in "
                         f"{namespace} namespace. Please update your configuration with the missing sensor.",
                         level = 'INFO'
                     )
@@ -187,7 +202,8 @@ class ElectricalUsage(ad.ADBase):
                         if value != cfg[key]:
                             setattr(persistent_data, key, cfg[key])
                         continue
-        
+
+        # Tesla
         for cfg in self.args.get('tesla', []):
             namespace = cfg.get('namespace', self.HASS_namespace)
 
@@ -284,6 +300,111 @@ class ElectricalUsage(ad.ADBase):
             )
             self.chargers[tesla_charger.charger_id] = tesla_charger
 
+        # Audi
+        for cfg in self.args.get('audi', []):
+            namespace = cfg.get('namespace', self.HASS_namespace)
+
+            carName = cfg.get('car')
+            if 'plug_state' in cfg and not carName:
+                sensor_id = cfg['plug_state']
+                carName = sensor_id.replace('binary_sensor.', '').replace('_plug_state', '')
+
+            persisted_car = self._persistence.car.get(carName)
+            if not persisted_car:
+                defaults: dict[str, Any] = {
+                    'charger_sensor':              cfg.get('plug_state', None), # _plug_state
+                    'charge_limit':                cfg.get('charge_limit', None), # _target_state_of_charge
+                    'battery_sensor':              cfg.get('battery_sensor', None), # _primary_engine_percent
+                    'asleep_sensor':               cfg.get('asleep_sensor', None),
+                    'online_sensor':               cfg.get('online_sensor', None),
+                    'location_tracker':            cfg.get('location_tracker', None), # _position # Has Vin
+                    'destination_location_tracker':cfg.get('destination_location_tracker', None),
+                    'arrival_time':                cfg.get('arrival_time', None),
+                    'software_update':             cfg.get('software_update', None),
+                    'force_data_update':           cfg.get('force_data_update', None),
+                    'polling_switch':              cfg.get('polling_switch', None),
+                    'data_last_update_time':       cfg.get('data_last_update_time', None), # _last_update
+                    'battery_size':                cfg.get('battery_size', 100),
+                    'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'priority':                    cfg.get('priority', 3),
+                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'charge_now':                  cfg.get('charge_now', False),
+                    'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
+                    'departure':                   cfg.get('departure', None),
+                    'battery_reg_counter':  0,
+                    'car_limit_max_ampere': None,
+                    'max_kWh_charged':      5,
+                    'current_charge_limit': 100,
+                    'old_charge_limit':     100,
+                    'kWh_remain_to_charge': -2,
+                    'connected_charger_id': None,
+                }
+                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                self._persistence.car[carName] = CarData(**cfg)
+
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = AUDI_SPECS,
+                                         persistent_data = self._persistence.car[carName])
+
+            _update_persistence_from_cfg(cfg = cfg,
+                                         persistent_data = self._persistence.car[carName],
+                                         common_keys = common_car_keys)
+
+            vehicle_id = self.ADapi.get_state(self._persistence.car[carName].location_tracker,
+                namespace = namespace,
+                attribute = 'vin'
+            )
+
+            audi_car = Car(
+                api = self.ADapi,
+                namespace = namespace,
+                carName = carName,
+                vehicle_id = vehicle_id,
+                car_data = self._persistence.car[carName],
+                charging_scheduler = self.charging_scheduler,
+            )
+            self.cars[audi_car.vehicle_id] = audi_car
+
+            persisted_charger = self._persistence.charger.get(carName)
+            if not persisted_charger:
+                defaults: dict[str, Any] = {
+                    'charger_sensor':        cfg.get('charger_sensor'), # _charging_state
+                    'charger_switch':        cfg.get('charger_switch'), # _plug_state
+                    'charging_amps':         cfg.get('charging_amps'), 
+                    'charger_power':         cfg.get('charger_power'), # _charging_power
+                    'session_energy':        cfg.get('session_energy'),
+                    'idle_current':          False,
+                    'guest':                 False,
+                    'ampereCharging':        0.0,
+                    'min_ampere':            5,
+                    'maxChargerAmpere':      0,
+                    'volts':                 220,
+                    'phases':                1,
+                    'voltPhase':             220,
+                }
+                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
+                self._persistence.charger[carName] = ChargerData(**cfg)
+
+            merge_config_with_persistent(cfg = cfg,
+                                         name = carName,
+                                         specs = AUDI_CHARGER_SPECS,
+                                         persistent_data = self._persistence.charger.get(carName))
+
+            audi_charger = Audi_charger(
+                api = self,
+                Car = audi_car,
+                namespace = namespace,
+                charger = carName,
+                vehicle_id = vehicle_id,
+                charger_data = self._persistence.charger[carName],
+                charging_scheduler = self.charging_scheduler,
+                notify_app = self.notify_app,
+                recipients = self.recipients,
+            )
+            self.chargers[audi_charger.charger_id] = audi_charger
+
+        # Cars
         for cfg in self.args.get('cars', []):
             namespace = cfg.get("namespace", self.HASS_namespace)
             if not 'carName' in cfg:
@@ -461,7 +582,7 @@ class ElectricalUsage(ad.ADBase):
                     if key == 'vacation': ### Temporary fix wrongly set vacation in persistence
                         if isinstance(value, bool) or value is None:
                             if key not in heater_cfg or heater_cfg[key] is None:
-                                setattr(persisted_heater, key, main_away_sensor)
+                                setattr(persisted_heater, key, main_vacation_sensor)
                                 value_changed = True
                                 continue
 
@@ -538,14 +659,13 @@ class ElectricalUsage(ad.ADBase):
         for heater_cfg in self.args.get('climate', []):
             namespace = heater_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = heater_cfg.get('heater')
-            print_save_hours = False
+
             if not heater_entity:
                 self.ADapi.log(f"Skipping heater entry {heater_cfg} no heater given", level='WARNING')
                 continue
             heater_name = heater_entity.replace('climate.', '')
-            if 'options' in heater_cfg and 'print_save_hours' in heater_cfg['options']:
-                print_save_hours = True
 
+            print_save_hours = False
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
                 normal_power = 0.0
@@ -559,7 +679,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 heater_cfg.get('on_for_minimum',6),
                     'pricedrop':                      heater_cfg.get('pricedrop',1),
                     'pricedifference_increase':       heater_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       heater_cfg.get('vacation',main_away_sensor),
+                    'vacation':                       heater_cfg.get('vacation',main_vacation_sensor),
                     'automate':                       heater_cfg.get('automate',self.automate),
                     'recipient':                      heater_cfg.get('recipient',self.recipients),
                     'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
@@ -589,9 +709,15 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = True
 
             value_changed = _merge_heater_cfg(heater_cfg, persisted_heater)
-            value_changed = _merge_climate_cfg(heater_cfg, persisted_heater)
-            if value_changed:
+            value_change2 = _merge_climate_cfg(heater_cfg, persisted_heater)
+            if value_changed or value_change2:
                 print_save_hours = True
+
+            if 'options' in heater_cfg:
+                if 'print_save_hours' in heater_cfg['options']:
+                    print_save_hours = True
+                if 'vacation_keep_off' in heater_cfg['options']:
+                    self._persistence.heater[heater_entity].vacation_keep_off = True
 
             climate = Climate(
                 api = self.ADapi,
@@ -609,14 +735,13 @@ class ElectricalUsage(ad.ADBase):
         for switch_cfg in self.args.get('heater_switches', []):
             namespace = switch_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = switch_cfg.get('switch')
-            print_save_hours = False
+
             if not heater_entity:
                 self.ADapi.log(f"No switch found for heater switch {switch_cfg}", level='WARNING')
                 continue
             heater_name = heater_entity.replace('switch.', '')
-            if 'options' in switch_cfg and 'print_save_hours' in switch_cfg['options']:
-                print_save_hours = True
 
+            print_save_hours = False
             persisted_heater = self._persistence.heater.get(heater_entity)
             if not persisted_heater:
                 validConsumptionSensor, normal_power = _add_heater_missing(switch_cfg, heater_name, namespace, is_switch=True)
@@ -629,7 +754,7 @@ class ElectricalUsage(ad.ADBase):
                     'on_for_minimum':                 switch_cfg.get('on_for_minimum',6),
                     'pricedrop':                      switch_cfg.get('pricedrop',1),
                     'pricedifference_increase':       switch_cfg.get('pricedifference_increase',1.07),
-                    'vacation':                       switch_cfg.get('vacation',main_away_sensor),
+                    'vacation':                       switch_cfg.get('vacation',main_vacation_sensor),
                     'automate':                       switch_cfg.get('automate',self.automate),
                     'recipient':                      switch_cfg.get('recipient',self.recipients),
                     'daytime_savings':                switch_cfg.get('daytime_savings',[]),
@@ -647,6 +772,12 @@ class ElectricalUsage(ad.ADBase):
             value_changed = _merge_heater_cfg(switch_cfg, persisted_heater)
             if value_changed:
                 print_save_hours = True
+
+            if 'options' in switch_cfg:
+                if 'print_save_hours' in switch_cfg['options']:
+                    print_save_hours = True
+                if 'vacation_keep_off' in switch_cfg['options']:
+                    self._persistence.heater[heater_entity].vacation_keep_off = True
 
             switch = On_off_switch(
                 api = self.ADapi,
@@ -770,16 +901,16 @@ class ElectricalUsage(ad.ADBase):
             self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
 
     def _get_vacation_state(self) -> str:
-        main_away_sensor = self.args.get('away_state') or self.args.get('vacation')
-        if not main_away_sensor and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
-            main_away_sensor = 'input_boolean.vacation'
+        main_vacation_sensor = self.args.get('away_state') or self.args.get('vacation')
+        if not main_vacation_sensor and self.ADapi.entity_exists('input_boolean.vacation', namespace = self.HASS_namespace):
+            main_vacation_sensor = 'input_boolean.vacation'
 
         # Set up listener for state changes
-        if main_away_sensor:
-            self.ADapi.listen_state(self._awayStateListen_Main, main_away_sensor,
+        if main_vacation_sensor:
+            self.ADapi.listen_state(self._awayStateListen_Main, main_vacation_sensor,
                 namespace=self.HASS_namespace)
-            self.away_state = self.ADapi.get_state(main_away_sensor, namespace = self.HASS_namespace)  == 'on'
-        return main_away_sensor
+            self.vacation_state = self.ADapi.get_state(main_vacation_sensor, namespace = self.HASS_namespace)  == 'on'
+        return main_vacation_sensor
 
     def _setup_weather_sensors(self):
         self.out_temp:float = 10
@@ -910,7 +1041,7 @@ class ElectricalUsage(ad.ADBase):
             self.checkIdleConsumption_Handler = None
 
         if (
-            not self.away_state
+            not self.vacation_state
             and self.ADapi.now_is_between('00:00:00', '03:30:00')
             and not self._persistence.queueChargingList
         ):
@@ -1202,7 +1333,7 @@ class ElectricalUsage(ad.ADBase):
                     car.connected_charger._CleanUpWhenChargingStopped()
                     if (
                         len(self.charging_scheduler.chargingQueue) == 0 and
-                        not self.away_state and
+                        not self.vacation_state and
                         self.ADapi.now_is_between('01:00:00', '05:00:00')
                     ):
                         if self.charging_scheduler.findNextChargerToStart(check_if_charging_time = check_if_charging_time) is None:
@@ -1669,7 +1800,7 @@ class ElectricalUsage(ad.ADBase):
         hoursOffInt = 0
         now_notAware = self.ADapi.datetime()
 
-        if not heater.away_state:
+        if not heater.vacation_state:
             for daytime in heater.heater_data.daytime_savings:
                 if 'start' in daytime and 'stop' in daytime:
                     if not 'presence' in daytime:
@@ -2048,7 +2179,7 @@ class ElectricalUsage(ad.ADBase):
     def _awayStateListen_Main(self, entity, attribute, old, new, kwargs) -> None:
         """ Listen for changes in vacation switch """
 
-        self.away_state = new == 'on'
+        self.vacation_state = new == 'on'
 
 
 class Notify_Mobiles:
