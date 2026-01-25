@@ -445,7 +445,7 @@ If the heater does not have a consumption sensor, you can input its `power` in w
 
 ### 🌡️ Temperatures
 
-The climate is programmed to react to outdoor conditions configured with [Weather Sensors](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#weather-sensors). It's also recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. With that you can set a target, either with `target_indoor_temp` as an integer, or `target_indoor_input` as an Home Assistant input_number helper.
+The climate is programmed to react to outdoor conditions configured with [Weather Sensors](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#weather-sensors). It's also recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. With that you can set a indoor target, either with `target_indoor_temp` as an integer, or `target_indoor_input` as an Home Assistant input_number helper. As of version 1.0.3 you can also set a `target_heater_temp` to set the target the heater will adjust to. This is useful if you need a higher set temperature in the heater that the room measures. This can also be set with a Home Assistant helper `target_heater_input`.
 
 The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. Version 0.1.5 introduces additional ways to set climate temperatures.
 
@@ -549,7 +549,8 @@ Define climate entity with `heater`.
       window_temp: sensor.window_air_temperature
       window_offset: -3
       target_indoor_input: input_number.HA_input_number
-      target_indoor_temp: 23
+      target_indoor_temp: 24.2
+      target_heater_temp: 28
       save_temp_offset: -3
       save_temp: 12
       vacation_temp: 13
