@@ -762,7 +762,6 @@ class Climate(Heater):
                 adjust = float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset))
 
         if in_temp > self.target_indoor_temp:
-            self.ADapi.log(f"{self.heater} in temp: {in_temp} adjusts {adjust} + {float(in_temp - self.target_indoor_temp)} new temp: {new_temperature}") ###
             adjust = min(adjust + float(in_temp - self.target_indoor_temp), 3)
         new_temperature -= adjust
 
