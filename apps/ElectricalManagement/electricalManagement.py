@@ -43,7 +43,7 @@ from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -598,13 +598,26 @@ class ElectricalUsage(ad.ADBase):
             value_changed = False
             if persisted_heater:
                 climate_keys = [
-                    'indoor_sensor_temp', 'target_indoor_input','target_indoor_temp', 'window_temp',
-                    'window_offset', 'save_temp_offset', 'save_temp', 'vacation_temp',
-                    'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease', 'windowsensors',
-                    'daytime_savings', 'temperatures'
+                    'indoor_sensor_temp', 'target_indoor_input', 'target_indoor_temp', 'target_heater_input',
+                    'target_heater_temp', 'window_temp', 'window_offset', 'save_temp_offset', 'save_temp',
+                    'vacation_temp', 'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease',
+                    'windowsensors', 'daytime_savings', 'temperatures'
                 ]
                 for key in climate_keys:
                     value = getattr(persisted_heater, key, None)
+                    if key == 'target_heater_input' and 'target_indoor_input' in heater_cfg: ### New Key in version 1.0.3
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['target_indoor_input'])
+                                value_changed = True
+
+                                continue
+                    if key == 'target_heater_temp' and 'target_indoor_temp' in heater_cfg: ### New Key in version 1.0.3
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['target_indoor_temp'])
+                                value_changed = True
+                                continue
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
                             setattr(persisted_heater, key, heater_cfg[key])
@@ -685,6 +698,8 @@ class ElectricalUsage(ad.ADBase):
                     'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
                     'target_indoor_input':            heater_cfg.get('target_indoor_input',None),
                     'target_indoor_temp':             heater_cfg.get('target_indoor_temp',23),
+                    'target_heater_input':            heater_cfg.get('target_heater_input',None),
+                    'target_heater_temp':             heater_cfg.get('target_heater_temp',23),
                     'window_temp':                    heater_cfg.get('window_temp',None),
                     'window_offset':                  heater_cfg.get('window_offset',-3),
                     'save_temp_offset':               heater_cfg.get('save_temp_offset',None),

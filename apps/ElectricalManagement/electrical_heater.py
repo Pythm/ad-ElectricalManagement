@@ -529,10 +529,16 @@ class Heater:
 
         return current_target_temp
 
-    def updateTarget(self, entity, attribute, old, new, kwargs):
+    def updateIndoorTarget(self, entity, attribute, old, new, kwargs):
         """ Reacts to target temperature for room beening updated. """
 
         self.target_indoor_temp = float(new)
+        self.heater_setNewValues()
+
+    def updateHeaterTarget(self, entity, attribute, old, new, kwargs):
+        """ Reacts to target temperature for room beening updated. """
+
+        self.target_heater_temp = float(new)
         self.heater_setNewValues()
 
     def weather_event(self, event_name, data, **kwargs) -> None:
@@ -559,13 +565,20 @@ class Climate(Heater):
 
         # Sensors
         if heater_data.target_indoor_input is not None:
-            api.listen_state(self.updateTarget, heater_data.target_indoor_input,
+            api.listen_state(self.updateIndoorTarget, heater_data.target_indoor_input,
                 namespace = namespace
             )
             self.target_indoor_temp = float(api.get_state(heater_data.target_indoor_input, namespace = namespace))
         else:
             self.target_indoor_temp:float = heater_data.target_indoor_temp
 
+        if heater_data.target_heater_input is not None:
+            api.listen_state(self.updateHeaterTarget, heater_data.target_heater_input,
+                namespace = namespace
+            )
+            self.target_heater_temp = float(api.get_state(heater_data.target_heater_input, namespace = namespace))
+        else:
+            self.target_heater_temp:float = heater_data.target_heater_temp
         super().__init__(
             api = api,
             namespace = namespace,
@@ -647,11 +660,11 @@ class Climate(Heater):
             target_temp = self.heater_data.temperatures[target_num]
 
             if 'offset' in target_temp:
-                new_temperature = self.target_indoor_temp + target_temp['offset']
+                new_temperature = self.target_heater_temp + target_temp['offset']
             elif 'normal' in target_temp:
                 new_temperature = target_temp['normal']
             else:
-                new_temperature = self.target_indoor_temp
+                new_temperature = self.target_heater_temp
 
             save_temp = self.getSaveTemp(current_target_temp = new_temperature,
                                          target_temp = target_temp)
@@ -695,20 +708,19 @@ class Climate(Heater):
                 f"Error when trying to get currently set temperature to {self.heater}: {ve}",
                 level = 'DEBUG'
             )
-            heater_temp = self.target_indoor_temp
+            heater_temp = self.target_heater_temp
 
         in_temp:float = -50
+        in_temp_set:bool = False
         if self.heater_data.indoor_sensor_temp is not None:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater_data.indoor_sensor_temp, namespace = self.namespace))
             except (TypeError, AttributeError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
-            except Exception as e:
-                self.ADapi.log(
-                    f"Not able to get new inside temperature from {self.heater_data.indoor_sensor_temp}. Error: {e}",
-                    level = 'DEBUG'
-                )
-        if in_temp == -50:
+            else:
+                in_temp_set = True
+
+        if self.heater_data.indoor_sensor_temp is None or not in_temp_set:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='current_temperature'))
                 self.ADapi.log(
@@ -718,16 +730,14 @@ class Climate(Heater):
                 )
             except (TypeError, AttributeError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline. Error: {te}", level = 'DEBUG')
-            except Exception as e:
-                self.ADapi.log(f"Not able to get new inside temperature from {self.heater}. {e}", level = 'WARNING')
 
         # Set Target temperatures
         if 'offset' in target_temp:
-            new_temperature = self.target_indoor_temp + target_temp['offset']
+            new_temperature = self.target_heater_temp + target_temp['offset']
         elif 'normal' in target_temp:
             new_temperature = target_temp['normal']
         else:
-            new_temperature = self.target_indoor_temp
+            new_temperature = self.target_heater_temp
 
         vacation_temp = self.getVacationTemp(current_target_temp = new_temperature,
                                              target_temp = target_temp)
@@ -743,17 +753,17 @@ class Climate(Heater):
             try:
                 window_temp = float(self.ADapi.get_state(self.heater_data.window_temp, namespace = self.namespace))
             except (TypeError, AttributeError):
-                window_temp = self.target_indoor_temp + self.heater_data.window_offset
+                window_temp = self.target_heater_temp + self.heater_data.window_offset
                 self.ADapi.log(f"{self.heater_data.window_temp} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
-                window_temp = self.target_indoor_temp + self.heater_data.window_offset
+                window_temp = self.target_heater_temp + self.heater_data.window_offset
                 self.ADapi.log(f"Not able to get temperature from {self.heater_data.window_temp}. {e}", level = 'DEBUG')
             if window_temp > self.target_indoor_temp + self.heater_data.window_offset:
-                adjust = math.floor(float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset)))
+                adjust = float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset))
 
         if in_temp > self.target_indoor_temp:
-            adjust += math.floor(float(in_temp - self.target_indoor_temp))
-        
+            self.ADapi.log(f"{self.heater} in temp: {in_temp} adjusts {adjust} + {float(in_temp - self.target_indoor_temp)} new temp: {new_temperature}") ###
+            adjust = min(adjust + float(in_temp - self.target_indoor_temp), 3)
         new_temperature -= adjust
 
         # Windows
@@ -848,7 +858,7 @@ class Climate(Heater):
                 self.ADapi.call_service('climate/set_temperature',
                     namespace = self.namespace,
                     entity_id = self.heater,
-                    temperature = new_temperature
+                    temperature = round(new_temperature * 2, 0) / 2
                 )
         except (TypeError, AttributeError):
             self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
