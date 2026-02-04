@@ -60,6 +60,7 @@ class Scheduler:
             )
 
         idx_start = bisect.bisect_left([s.start for s in self.available_watt], self.save_endHour)
+        self.ADapi.log(f"idx: {idx_start} for available: {self.available_watt}") ###
 
         wh_remaining = kWhRemaining * 1_000
         hours_to_charge = 0.0
@@ -79,11 +80,14 @@ class Scheduler:
             else:
                 wh_remaining -= usable_wh
                 hours_to_charge += slot.duration_hours
+            self.ADapi.log(f"Checked {hours_to_charge} in {slot}") ###
 
         if wh_remaining > 0 and self.available_watt:
             last = self.available_watt[-1]
-            extra = (wh_remaining / last.available_Wh) * last.duration_hours
-            hours_to_charge += extra
+            self.ADapi.log(f"Ran out of available consumption? {wh_remaining} remaining after {hours_to_charge} hours. Last is {last}") ###
+            if last.available_Wh > 0:
+                extra = (wh_remaining / last.available_Wh) * last.duration_hours
+                hours_to_charge += extra
 
         return hours_to_charge
 

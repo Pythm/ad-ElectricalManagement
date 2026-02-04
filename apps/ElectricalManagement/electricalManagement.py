@@ -10,6 +10,7 @@ import math
 import json
 import os
 import importlib.util
+import copy
 
 import bisect
 from datetime import timedelta
@@ -1188,12 +1189,15 @@ class ElectricalUsage(ad.ADBase):
             and remaining_minute <= 40
             and self.available_Wh < -200
         ):
-            if self.pause_charging:
-                if self._stop_chargers_due_to_overconsumption():
-                    return
+            if self.current_consumption > (self._persistence.max_usage.max_kwh_usage_pr_hour * 1000):
+                self.checkHighUsage()
+            else:
+                if self.pause_charging:
+                    if self._stop_chargers_due_to_overconsumption():
+                        return
 
-            if self.notify_overconsumption:
-                self._notify_overconsumption(hour = now.hour)
+                if self.notify_overconsumption:
+                    self._notify_overconsumption(hour = now.hour)
 
 
     def _act_heaters_reduced(self) -> None:
@@ -2077,6 +2081,37 @@ class ElectricalUsage(ad.ADBase):
                 level = 'INFO'
             )
 
+    def checkHighUsage(self) -> None:
+        """ Updates top three max kWh usage pr hour """
+
+        newTotal = 0.0
+        max_kwh_usage_top = copy.deepcopy(self._persistence.max_usage.topUsage)
+        newTopUsage:float = 0
+
+        try:
+            newTopUsage = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
+        except (ValueError, TypeError) as ve:
+            self.ADapi.log(
+                f"Not able to set new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
+                f"ValueError: {ve}",
+                level = 'WARNING'
+            )
+            return
+        
+        if newTopUsage > max_kwh_usage_top[0]:
+            max_kwh_usage_top[0] = newTopUsage
+            for num in max_kwh_usage_top:
+                newTotal += num
+            avg_top_usage = newTotal / 3
+
+            if avg_top_usage > self._persistence.max_usage.max_kwh_usage_pr_hour:
+                self._persistence.max_usage.max_kwh_usage_pr_hour += 5
+                self.ADapi.log(
+                    f"Avg consumption during one hour is now {round(avg_top_usage, 3)} kWh and surpassed max kWh set. "
+                    f"New max kWh usage during one hour set to {self._persistence.max_usage.max_kwh_usage_pr_hour}. "
+                    "If this is not expected try to increase buffer.",
+                    level = 'WARNING'
+                )
 
     # Weather sensors
 
@@ -2144,6 +2179,7 @@ class ElectricalUsage(ad.ADBase):
             self.notify_about_overconsumption = False
             if hour not in self._persistence.high_consumption.high_consumption_hours:
                 self.hour_to_add_to_high_consumption_hours = hour
+                # TODO: Add option to increase max kwh for this month
                 data = {'tag': 'overconsumption',
                         'actions' : [{ 'action' : 'add_high_consumption_hours',
                         'title' : f'Add Hour {hour} to High Consumption'
