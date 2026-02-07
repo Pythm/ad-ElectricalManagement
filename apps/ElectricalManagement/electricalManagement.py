@@ -1858,8 +1858,6 @@ class ElectricalUsage(ad.ADBase):
     def calculateIdleConsumption(self, kwargs: dict) -> None:
         """Build the per_hour available_wh schedule """
 
-        persistence = self._persistence
-
         now = self.ADapi.datetime(aware = True)
         save_end_hour = now.replace(minute = 0, second = 0, microsecond = 0)
         duration_hours = 1
@@ -1867,12 +1865,12 @@ class ElectricalUsage(ad.ADBase):
         slots: List[WattSlot] = []
         for item in self.electricalPriceApp.elpricestoday:
             duration_hours = (item.end - item.start).total_seconds() / 3600.0
-            base_wh = persistence.max_usage.max_kwh_usage_pr_hour * 1_000 * duration_hours
+            base_wh = self._persistence.max_usage.max_kwh_usage_pr_hour * 1_000 * duration_hours
             slots.append(WattSlot(start=item.start, end=item.end, available_Wh=base_wh))
 
         reduce_avg_heater_watt = 1.0
         reduce_avg_idle_watt   = 1.0
-        idle_block = persistence.idle_usage
+        idle_block = self._persistence.idle_usage
         if idle_block and idle_block.ConsumptionData:
             idle_consumption = get_consumption_for_outside_temp(idle_block.ConsumptionData, self._persistence.weather.out_temp)
             if idle_consumption:
@@ -1883,7 +1881,7 @@ class ElectricalUsage(ad.ADBase):
                     s.available_Wh -= idle_val
 
         total_power = self.totalWattAllHeaters or 1.0
-        for heater_id, heater_block in persistence.heater.items():
+        for heater_id, heater_block in self._persistence.heater.items():
             if not heater_block or not heater_block.ConsumptionData:
                 continue
 
@@ -1949,9 +1947,9 @@ class ElectricalUsage(ad.ADBase):
                         remaining = 0.0
                         break
 
-        self.charging_scheduler.save_endHour   = save_end_hour
-        persistence.available_watt = slots
-
+        self.charging_scheduler.save_endHour = save_end_hour
+        self._persistence.available_watt.clear()
+        self._persistence.available_watt.extend(slots)
 
     def logIdleConsumption(self, kwargs) -> None:
         """ Calculate the new idle & heater consumption values for the *current* outside temperature """
@@ -2122,13 +2120,13 @@ class ElectricalUsage(ad.ADBase):
 
     def _refresh_heaters(self) -> None:
         """Remove orphan heater blocks and recompute the total wattage."""
-        persistence = self._persistence
+
         heaters_to_remove = []
 
         total_power = 0.0
         active_names = {h.heater for h in self.heaters}
 
-        for heater_name, heater_block in list(persistence.heater.items()):
+        for heater_name, heater_block in list(self._persistence.heater.items()):
             if heater_block.normal_power:
                 total_power += heater_block.normal_power
 
@@ -2137,7 +2135,7 @@ class ElectricalUsage(ad.ADBase):
 
         if heaters_to_remove:
             for key in heaters_to_remove:
-                del persistence.heater[key]
+                del self._persistence.heater[key]
 
         self.totalWattAllHeaters = total_power
 
