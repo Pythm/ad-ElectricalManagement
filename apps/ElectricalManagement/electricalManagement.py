@@ -1101,10 +1101,15 @@ class ElectricalUsage(ad.ADBase):
         self.projected_kWh_usage = self._calc_projected_kWh_usage(now)
         self.available_Wh = self._calc_available_Wh(now)
 
+        sub_wh = 0
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
             sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
-            self.available_Wh -= sub_wh
-            self.max_target_kWh_buffer -= (sub_wh / 10000)
+        else:
+            sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            if sub_wh > 500:
+                sub_wh = 500
+        self.available_Wh -= sub_wh
+        self.max_target_kWh_buffer -= (sub_wh / 10000)
 
         self._dispatch_decision()
 
@@ -1158,13 +1163,13 @@ class ElectricalUsage(ad.ADBase):
         minute = now.minute
         remaining_minute = 60 - minute
         reduce_Wh:float = 0.0
+        
 
-        if (
-            self.available_Wh > -800
-            and remaining_minute > 15
-            and not self.heatersRedusedConsumption
-        ):
-            return
+        if self.available_Wh > -800 and not self.heatersRedusedConsumption:
+            if self.max_target_kWh_buffer > 0 and remaining_minute > 15:
+                return
+            if self.max_target_kWh_buffer > -0.5 and minute < 6:
+                return
 
         if self._update_ChargingQueue(charging_list = self._persistence.queueChargingList):
             reduce_Wh, self.available_Wh = self._get_heaters_reduced_previous_consumption(avail = self.available_Wh)

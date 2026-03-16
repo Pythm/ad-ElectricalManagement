@@ -82,7 +82,6 @@ class Scheduler:
 
         if wh_remaining > 0 and self.available_watt:
             last = self.available_watt[-1]
-            self.ADapi.log(f"Ran out of available consumption? {wh_remaining} remaining after {hours_to_charge} hours. Last is {last}") ###
             if last.available_Wh > 0:
                 extra = (wh_remaining / last.available_Wh) * last.duration_hours
                 hours_to_charge += extra
@@ -363,8 +362,9 @@ class Scheduler:
                             simultaneous_charge = []
 
         if simultaneous_charge:
-            self.calcSimultaneousCharge(simultaneous_charge)
-            self.simultaneousChargeComplete.extend(simultaneous_charge)
+            if len(simultaneous_charge) > 1:
+                self.calcSimultaneousCharge(simultaneous_charge)
+                self.simultaneousChargeComplete.extend(simultaneous_charge)
 
     def calcSimultaneousCharge(self, simultaneous_charge: List[str]) -> None:
         """ Re-calculate the charging window for a group of vehicles that must run
@@ -375,19 +375,22 @@ class Scheduler:
         total_w_all_chargers = 0.0
         start_time = self.ADapi.datetime(aware=True)
 
-        for c in self.chargingQueue:
-            if c.vehicle_id in simultaneous_charge:
-                kWh_to_charge += c.kWhRemaining
-                total_w_all_chargers += c.maxAmps * c.voltPhase
+        simultaneous_items = [c for c in self.chargingQueue if c.vehicle_id in simultaneous_charge]
 
-                if c.finish_by_hour > finish_by_hour:
-                    if finish_by_hour == 0:
-                        finish_by_hour = c.finish_by_hour
-                    else:
-                        finish_by_hour += c.estHourCharge
+        simultaneous_items.sort(key=lambda c: c.priority)
 
-                if c.chargingStart is not None:
-                    start_time = c.chargingStart
+        for c in simultaneous_items:
+            kWh_to_charge += c.kWhRemaining
+            total_w_all_chargers += c.maxAmps * c.voltPhase
+
+            if c.finish_by_hour > finish_by_hour:
+                if finish_by_hour == 0:
+                    finish_by_hour = c.finish_by_hour
+                else:
+                    finish_by_hour += c.estHourCharge
+
+            if c.chargingStart is not None:
+                start_time = c.chargingStart
 
         hours_to_charge = self._calculate_expected_chargetime(
             kWhRemaining=kWh_to_charge,
@@ -395,11 +398,7 @@ class Scheduler:
             start_time=start_time,
         )
 
-        (
-            charging_at,
-            charging_stop,
-            price,
-        ) = self.electricalPriceApp.get_Continuous_Cheapest_Time(
+        charging_at, charging_stop, price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
             hoursTotal=hours_to_charge,
             calculateBeforeNextDayPrices=False,
             finishByHour=finish_by_hour,
@@ -407,12 +406,15 @@ class Scheduler:
             stopAtPriceIncrease=self.stopAtPriceIncrease,
         )
 
+        start_this_charger_at = charging_at
         if charging_stop is not None:
-            for c in self.chargingQueue:
-                if c.vehicle_id in simultaneous_charge:
-                    c.chargingStart = charging_at
-                    c.chargingStop = charging_stop
-                    c.price = price
+            for c in simultaneous_items:
+                c.chargingStart = charging_at
+                c.chargingStop = charging_stop
+                c.price = price
+                estMinutesToCharge = int(math.ceil(c.estHourCharge * 60))
+                c.estimateStop = start_this_charger_at + timedelta(minutes = estMinutesToCharge)
+                start_this_charger_at = c.estimateStop
 
     def notifyChargeTime(self, kwargs) -> None:
         """ Sends notifications and updates infotext with charging times and prices """
