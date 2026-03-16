@@ -10,6 +10,7 @@ import math
 import json
 import os
 import importlib.util
+import copy
 
 import bisect
 from datetime import timedelta
@@ -43,7 +44,7 @@ from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -598,13 +599,26 @@ class ElectricalUsage(ad.ADBase):
             value_changed = False
             if persisted_heater:
                 climate_keys = [
-                    'indoor_sensor_temp', 'target_indoor_input','target_indoor_temp', 'window_temp',
-                    'window_offset', 'save_temp_offset', 'save_temp', 'vacation_temp',
-                    'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease', 'windowsensors',
-                    'daytime_savings', 'temperatures'
+                    'indoor_sensor_temp', 'target_indoor_input', 'target_indoor_temp', 'target_heater_input',
+                    'target_heater_temp', 'window_temp', 'window_offset', 'save_temp_offset', 'save_temp',
+                    'vacation_temp', 'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease',
+                    'windowsensors', 'daytime_savings', 'temperatures'
                 ]
                 for key in climate_keys:
                     value = getattr(persisted_heater, key, None)
+                    if key == 'target_heater_input' and 'target_indoor_input' in heater_cfg: ### New Key in version 1.0.3
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['target_indoor_input'])
+                                value_changed = True
+
+                                continue
+                    if key == 'target_heater_temp' and 'target_indoor_temp' in heater_cfg: ### New Key in version 1.0.3
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['target_indoor_temp'])
+                                value_changed = True
+                                continue
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
                             setattr(persisted_heater, key, heater_cfg[key])
@@ -685,6 +699,8 @@ class ElectricalUsage(ad.ADBase):
                     'indoor_sensor_temp':             heater_cfg.get('indoor_sensor_temp',None),
                     'target_indoor_input':            heater_cfg.get('target_indoor_input',None),
                     'target_indoor_temp':             heater_cfg.get('target_indoor_temp',23),
+                    'target_heater_input':            heater_cfg.get('target_heater_input',None),
+                    'target_heater_temp':             heater_cfg.get('target_heater_temp',23),
                     'window_temp':                    heater_cfg.get('window_temp',None),
                     'window_offset':                  heater_cfg.get('window_offset',-3),
                     'save_temp_offset':               heater_cfg.get('save_temp_offset',None),
@@ -730,6 +746,7 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = print_save_hours,
             )
             self.heaters.append(climate)
+            climate.out_temp = self._persistence.weather.out_temp
 
 
         for switch_cfg in self.args.get('heater_switches', []):
@@ -790,8 +807,11 @@ class ElectricalUsage(ad.ADBase):
                 print_save_hours = print_save_hours,
             )
             self.heaters.append(switch)
-        
+
         self._refresh_heaters()
+        for heater in self._persistence.heater.values():
+            heater.sort_temperatures()
+
         self.ADapi.run_in(self._create_runners, 60)
         self.ADapi.run_in(self._get_new_prices, 60)
 
@@ -913,7 +933,6 @@ class ElectricalUsage(ad.ADBase):
         return main_vacation_sensor
 
     def _setup_weather_sensors(self):
-        self.out_temp:float = 10
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.HASS_namespace)
 
     def _create_runners(self, kwargs):
@@ -1082,10 +1101,15 @@ class ElectricalUsage(ad.ADBase):
         self.projected_kWh_usage = self._calc_projected_kWh_usage(now)
         self.available_Wh = self._calc_available_Wh(now)
 
+        sub_wh = 0
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
             sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
-            self.available_Wh -= sub_wh
-            self.max_target_kWh_buffer -= (sub_wh / 10000)
+        else:
+            sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            if sub_wh > 500:
+                sub_wh = 500
+        self.available_Wh -= sub_wh
+        self.max_target_kWh_buffer -= (sub_wh / 10000)
 
         self._dispatch_decision()
 
@@ -1139,13 +1163,13 @@ class ElectricalUsage(ad.ADBase):
         minute = now.minute
         remaining_minute = 60 - minute
         reduce_Wh:float = 0.0
+        
 
-        if (
-            self.available_Wh > -800
-            and remaining_minute > 15
-            and not self.heatersRedusedConsumption
-        ):
-            return
+        if self.available_Wh > -800 and not self.heatersRedusedConsumption:
+            if self.max_target_kWh_buffer > 0 and remaining_minute > 15:
+                return
+            if self.max_target_kWh_buffer > -0.5 and minute < 6:
+                return
 
         if self._update_ChargingQueue(charging_list = self._persistence.queueChargingList):
             reduce_Wh, self.available_Wh = self._get_heaters_reduced_previous_consumption(avail = self.available_Wh)
@@ -1170,12 +1194,15 @@ class ElectricalUsage(ad.ADBase):
             and remaining_minute <= 40
             and self.available_Wh < -200
         ):
-            if self.pause_charging:
-                if self._stop_chargers_due_to_overconsumption():
-                    return
+            if self.current_consumption > (self._persistence.max_usage.max_kwh_usage_pr_hour * 1000):
+                self.checkHighUsage()
+            else:
+                if self.pause_charging:
+                    if self._stop_chargers_due_to_overconsumption():
+                        return
 
-            if self.notify_overconsumption:
-                self._notify_overconsumption(hour = now.hour)
+                if self.notify_overconsumption:
+                    self._notify_overconsumption(hour = now.hour)
 
 
     def _act_heaters_reduced(self) -> None:
@@ -1771,7 +1798,7 @@ class ElectricalUsage(ad.ADBase):
 
     def get_idle_and_heater_consumption(self) -> Tuple[float | None, float | None]:
         data = self._persistence.idle_usage.ConsumptionData
-        tmp  = get_consumption_for_outside_temp(data, self.out_temp)
+        tmp  = get_consumption_for_outside_temp(data, self._persistence.weather.out_temp)
         if tmp is None:
             return None, None
         try:
@@ -1836,8 +1863,6 @@ class ElectricalUsage(ad.ADBase):
     def calculateIdleConsumption(self, kwargs: dict) -> None:
         """Build the per_hour available_wh schedule """
 
-        persistence = self._persistence
-
         now = self.ADapi.datetime(aware = True)
         save_end_hour = now.replace(minute = 0, second = 0, microsecond = 0)
         duration_hours = 1
@@ -1845,14 +1870,14 @@ class ElectricalUsage(ad.ADBase):
         slots: List[WattSlot] = []
         for item in self.electricalPriceApp.elpricestoday:
             duration_hours = (item.end - item.start).total_seconds() / 3600.0
-            base_wh = persistence.max_usage.max_kwh_usage_pr_hour * 1_000 * duration_hours
+            base_wh = self._persistence.max_usage.max_kwh_usage_pr_hour * 1_000 * duration_hours
             slots.append(WattSlot(start=item.start, end=item.end, available_Wh=base_wh))
 
         reduce_avg_heater_watt = 1.0
         reduce_avg_idle_watt   = 1.0
-        idle_block = persistence.idle_usage
+        idle_block = self._persistence.idle_usage
         if idle_block and idle_block.ConsumptionData:
-            idle_consumption = get_consumption_for_outside_temp(idle_block.ConsumptionData, self.out_temp)
+            idle_consumption = get_consumption_for_outside_temp(idle_block.ConsumptionData, self._persistence.weather.out_temp)
             if idle_consumption:
                 reduce_avg_heater_watt = float(idle_consumption.HeaterConsumption or 0)
                 reduce_avg_idle_watt   = float(idle_consumption.Consumption or 0)
@@ -1861,7 +1886,7 @@ class ElectricalUsage(ad.ADBase):
                     s.available_Wh -= idle_val
 
         total_power = self.totalWattAllHeaters or 1.0
-        for heater_id, heater_block in persistence.heater.items():
+        for heater_id, heater_block in self._persistence.heater.items():
             if not heater_block or not heater_block.ConsumptionData:
                 continue
 
@@ -1891,7 +1916,7 @@ class ElectricalUsage(ad.ADBase):
                         continue
                     nested = heater_block.ConsumptionData[closest]
 
-                temp_consumption = get_consumption_for_outside_temp(nested, self.out_temp)
+                temp_consumption = get_consumption_for_outside_temp(nested, self._persistence.weather.out_temp)
                 if temp_consumption is None:
                     continue
 
@@ -1899,7 +1924,7 @@ class ElectricalUsage(ad.ADBase):
                     expected_kwh = float(temp_consumption.Consumption or 0) * 1000
                 except Exception:
                     temp_keys = [int(k) for k in nested.keys()]
-                    closest_temp = closest_value(data = temp_keys, target = self.out_temp)
+                    closest_temp = closest_value(data = temp_keys, target = self._persistence.weather.out_temp)
                     if closest_temp is None:
                         continue
                     expected_kwh = float(nested[closest_temp].Consumption or 0) * 1000
@@ -1927,9 +1952,9 @@ class ElectricalUsage(ad.ADBase):
                         remaining = 0.0
                         break
 
-        self.charging_scheduler.save_endHour   = save_end_hour
-        persistence.available_watt = slots
-
+        self.charging_scheduler.save_endHour = save_end_hour
+        self._persistence.available_watt.clear()
+        self._persistence.available_watt.extend(slots)
 
     def logIdleConsumption(self, kwargs) -> None:
         """ Calculate the new idle & heater consumption values for the *current* outside temperature """
@@ -1956,7 +1981,7 @@ class ElectricalUsage(ad.ADBase):
         if idle_consumption <= 0:
             return
 
-        out_temp_even = floor_even(self.out_temp)
+        out_temp_even = floor_even(self._persistence.weather.out_temp)
         consumption_dict = self._persistence.idle_usage.ConsumptionData
 
         if out_temp_even in consumption_dict:
@@ -2059,23 +2084,54 @@ class ElectricalUsage(ad.ADBase):
                 level = 'INFO'
             )
 
+    def checkHighUsage(self) -> None:
+        """ Updates top three max kWh usage pr hour """
+
+        newTotal = 0.0
+        max_kwh_usage_top = copy.deepcopy(self._persistence.max_usage.topUsage)
+        newTopUsage:float = 0
+
+        try:
+            newTopUsage = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
+        except (ValueError, TypeError) as ve:
+            self.ADapi.log(
+                f"Not able to set new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
+                f"ValueError: {ve}",
+                level = 'WARNING'
+            )
+            return
+        
+        if newTopUsage > max_kwh_usage_top[0]:
+            max_kwh_usage_top[0] = newTopUsage
+            for num in max_kwh_usage_top:
+                newTotal += num
+            avg_top_usage = newTotal / 3
+
+            if avg_top_usage > self._persistence.max_usage.max_kwh_usage_pr_hour:
+                self._persistence.max_usage.max_kwh_usage_pr_hour += 5
+                self.ADapi.log(
+                    f"Avg consumption during one hour is now {round(avg_top_usage, 3)} kWh and surpassed max kWh set. "
+                    f"New max kWh usage during one hour set to {self._persistence.max_usage.max_kwh_usage_pr_hour}. "
+                    "If this is not expected try to increase buffer.",
+                    level = 'WARNING'
+                )
 
     # Weather sensors
 
     def weather_event(self, event_name, data, **kwargs) -> None:
         """ Listens for weather change from the weather app """
 
-        self.out_temp = float(data['temp'])
+        self._persistence.weather.out_temp = float(data['temp'])
 
     def _refresh_heaters(self) -> None:
         """Remove orphan heater blocks and recompute the total wattage."""
-        persistence = self._persistence
+
         heaters_to_remove = []
 
         total_power = 0.0
         active_names = {h.heater for h in self.heaters}
 
-        for heater_name, heater_block in list(persistence.heater.items()):
+        for heater_name, heater_block in list(self._persistence.heater.items()):
             if heater_block.normal_power:
                 total_power += heater_block.normal_power
 
@@ -2084,7 +2140,7 @@ class ElectricalUsage(ad.ADBase):
 
         if heaters_to_remove:
             for key in heaters_to_remove:
-                del persistence.heater[key]
+                del self._persistence.heater[key]
 
         self.totalWattAllHeaters = total_power
 
@@ -2126,6 +2182,7 @@ class ElectricalUsage(ad.ADBase):
             self.notify_about_overconsumption = False
             if hour not in self._persistence.high_consumption.high_consumption_hours:
                 self.hour_to_add_to_high_consumption_hours = hour
+                # TODO: Add option to increase max kwh for this month
                 data = {'tag': 'overconsumption',
                         'actions' : [{ 'action' : 'add_high_consumption_hours',
                         'title' : f'Add Hour {hour} to High Consumption'

@@ -35,6 +35,8 @@ class PeakHour(BaseModel):
     end: datetime
     duration: timedelta
 
+class WeatherData(BaseModel):
+    out_temp: float = 10.0
 
 class HeaterBlock(BaseModel):
     heater: str | None = None
@@ -51,16 +53,18 @@ class HeaterBlock(BaseModel):
     recipient: Optional[List[str]] = None
     indoor_sensor_temp: Optional[str] = None
     target_indoor_input: Optional[str] = None
-    target_indoor_temp: Optional[int] = None
+    target_indoor_temp: Optional[float] = None
+    target_heater_input: Optional[str] = None
+    target_heater_temp: Optional[float] = None
     window_temp: Optional[str] = None
-    window_offset: Optional[int] = None
+    window_offset: Optional[float] = None
     save_temp_offset: Optional[float] = None
-    save_temp: Optional[int] = None
-    vacation_temp: Optional[int] = None
+    save_temp: Optional[float] = None
+    vacation_temp: Optional[float] = None
     vacation_keep_off: bool = False
     rain_level: Optional[float] = None
     anemometer_speed: Optional[float] = None
-    getting_cold: Optional[int] = 18
+    getting_cold: Optional[float] = 18
     priceincrease: Optional[float] = 1
     windowsensors: Optional[List[str]] = None
     daytime_savings: Optional[List[Dict[str, Any]]] = None
@@ -70,6 +74,11 @@ class HeaterBlock(BaseModel):
     prev_consumption: float = 0.0
     time_to_save: List[PeakHour] = Field(default_factory=list)
 
+    def sort_temperatures(self) -> None:
+        """Sort the `temperatures` list by the `out` key. """
+        if not self.temperatures:
+            return
+        self.temperatures.sort(key=lambda d: d.get('out', float('-inf')))
 
 class ChargerData(BaseModel):
     # Sensors:
@@ -173,6 +182,7 @@ class PersistenceData(BaseModel):
     queueChargingList: List[Any] = Field(alias="queueChargingList", default_factory=list)
     solarChargingList: List[Any] = Field(alias="solarChargingList", default_factory=list)
     available_watt: List[WattSlot] = Field(alias="available_watt", default_factory=list)
+    weather: WeatherData = Field(default_factory=WeatherData)
 
     model_config = {
         "arbitrary_types_allowed": True,
