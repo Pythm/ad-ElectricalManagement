@@ -2095,7 +2095,7 @@ class ElectricalUsage(ad.ADBase):
             newTopUsage = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
         except (ValueError, TypeError) as ve:
             self.ADapi.log(
-                f"Not able to set new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
+                f"Not able to check new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
                 f"ValueError: {ve}",
                 level = 'WARNING'
             )

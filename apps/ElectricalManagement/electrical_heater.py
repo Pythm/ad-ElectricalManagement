@@ -71,6 +71,8 @@ class Heater:
         # Handlers
         self._consumption_stops_register_usage_handler = None
         self.checkConsumption_handler = None
+        self.off_retry_handler = None
+        self.off_retry_count = 3
 
         # Helpers used on vacation
         self.HeatAt = None
@@ -117,6 +119,7 @@ class Heater:
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
         self.vacation_state = new == 'on'
+        self.off_retry_count = 3
         self.heater_setNewValues()
 
     def _automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -799,7 +802,9 @@ class Climate(Heater):
         # Holliday temperature
         elif self.vacation_state:
             if self.heater_data.vacation_keep_off:
-                self.turn_off_heater()
+                if self.off_retry_count >= 0:
+                    self.turn_off_heater()
+                    self.off_retry_count -= 1
                 return
             new_temperature = vacation_temp
 
