@@ -330,36 +330,37 @@ class Scheduler:
                 stopAtPriceIncrease=self.stopAtPriceIncrease,
             )
             estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
-            current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
+            if current_car.chargingStart is not None:
+                current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
 
-            has_overlap = False
-            for overlapping_id in simultaneous_charge:
-                idx = next(
-                    (j for j, c in enumerate(self.chargingQueue) if c.vehicle_id == overlapping_id),
-                    None,
-                )
-                if idx is not None and self.chargingQueue[idx].chargingStop > current_car.chargingStart:
-                    has_overlap = True
-                    break
+                has_overlap = False
+                for overlapping_id in simultaneous_charge:
+                    idx = next(
+                        (j for j, c in enumerate(self.chargingQueue) if c.vehicle_id == overlapping_id),
+                        None,
+                    )
+                    if idx is not None and self.chargingQueue[idx].chargingStop > current_car.chargingStart:
+                        has_overlap = True
+                        break
 
-            if not has_overlap:
-                for j in range(i - 1, -1, -1):
-                    prev = self.chargingQueue[j]
-                    if prev.chargingStop is not None and current_car.chargingStart < prev.chargingStop:
-                        simultaneous_charge.append(prev.vehicle_id)
-                simultaneous_charge.append(current_car.vehicle_id)
-            else:
-                simultaneous_charge.append(current_car.vehicle_id)
+                if not has_overlap:
+                    for j in range(i - 1, -1, -1):
+                        prev = self.chargingQueue[j]
+                        if prev.chargingStop is not None and current_car.chargingStart < prev.chargingStop:
+                            simultaneous_charge.append(prev.vehicle_id)
+                    simultaneous_charge.append(current_car.vehicle_id)
+                else:
+                    simultaneous_charge.append(current_car.vehicle_id)
 
-            next_index = i + 1
-            if next_index < len(self.chargingQueue):
-                next_car = self.chargingQueue[next_index]
-                if next_car.chargingStart is not None and current_car.chargingStop is not None:
-                    if next_car.chargingStart >= current_car.chargingStop:
-                        if simultaneous_charge:
-                            self.calcSimultaneousCharge(simultaneous_charge)
-                            self.simultaneousChargeComplete.extend(simultaneous_charge)
-                            simultaneous_charge = []
+                next_index = i + 1
+                if next_index < len(self.chargingQueue):
+                    next_car = self.chargingQueue[next_index]
+                    if next_car.chargingStart is not None and current_car.chargingStop is not None:
+                        if next_car.chargingStart >= current_car.chargingStop:
+                            if simultaneous_charge:
+                                self.calcSimultaneousCharge(simultaneous_charge)
+                                self.simultaneousChargeComplete.extend(simultaneous_charge)
+                                simultaneous_charge = []
 
         if simultaneous_charge:
             if len(simultaneous_charge) > 1:
