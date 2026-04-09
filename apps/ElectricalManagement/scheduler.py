@@ -408,14 +408,16 @@ class Scheduler:
         )
 
         start_this_charger_at = charging_at
+        eta_stop_simultaneous = start_this_charger_at + timedelta(hours = hours_to_charge)
         if charging_stop is not None:
+            now = self.ADapi.datetime(aware=True)
             for c in simultaneous_items:
                 c.chargingStart = charging_at
                 c.chargingStop = charging_stop
                 c.price = price
-                estMinutesToCharge = int(math.ceil(c.estHourCharge * 60))
-                c.estimateStop = start_this_charger_at + timedelta(minutes = estMinutesToCharge)
-                start_this_charger_at = c.estimateStop
+                c.estimateStop = eta_stop_simultaneous
+                self.ADapi.log(f"{c.name} eta stop {c.estimateStop} chargingStop: {c.chargingStop} hours_to_charge: {hours_to_charge}") ###
+
 
     def notifyChargeTime(self, kwargs) -> None:
         """ Sends notifications and updates infotext with charging times and prices """
@@ -450,7 +452,7 @@ class Scheduler:
                 if already_informed:
                     if (
                         car.informedStart != car.chargingStart
-                        or car.informedStop != car.estimateStop
+                        or car.informedStop != car.chargingStop
                     ):
                         send_new_info = True
                 else:
@@ -458,11 +460,12 @@ class Scheduler:
 
                 if car.chargingStart is not None:
                     car.informedStart = car.chargingStart
-                    car.informedStop = car.estimateStop
+                    car.informedStop = car.chargingStop
 
                     timestr_start = _fmt(car.chargingStart)
                     timestr_eta_stop = _fmt(car.estimateStop)
                     timestr_stop = _fmt(car.chargingStop)
+                    self.ADapi.log(f"{car.name} stop at {timestr_stop}") ###
 
                     if car.vehicle_id in self.simultaneousChargeComplete:
                         info_text_simultaneous_car += f"{car.name} & "
