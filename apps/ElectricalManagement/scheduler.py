@@ -384,11 +384,22 @@ class Scheduler:
             kWh_to_charge += c.kWhRemaining
             total_w_all_chargers += c.maxAmps * c.voltPhase
 
-            if c.finish_by_hour > finish_by_hour:
-                if finish_by_hour == 0:
+            match (finish_by_hour, c.finish_by_hour, c.estHourCharge):
+                case (0, _, _):
                     finish_by_hour = c.finish_by_hour
-                else:
-                    finish_by_hour += c.estHourCharge
+
+                case (f, target, _) if target <= f:
+                    pass
+
+                # 3. If adding the charge stays WITHIN the target window
+                case (f, target, charge) if f + charge < target:
+                    finish_by_hour += charge
+
+                case (f, target, charge) if f + charge >= target:
+                    finish_by_hour = c.finish_by_hour
+
+                case _:
+                    pass
 
             if c.chargingStart is not None:
                 start_time = c.chargingStart
@@ -398,7 +409,6 @@ class Scheduler:
             totalW_AllChargers=total_w_all_chargers,
             start_time=start_time,
         )
-
         charging_at, charging_stop, price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
             hoursTotal=hours_to_charge,
             calculateBeforeNextDayPrices=False,
@@ -416,7 +426,6 @@ class Scheduler:
                 c.chargingStop = charging_stop
                 c.price = price
                 c.estimateStop = eta_stop_simultaneous
-                self.ADapi.log(f"{c.name} eta stop {c.estimateStop} chargingStop: {c.chargingStop} hours_to_charge: {hours_to_charge}") ###
 
 
     def notifyChargeTime(self, kwargs) -> None:
@@ -465,7 +474,6 @@ class Scheduler:
                     timestr_start = _fmt(car.chargingStart)
                     timestr_eta_stop = _fmt(car.estimateStop)
                     timestr_stop = _fmt(car.chargingStop)
-                    self.ADapi.log(f"{car.name} stop at {timestr_stop}") ###
 
                     if car.vehicle_id in self.simultaneousChargeComplete:
                         info_text_simultaneous_car += f"{car.name} & "

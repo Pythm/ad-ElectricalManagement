@@ -160,7 +160,7 @@ class ElectricalUsage(ad.ADBase):
 
         common_car_keys = [
             'battery_size', 'pref_charge_limit', 'priority',
-            'finish_by_hour', 'charge_now', 'charge_only_on_solar',
+            'finishByHour', 'charge_now', 'charge_only_on_solar',
             'departure'
         ]
 
@@ -231,7 +231,7 @@ class ElectricalUsage(ad.ADBase):
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),
@@ -328,7 +328,7 @@ class ElectricalUsage(ad.ADBase):
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),
@@ -430,7 +430,7 @@ class ElectricalUsage(ad.ADBase):
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),

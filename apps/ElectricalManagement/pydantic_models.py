@@ -120,7 +120,7 @@ class CarData(BaseModel):
     battery_size: float = 100
     pref_charge_limit: float = 100
     priority: int = 3
-    finish_by_hour: Union[str, int] = 7
+    finishByHour: Union[str, int] = 7
     charge_now: Union[str, bool] = False
     charge_only_on_solar: Union[str, bool] = False
     departure: str | None = None
