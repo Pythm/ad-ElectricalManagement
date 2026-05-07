@@ -169,16 +169,16 @@ class Heater:
         isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
         now = self.ADapi.datetime(aware = True)
 
-        if (
-            self.isOverconsumption
-            and isOn
-        ):
+        if self.isOverconsumption and isOn:
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
             )
             self.isSaveState = True
             return
+        elif self.isOverconsumption and not isOn:
+            return
+
         if self.increase_now:
             if not isOn:
                 self.ADapi.call_service('switch/turn_on',
@@ -718,7 +718,7 @@ class Climate(Heater):
         if self.heater_data.indoor_sensor_temp is not None:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater_data.indoor_sensor_temp, namespace = self.namespace))
-            except (TypeError, AttributeError) as te:
+            except (TypeError, AttributeError, ValueError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
             else:
                 in_temp_set = True

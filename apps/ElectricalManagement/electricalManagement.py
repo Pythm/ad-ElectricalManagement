@@ -159,7 +159,7 @@ class ElectricalUsage(ad.ADBase):
         ]
 
         common_car_keys = [
-            'battery_size', 'pref_charge_limit', 'priority',
+            'battery_size', 'pref_charge_limit', 'charge_below_price', 'priority',
             'finishByHour', 'charge_now', 'charge_only_on_solar',
             'departure'
         ]
@@ -230,6 +230,7 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None),
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
                     'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
@@ -327,6 +328,7 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None), # _last_update
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
                     'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
@@ -429,6 +431,7 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None),
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
                     'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
@@ -1104,6 +1107,8 @@ class ElectricalUsage(ad.ADBase):
         sub_wh = 0
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
             sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            if sub_wh > 1000:
+                sub_wh = 1000
         else:
             sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
             if sub_wh > 500:
@@ -1770,6 +1775,10 @@ class ElectricalUsage(ad.ADBase):
                         heater.heater_data.normal_power = heater_consumption_now
             else:
                 heater.last_reduced_state = now
+                wattconsumption, valid_consumption = heater.get_heater_consumption()
+                if valid_consumption:
+                    if wattconsumption > 30:
+                        heater.setSaveState()
             if self.available_Wh > -100:
                 return
 
@@ -1782,12 +1791,12 @@ class ElectricalUsage(ad.ADBase):
         to_remove = set()
         now = self.ADapi.datetime(aware = True)
         for heater in reversed(self.heatersRedusedConsumption):
-            if heater.heater_data.prev_consumption + 600 < avail:
+            if heater.heater_data.prev_consumption + (10 * now.minute) < avail:
                 heater.setPreviousState()
                 avail -= heater.heater_data.prev_consumption
                 to_remove.add(heater)
                 self.lastTimeHeaterWasReduced = now
-            elif heater.heater_data.prev_consumption > avail:
+            else:
                 reduce_Wh -= heater.heater_data.prev_consumption
         self.heatersRedusedConsumption = [
             qid for qid in self.heatersRedusedConsumption

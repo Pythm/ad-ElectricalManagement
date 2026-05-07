@@ -119,6 +119,7 @@ class CarData(BaseModel):
     data_last_update_time: str | None = None
     battery_size: float = 100
     pref_charge_limit: float = 100
+    charge_below_price:float = 0
     priority: int = 3
     finishByHour: Union[str, int] = 7
     charge_now: Union[str, bool] = False
@@ -141,6 +142,7 @@ class ChargingQueueItem(BaseModel):
     priority: int
     estHourCharge: float
     name: str
+    charge_below: float = 0
     chargingStart: datetime | None = None
     estimateStop: datetime | None = None
     chargingStop: datetime | None = None

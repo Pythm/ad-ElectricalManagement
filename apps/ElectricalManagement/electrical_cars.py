@@ -190,7 +190,8 @@ class Car:
                     voltPhase = self.connected_charger.charger_data.voltPhase,
                     finish_by_hour = self.finish_by_hour,
                     priority = self.car_data.priority,
-                    name = self.carName
+                    name = self.carName,
+                    charge_below = self.car_data.charge_below_price,
                 )
                 self.charging_scheduler.informHandler = self.ADapi.run_in(self.charging_scheduler.notifyChargeTime, 3)
 

@@ -139,6 +139,9 @@ class Scheduler:
             if entry.chargingStart and entry.chargingStop and entry.chargingStart <= now < entry.chargingStop:
                 return True
 
+            if entry.charge_below != 0:
+                return self.electricalPriceApp.electricity_price_now() <= entry.charge_below
+
         if (
             self.ADapi.now_is_between("09:00:00", "14:00:00")
             and not self.electricalPriceApp.tomorrow_valid
@@ -276,6 +279,7 @@ class Scheduler:
         finish_by_hour: int,
         priority: int,
         name: str,
+        charge_below: float,
     ) -> bool:
         """ Enqueue a new charging job (or replace an existing one) """
 
@@ -298,6 +302,7 @@ class Scheduler:
             priority=priority,
             estHourCharge=est_hour_charge,
             name=name,
+            charge_below=charge_below,
         )
         self.chargingQueue.append(new_item)
 
@@ -318,6 +323,10 @@ class Scheduler:
         self.simultaneousChargeComplete = []
 
         for i, current_car in enumerate(self.chargingQueue):
+            if current_car.charge_below != 0:
+                current_car.price = current_car.charge_below
+                continue
+
             (
                 current_car.chargingStart,
                 current_car.chargingStop,
