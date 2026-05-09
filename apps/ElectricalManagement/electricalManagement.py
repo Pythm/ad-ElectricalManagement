@@ -1104,15 +1104,14 @@ class ElectricalUsage(ad.ADBase):
         self.projected_kWh_usage = self._calc_projected_kWh_usage(now)
         self.available_Wh = self._calc_available_Wh(now)
 
+        # Substract more buffer from available Wh depending on time
         sub_wh = 0
+        if remaining_minute > 40:
+            remaining_minute = 40
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
             sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
-            if sub_wh > 1000:
-                sub_wh = 1000
         else:
             sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
-            if sub_wh > 500:
-                sub_wh = 500
         self.available_Wh -= sub_wh
         self.max_target_kWh_buffer -= (sub_wh / 10000)
 
