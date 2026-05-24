@@ -1112,7 +1112,7 @@ class ElectricalUsage(ad.ADBase):
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
             sub_wh = calculation_factor * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
         else:
-            sub_wh = calculation_factor * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            sub_wh = calculation_factor * self._persistence.max_usage.max_kwh_usage_pr_hour
         self.available_Wh -= sub_wh
         self.max_target_kWh_buffer -= (sub_wh / 10000)
 

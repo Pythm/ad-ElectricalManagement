@@ -530,6 +530,7 @@ class Charger:
                 self.remove_car_from_list(self._guest_car.vehicle_id)
                 self._guest_car = None
 
+                self.ADapi.log(f"Guest stop charging with no connected vehicle") ###
 
     def _addGuestCar(self):
         """ Create a “dumb” guest car """
