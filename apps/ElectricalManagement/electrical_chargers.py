@@ -285,7 +285,7 @@ class Charger:
         if self.connected_vehicle.pct_start_charge == 100:
             self._register_battery_soc_for_calculation()
 
-        if  self.connected_vehicle.isConnected():
+        if self.connected_vehicle.isConnected():
             if not self.connected_vehicle.charging_scheduled_with_updated_data():
                 self.kWhRemaining()
                 self.connected_vehicle.findNewChargeTime()
@@ -524,8 +524,12 @@ class Charger:
                     and self.kWhRemaining() > 0
                 ):
                     self.connected_vehicle.findNewChargeTime()
-            else:
+
+            if self._guest_car is not None:
                 self.stopCharging()
+                self.remove_car_from_list(self._guest_car.vehicle_id)
+                self._guest_car = None
+
 
     def _addGuestCar(self):
         """ Create a “dumb” guest car """
@@ -637,7 +641,7 @@ class Tesla_charger(Charger):
             state == 'Stopped' and
             connected_charger is None
         ):
-            Registry.set_link(self.connected_vehicle, self)
+            Registry.set_link(self._cars[0], self)
 
         return state
 
@@ -928,13 +932,20 @@ class Easee(Charger):
 
         elif new == 'awaiting_start':
             if self.connected_vehicle is None:
-                self.findCarConnectedToCharger()
+                if not self.findCarConnectedToCharger():
+                    self.stopCharging()
+                    return
 
     def _check_if_still_disconnected(self, kwargs) -> None:
         if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'disconnected':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
+                if self._guest_car is not None:
+                    self.ADapi.call_service('switch/turn_off',
+                        entity_id = self.charger_data.guest,
+                        namespace = self.namespace,
+                    )
         elif self.connected_vehicle is not None: # Check if new car is connected.
             if self.connected_vehicle.getCarChargerState() == 'Disconnected':
                 self._CleanUpWhenChargingStopped()

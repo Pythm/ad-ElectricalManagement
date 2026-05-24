@@ -1088,7 +1088,7 @@ class ElectricalUsage(ad.ADBase):
 
         now = self.ADapi.datetime(aware = True)
         minute = now.minute
-        remaining_minute = 60 - minute
+        calculation_factor = 60 - minute
 
         self._get_current_consumption()
         self._get_accumulated_kWh()
@@ -1106,12 +1106,13 @@ class ElectricalUsage(ad.ADBase):
 
         # Substract more buffer from available Wh depending on time
         sub_wh = 0
-        if remaining_minute > 40:
-            remaining_minute = 40
+
+        if calculation_factor > 20:
+            calculation_factor = 20
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
-            sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            sub_wh = calculation_factor * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
         else:
-            sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            sub_wh = calculation_factor * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
         self.available_Wh -= sub_wh
         self.max_target_kWh_buffer -= (sub_wh / 10000)
 
@@ -1204,6 +1205,10 @@ class ElectricalUsage(ad.ADBase):
                 if self.pause_charging:
                     if self._stop_chargers_due_to_overconsumption():
                         return
+                for charger in self.all_chargers():
+                    if charger.connected_vehicle is None:
+                        if charger.getChargingState() in ('Charging'):
+                            charger.stopCharging()
 
                 if self.notify_overconsumption:
                     self._notify_overconsumption(hour = now.hour)
@@ -1351,6 +1356,7 @@ class ElectricalUsage(ad.ADBase):
 
         next_vehicle_id = False
         to_remove = set()
+
         for queue_id in charging_list:
             car = Registry.get_car(queue_id)
             if car is None:
