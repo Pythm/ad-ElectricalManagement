@@ -71,6 +71,8 @@ class Heater:
         # Handlers
         self._consumption_stops_register_usage_handler = None
         self.checkConsumption_handler = None
+        self.off_retry_handler = None
+        self.off_retry_count = 3
 
         # Helpers used on vacation
         self.HeatAt = None
@@ -117,6 +119,7 @@ class Heater:
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
         self.vacation_state = new == 'on'
+        self.off_retry_count = 3
         self.heater_setNewValues()
 
     def _automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -166,16 +169,16 @@ class Heater:
         isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
         now = self.ADapi.datetime(aware = True)
 
-        if (
-            self.isOverconsumption
-            and isOn
-        ):
+        if self.isOverconsumption and isOn:
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
             )
             self.isSaveState = True
             return
+        elif self.isOverconsumption and not isOn:
+            return
+
         if self.increase_now:
             if not isOn:
                 self.ADapi.call_service('switch/turn_on',
@@ -715,7 +718,7 @@ class Climate(Heater):
         if self.heater_data.indoor_sensor_temp is not None:
             try:
                 in_temp = float(self.ADapi.get_state(self.heater_data.indoor_sensor_temp, namespace = self.namespace))
-            except (TypeError, AttributeError) as te:
+            except (TypeError, AttributeError, ValueError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
             else:
                 in_temp_set = True
@@ -799,7 +802,9 @@ class Climate(Heater):
         # Holliday temperature
         elif self.vacation_state:
             if self.heater_data.vacation_keep_off:
-                self.turn_off_heater()
+                if self.off_retry_count >= 0:
+                    self.turn_off_heater()
+                    self.off_retry_count -= 1
                 return
             new_temperature = vacation_temp
 

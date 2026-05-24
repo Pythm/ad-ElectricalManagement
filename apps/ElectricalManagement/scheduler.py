@@ -139,6 +139,9 @@ class Scheduler:
             if entry.chargingStart and entry.chargingStop and entry.chargingStart <= now < entry.chargingStop:
                 return True
 
+            if entry.charge_below != 0:
+                return self.electricalPriceApp.electricity_price_now() <= entry.charge_below
+
         if (
             self.ADapi.now_is_between("09:00:00", "14:00:00")
             and not self.electricalPriceApp.tomorrow_valid
@@ -276,6 +279,7 @@ class Scheduler:
         finish_by_hour: int,
         priority: int,
         name: str,
+        charge_below: float,
     ) -> bool:
         """ Enqueue a new charging job (or replace an existing one) """
 
@@ -298,6 +302,7 @@ class Scheduler:
             priority=priority,
             estHourCharge=est_hour_charge,
             name=name,
+            charge_below=charge_below,
         )
         self.chargingQueue.append(new_item)
 
@@ -318,6 +323,10 @@ class Scheduler:
         self.simultaneousChargeComplete = []
 
         for i, current_car in enumerate(self.chargingQueue):
+            if current_car.charge_below != 0:
+                current_car.price = current_car.charge_below
+                continue
+
             (
                 current_car.chargingStart,
                 current_car.chargingStop,
@@ -330,36 +339,37 @@ class Scheduler:
                 stopAtPriceIncrease=self.stopAtPriceIncrease,
             )
             estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
-            current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
+            if current_car.chargingStart is not None:
+                current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
 
-            has_overlap = False
-            for overlapping_id in simultaneous_charge:
-                idx = next(
-                    (j for j, c in enumerate(self.chargingQueue) if c.vehicle_id == overlapping_id),
-                    None,
-                )
-                if idx is not None and self.chargingQueue[idx].chargingStop > current_car.chargingStart:
-                    has_overlap = True
-                    break
+                has_overlap = False
+                for overlapping_id in simultaneous_charge:
+                    idx = next(
+                        (j for j, c in enumerate(self.chargingQueue) if c.vehicle_id == overlapping_id),
+                        None,
+                    )
+                    if idx is not None and self.chargingQueue[idx].chargingStop > current_car.chargingStart:
+                        has_overlap = True
+                        break
 
-            if not has_overlap:
-                for j in range(i - 1, -1, -1):
-                    prev = self.chargingQueue[j]
-                    if prev.chargingStop is not None and current_car.chargingStart < prev.chargingStop:
-                        simultaneous_charge.append(prev.vehicle_id)
-                simultaneous_charge.append(current_car.vehicle_id)
-            else:
-                simultaneous_charge.append(current_car.vehicle_id)
+                if not has_overlap:
+                    for j in range(i - 1, -1, -1):
+                        prev = self.chargingQueue[j]
+                        if prev.chargingStop is not None and current_car.chargingStart < prev.chargingStop:
+                            simultaneous_charge.append(prev.vehicle_id)
+                    simultaneous_charge.append(current_car.vehicle_id)
+                else:
+                    simultaneous_charge.append(current_car.vehicle_id)
 
-            next_index = i + 1
-            if next_index < len(self.chargingQueue):
-                next_car = self.chargingQueue[next_index]
-                if next_car.chargingStart is not None and current_car.chargingStop is not None:
-                    if next_car.chargingStart >= current_car.chargingStop:
-                        if simultaneous_charge:
-                            self.calcSimultaneousCharge(simultaneous_charge)
-                            self.simultaneousChargeComplete.extend(simultaneous_charge)
-                            simultaneous_charge = []
+                next_index = i + 1
+                if next_index < len(self.chargingQueue):
+                    next_car = self.chargingQueue[next_index]
+                    if next_car.chargingStart is not None and current_car.chargingStop is not None:
+                        if next_car.chargingStart >= current_car.chargingStop:
+                            if simultaneous_charge:
+                                self.calcSimultaneousCharge(simultaneous_charge)
+                                self.simultaneousChargeComplete.extend(simultaneous_charge)
+                                simultaneous_charge = []
 
         if simultaneous_charge:
             if len(simultaneous_charge) > 1:
@@ -383,11 +393,22 @@ class Scheduler:
             kWh_to_charge += c.kWhRemaining
             total_w_all_chargers += c.maxAmps * c.voltPhase
 
-            if c.finish_by_hour > finish_by_hour:
-                if finish_by_hour == 0:
+            match (finish_by_hour, c.finish_by_hour, c.estHourCharge):
+                case (0, _, _):
                     finish_by_hour = c.finish_by_hour
-                else:
-                    finish_by_hour += c.estHourCharge
+
+                case (f, target, _) if target <= f:
+                    pass
+
+                # 3. If adding the charge stays WITHIN the target window
+                case (f, target, charge) if f + charge < target:
+                    finish_by_hour += charge
+
+                case (f, target, charge) if f + charge >= target:
+                    finish_by_hour = c.finish_by_hour
+
+                case _:
+                    pass
 
             if c.chargingStart is not None:
                 start_time = c.chargingStart
@@ -397,7 +418,6 @@ class Scheduler:
             totalW_AllChargers=total_w_all_chargers,
             start_time=start_time,
         )
-
         charging_at, charging_stop, price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
             hoursTotal=hours_to_charge,
             calculateBeforeNextDayPrices=False,
@@ -407,14 +427,15 @@ class Scheduler:
         )
 
         start_this_charger_at = charging_at
+        eta_stop_simultaneous = start_this_charger_at + timedelta(hours = hours_to_charge)
         if charging_stop is not None:
+            now = self.ADapi.datetime(aware=True)
             for c in simultaneous_items:
                 c.chargingStart = charging_at
                 c.chargingStop = charging_stop
                 c.price = price
-                estMinutesToCharge = int(math.ceil(c.estHourCharge * 60))
-                c.estimateStop = start_this_charger_at + timedelta(minutes = estMinutesToCharge)
-                start_this_charger_at = c.estimateStop
+                c.estimateStop = eta_stop_simultaneous
+
 
     def notifyChargeTime(self, kwargs) -> None:
         """ Sends notifications and updates infotext with charging times and prices """
@@ -449,7 +470,7 @@ class Scheduler:
                 if already_informed:
                     if (
                         car.informedStart != car.chargingStart
-                        or car.informedStop != car.estimateStop
+                        or car.informedStop != car.chargingStop
                     ):
                         send_new_info = True
                 else:
@@ -457,7 +478,7 @@ class Scheduler:
 
                 if car.chargingStart is not None:
                     car.informedStart = car.chargingStart
-                    car.informedStop = car.estimateStop
+                    car.informedStop = car.chargingStop
 
                     timestr_start = _fmt(car.chargingStart)
                     timestr_eta_stop = _fmt(car.estimateStop)

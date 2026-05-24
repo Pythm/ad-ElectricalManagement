@@ -159,8 +159,8 @@ class ElectricalUsage(ad.ADBase):
         ]
 
         common_car_keys = [
-            'battery_size', 'pref_charge_limit', 'priority',
-            'finish_by_hour', 'charge_now', 'charge_only_on_solar',
+            'battery_size', 'pref_charge_limit', 'charge_below_price', 'priority',
+            'finishByHour', 'charge_now', 'charge_only_on_solar',
             'departure'
         ]
 
@@ -230,8 +230,9 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None),
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),
@@ -327,8 +328,9 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None), # _last_update
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),
@@ -429,8 +431,9 @@ class ElectricalUsage(ad.ADBase):
                     'data_last_update_time':       cfg.get('data_last_update_time', None),
                     'battery_size':                cfg.get('battery_size', 100),
                     'pref_charge_limit':           cfg.get('pref_charge_limit', 90),
+                    'charge_below_price':          cfg.get('charge_below_price', 0),
                     'priority':                    cfg.get('priority', 3),
-                    'finish_by_hour':              cfg.get('finish_by_hour', 7),
+                    'finishByHour':                cfg.get('finishByHour', 7),
                     'charge_now':                  cfg.get('charge_now', False),
                     'charge_only_on_solar':        cfg.get('charge_only_on_solar', False),
                     'departure':                   cfg.get('departure', None),
@@ -1085,7 +1088,7 @@ class ElectricalUsage(ad.ADBase):
 
         now = self.ADapi.datetime(aware = True)
         minute = now.minute
-        remaining_minute = 60 - minute
+        calculation_factor = 60 - minute
 
         self._get_current_consumption()
         self._get_accumulated_kWh()
@@ -1101,13 +1104,15 @@ class ElectricalUsage(ad.ADBase):
         self.projected_kWh_usage = self._calc_projected_kWh_usage(now)
         self.available_Wh = self._calc_available_Wh(now)
 
+        # Substract more buffer from available Wh depending on time
         sub_wh = 0
+
+        if calculation_factor > 20:
+            calculation_factor = 20
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
-            sub_wh = remaining_minute * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
+            sub_wh = calculation_factor * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
         else:
-            sub_wh = remaining_minute * 5 * self._persistence.max_usage.max_kwh_usage_pr_hour
-            if sub_wh > 500:
-                sub_wh = 500
+            sub_wh = calculation_factor * self._persistence.max_usage.max_kwh_usage_pr_hour
         self.available_Wh -= sub_wh
         self.max_target_kWh_buffer -= (sub_wh / 10000)
 
@@ -1200,6 +1205,10 @@ class ElectricalUsage(ad.ADBase):
                 if self.pause_charging:
                     if self._stop_chargers_due_to_overconsumption():
                         return
+                for charger in self.all_chargers():
+                    if charger.connected_vehicle is None:
+                        if charger.getChargingState() in ('Charging'):
+                            charger.stopCharging()
 
                 if self.notify_overconsumption:
                     self._notify_overconsumption(hour = now.hour)
@@ -1347,6 +1356,7 @@ class ElectricalUsage(ad.ADBase):
 
         next_vehicle_id = False
         to_remove = set()
+
         for queue_id in charging_list:
             car = Registry.get_car(queue_id)
             if car is None:
@@ -1770,6 +1780,10 @@ class ElectricalUsage(ad.ADBase):
                         heater.heater_data.normal_power = heater_consumption_now
             else:
                 heater.last_reduced_state = now
+                wattconsumption, valid_consumption = heater.get_heater_consumption()
+                if valid_consumption:
+                    if wattconsumption > 30:
+                        heater.setSaveState()
             if self.available_Wh > -100:
                 return
 
@@ -1782,12 +1796,12 @@ class ElectricalUsage(ad.ADBase):
         to_remove = set()
         now = self.ADapi.datetime(aware = True)
         for heater in reversed(self.heatersRedusedConsumption):
-            if heater.heater_data.prev_consumption + 600 < avail:
+            if heater.heater_data.prev_consumption + (10 * now.minute) < avail:
                 heater.setPreviousState()
                 avail -= heater.heater_data.prev_consumption
                 to_remove.add(heater)
                 self.lastTimeHeaterWasReduced = now
-            elif heater.heater_data.prev_consumption > avail:
+            else:
                 reduce_Wh -= heater.heater_data.prev_consumption
         self.heatersRedusedConsumption = [
             qid for qid in self.heatersRedusedConsumption
@@ -2095,7 +2109,7 @@ class ElectricalUsage(ad.ADBase):
             newTopUsage = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
         except (ValueError, TypeError) as ve:
             self.ADapi.log(
-                f"Not able to set new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
+                f"Not able to check new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
                 f"ValueError: {ve}",
                 level = 'WARNING'
             )

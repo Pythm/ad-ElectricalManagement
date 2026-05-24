@@ -37,13 +37,13 @@ class Car:
         self.carName = carName
 
         # Set up when car should be finished charging
-        if isinstance(car_data.finish_by_hour, int):
-            self.finish_by_hour = int(car_data.finish_by_hour)
+        if isinstance(car_data.finishByHour, int):
+            self.finish_by_hour = int(car_data.finishByHour)
         else:
-            self.finish_by_hour = math.ceil(float(self.ADapi.get_state(car_data.finish_by_hour,
+            self.finish_by_hour = math.ceil(float(self.ADapi.get_state(car_data.finishByHour,
                 namespace = self.namespace))
             )
-            self.ADapi.listen_state(self._finishByHourListen, car_data.finish_by_hour,
+            self.ADapi.listen_state(self._finishByHourListen, car_data.finishByHour,
                 namespace = self.namespace
             )
 
@@ -190,7 +190,8 @@ class Car:
                     voltPhase = self.connected_charger.charger_data.voltPhase,
                     finish_by_hour = self.finish_by_hour,
                     priority = self.car_data.priority,
-                    name = self.carName
+                    name = self.carName,
+                    charge_below = self.car_data.charge_below_price,
                 )
                 self.charging_scheduler.informHandler = self.ADapi.run_in(self.charging_scheduler.notifyChargeTime, 3)
 
