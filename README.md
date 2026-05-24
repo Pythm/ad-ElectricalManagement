@@ -309,8 +309,7 @@ The app calculates the optimal charging price and schedule based on data from [E
 
 #### 🔌 Setting a fixed charge price
 
-Instead of calculating the optimal charging time, you can set a fixed price threshold for each car. When the current electricity price is below this value the car will charge. This is useful when you have a stable rate such as “Norgespris”, enabling cheaper night‑time charging on weekends.
-
+Instead of calculating the optimal charging time, you can set a fixed price threshold for each car. When the current electricity price is below this value the car will charge. This is useful when you have a stable rate such as “Norgespris”, enabling cheaper night‑time charging.
 ```yaml
   charge_below_price: 0.8
 ```
