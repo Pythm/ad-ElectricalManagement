@@ -44,7 +44,7 @@ from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.3"
+__version__ = "1.0.5"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -1088,14 +1088,13 @@ class ElectricalUsage(ad.ADBase):
 
         now = self.ADapi.datetime(aware = True)
         minute = now.minute
-        calculation_factor = 60 - minute
+        if now.day == 1 and now.hour == 0 and minute == 0:
+            self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
+            self._persistence.max_usage.topUsage = [0, 0, 0]
+            return
 
         self._get_current_consumption()
         self._get_accumulated_kWh()
-
-        if minute == 0:
-            self._reset_hourly(now)
-            return
 
         self.current_production = self._get_sensor_value(self.current_production_sensor)
         self.production_kWh = self._get_sensor_value(self.accumulated_production_current_hour)
@@ -1107,15 +1106,15 @@ class ElectricalUsage(ad.ADBase):
         # Substract more buffer from available Wh depending on time
         sub_wh = 0
 
-        if calculation_factor > 20:
-            calculation_factor = 20
         if now.hour in self._persistence.high_consumption.high_consumption_hours:
+            calculation_factor = 60 - minute
+            if calculation_factor > 20:
+                calculation_factor = 20
             sub_wh = calculation_factor * 10 * self._persistence.max_usage.max_kwh_usage_pr_hour
-        else:
-            sub_wh = calculation_factor * self._persistence.max_usage.max_kwh_usage_pr_hour
-        self.available_Wh -= sub_wh
-        self.max_target_kWh_buffer -= (sub_wh / 10000)
-
+            self.available_Wh -= sub_wh
+            self.max_target_kWh_buffer -= (sub_wh / 10000)
+        # else:
+        #     sub_wh = calculation_factor * self._persistence.max_usage.max_kwh_usage_pr_hour
         self._dispatch_decision()
 
     def _cond_over_target(self) -> bool:
@@ -1196,7 +1195,7 @@ class ElectricalUsage(ad.ADBase):
             - self.current_consumption
             < -100
             and now - self.lastTimeHeaterWasReduced > timedelta(minutes = 3)
-            and remaining_minute <= 40
+            and remaining_minute < 55
             and self.available_Wh < -200
         ):
             if self.current_consumption > (self._persistence.max_usage.max_kwh_usage_pr_hour * 1000):
@@ -1332,17 +1331,20 @@ class ElectricalUsage(ad.ADBase):
     def _act_under_target(self) -> None:
         """ Consumption is below max target """
         now = self.ADapi.datetime(aware = True)
-        minute = now.minute
-        remaining_minute = 60 - minute
+        remaining_minute = 60 - now.minute
 
         # Increase charging speed or add another charger if time to charge
         self.notify_about_overconsumption = False
-        if (
-            (remaining_minute > 9 and self.available_Wh < 800)
-            or self.max_target_kWh_buffer < 0.1
-            or now - self.lastTimeHeaterWasReduced < timedelta(minutes = 10)
-        ):
-            return
+        if remaining_minute > 9:
+            if (
+                self.available_Wh < 800
+                or self.max_target_kWh_buffer < 0.1
+                or now - self.lastTimeHeaterWasReduced < timedelta(minutes = 10)
+            ):
+                return
+        elif remaining_minute <= 3:
+            if self.accumulated_kWh < 1:
+                return
         self._check_queue_charging_list(charging_list = self._persistence.queueChargingList,
                                         check_if_charging_time = True,
                                         available_Wh = self.available_Wh)
@@ -1351,9 +1353,7 @@ class ElectricalUsage(ad.ADBase):
         """ Updates queueChargingList and increases chargingspeed """
 
         now = self.ADapi.datetime(aware = True)
-        minute = now.minute
-        remaining_minute = 60 - minute
-
+        remaining_minute = 60 - now.minute
         next_vehicle_id = False
         to_remove = set()
 
@@ -1518,6 +1518,7 @@ class ElectricalUsage(ad.ADBase):
             self.accumulated_kWh = float(self.last_accumulated_kWh + (self.current_consumption/60000))
             self.last_accumulated_kWh = self.accumulated_kWh
             self.accumulated_kWh_wasUnavailable = True
+            return
         else:
             if self.accumulated_kWh_wasUnavailable:
                 self.accumulated_kWh_wasUnavailable = False
@@ -1534,6 +1535,8 @@ class ElectricalUsage(ad.ADBase):
                         f"Actual: {self.accumulated_kWh}. New error ratio: {self._persistence.max_usage.calculated_difference_on_idle}",
                         level = 'INFO'
                     )
+            elif self.accumulated_kWh < self.last_accumulated_kWh:
+                self._reset_hourly(consumption = self.last_accumulated_kWh)
             self.last_accumulated_kWh = self.accumulated_kWh
             attr_last_updated = self.ADapi.get_state(entity_id = self.accumulated_consumption_current_hour,
                 attribute = "last_updated"
@@ -1860,17 +1863,11 @@ class ElectricalUsage(ad.ADBase):
                 self.ADapi.run_at(heater.findConsumptionAfterTurnedOn, runtime, hoursOffInt = hoursOffInt)
 
 
-    def _reset_hourly(self, now) -> None:
-        self.last_accumulated_kWh = 0
-        self.find_next_charger_counter = 0
-        if now.hour == 0 and now.day == 1:
-            self._persistence.max_usage.max_kwh_usage_pr_hour = self.max_kwh_goal
-            self._persistence.max_usage.topUsage = [0, 0, 0]
-
-        elif self.accumulated_kWh > self._persistence.max_usage.topUsage[0]:
-            self.logHighUsage()
+    def _reset_hourly(self, consumption) -> None:
+        if consumption > self._persistence.max_usage.topUsage[0]:
+            self.logHighUsage(consumption)
         self._check_charging_this_hour()
-
+        self.find_next_charger_counter = 0
 
     # Functions to calculate and store consumption
 
@@ -2057,24 +2054,13 @@ class ElectricalUsage(ad.ADBase):
                 )
                 consumption_dict[out_temp_even] = new_entry
 
-    def logHighUsage(self) -> None:
+    def logHighUsage(self, consumption:float) -> None:
         """ Updates top three max kWh usage pr hour """
 
         newTotal = 0.0
         max_kwh_usage_top = self._persistence.max_usage.topUsage
-        newTopUsage:float = 0
-
-        try:
-            newTopUsage = float(self.ADapi.get_state(self.accumulated_consumption_current_hour))
-            if newTopUsage > self._persistence.max_usage.topUsage[0]:
-                max_kwh_usage_top[0] = newTopUsage
-                self._persistence.max_usage.topUsage = sorted(max_kwh_usage_top)
-        except (ValueError, TypeError) as ve:
-            self.ADapi.log(
-                f"Not able to set new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
-                f"ValueError: {ve}",
-                level = 'WARNING'
-            )
+        max_kwh_usage_top[0] = consumption
+        self._persistence.max_usage.topUsage = sorted(max_kwh_usage_top)
 
         for num in self._persistence.max_usage.topUsage:
             newTotal += num
@@ -2090,10 +2076,10 @@ class ElectricalUsage(ad.ADBase):
             )
         elif (
             avg_top_usage > self._persistence.max_usage.max_kwh_usage_pr_hour - self.buffer
-            and newTopUsage != 0   
+            and consumption != 0   
         ):
             self.ADapi.log(
-                f"Consumption last hour: {round(newTopUsage, 3)}. "
+                f"Consumption last hour: {round(consumption, 3)}. "
                 f"Avg top 3 hours: {round(avg_top_usage, 3)}",
                 level = 'INFO'
             )
@@ -2111,7 +2097,7 @@ class ElectricalUsage(ad.ADBase):
             self.ADapi.log(
                 f"Not able to check new Top Hour Usage. Accumulated consumption is {self.ADapi.get_state(self.accumulated_consumption_current_hour)} "
                 f"ValueError: {ve}",
-                level = 'WARNING'
+                level = 'DEBUG'
             )
             return
         

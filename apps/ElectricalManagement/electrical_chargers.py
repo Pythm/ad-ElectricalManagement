@@ -242,8 +242,8 @@ class Charger:
     def Charger_ChargeCableConnected(self, entity, attribute, old, new, kwargs) -> None:
         """ Function that reacts to charger_sensor connected or disconnected. """
 
-        if cancel_listen_handler(ADapi = self.ADapi, handler = self.noPowerDetected_handler, name = self.charger):
-            self.noPowerDetected_handler = None
+        cancel_listen_handler(ADapi = self.ADapi, handler = self.noPowerDetected_handler, name = self.charger)
+        self.noPowerDetected_handler = None
 
         if self.connected_vehicle is None:
             if not self.findCarConnectedToCharger():
@@ -442,8 +442,8 @@ class Charger:
                     self.connected_vehicle.pct_start_charge = 100
                     self.session_start_charge = 0
         self.charger_data.ampereCharging = 0
-        if cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current"):
-            self.reason_for_no_current_handler = None
+        cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current")
+        self.reason_for_no_current_handler = None
 
     def setVoltPhase(self, volts, phases) -> None:
         """ Helper for calculations on chargespeed.

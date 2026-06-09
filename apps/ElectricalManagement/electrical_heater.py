@@ -366,8 +366,8 @@ class Heater:
         if valid_consumption:
             if wattconsumption < 30:
                 if cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater):
-                    self._consumption_stops_register_usage_handler = None
                     self.registerConsumption(hoursOffInt = hoursOffInt)
+                self._consumption_stops_register_usage_handler = None
             elif self._consumption_stops_register_usage_handler is None:
                 self._consumption_stops_register_usage_handler = self.ADapi.listen_state(self._consumption_stops_register_usage, self.heater_data.consumptionSensor,
                     namespace = self.namespace,
@@ -386,8 +386,8 @@ class Heater:
             self.checkConsumption_handler = self.ADapi.run_in(self.checkIfConsumption, 600, hoursOffInt = hoursOffInt)
             return
 
-        if cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater):
-           self._consumption_stops_register_usage_handler = None
+        cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater)
+        self._consumption_stops_register_usage_handler = None
 
         try:
             if self.heater_data.normal_power < float(old):

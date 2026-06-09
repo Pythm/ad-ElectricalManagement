@@ -4,7 +4,7 @@ import math
 from datetime import timedelta
 from typing import Optional
 
-from utils import cancel_timer_handler#, cancel_listen_handler
+from utils import cancel_timer_handler
 
 from registry import Registry
 from scheduler import Scheduler
@@ -206,11 +206,6 @@ class Car:
                                 self.stopChargingCar()
                         case _ if start - timedelta(minutes=12) > now:
                             self.stopChargingCar()
-                elif (
-                    charger_state in ('NoPower', 'Stopped')
-                    and startcharge
-                ):
-                    self.startChargingCar()
 
     def removeFromQueue(self) -> None:
         """ Removes car from chargequeue
