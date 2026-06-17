@@ -955,7 +955,6 @@ class ElectricalUsage(ad.ADBase):
         self.ADapi.run_daily(self._get_new_prices, "00:03:00")
         self.ADapi.run_daily(self._get_new_prices, "13:01:00")
 
-
         item = self.electricalPriceApp.elpricestoday[0]
         duration = (item.end - item.start).total_seconds()
         runtime_switch = get_next_runtime_aware(startTime = now, offset_seconds = 1, delta_in_seconds = duration)
@@ -994,6 +993,16 @@ class ElectricalUsage(ad.ADBase):
 
     def remove_car(self, vehicle_id: str) -> None:
         """Remove a guest car from the system """
+
+        self.charging_scheduler.removeFromQueue(vehicle_id = vehicle_id)
+        to_remove = set()
+        for queue_id in self._persistence.queueChargingList:
+            if queue_id == vehicle_id:
+                to_remove.add(queue_id)
+        self._persistence.queueChargingList[:] = [
+            qid for qid in self._persistence.queueChargingList
+            if qid not in to_remove
+        ]
 
         popped_car = self.cars.pop(vehicle_id, None)
 
@@ -1184,8 +1193,12 @@ class ElectricalUsage(ad.ADBase):
                                                                             charging_list = self._persistence.queueChargingList)
 
         if reduce_Wh + self.available_Wh > 0:
+            # Reduced enough
             return
 
+        if minute < 2:
+            # Do not turn down heating first minutes
+            return
         if minute > 7 or not self._persistence.queueChargingList:
             self._reduce_heating()
 

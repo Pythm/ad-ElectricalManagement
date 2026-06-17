@@ -515,7 +515,6 @@ class Charger:
             if self.connected_vehicle is not None:
                 if self.connected_vehicle.vehicle_id == self._guest_car.vehicle_id:
                     self.connected_vehicle._handleChargeCompletion()
-                    self.stopCharging()
                     self.remove_car_from_list(self.connected_vehicle.vehicle_id)
                     Registry.unlink_by_charger(self)
                     self._guest_car = None
@@ -526,7 +525,6 @@ class Charger:
                     self.connected_vehicle.findNewChargeTime()
 
             if self._guest_car is not None:
-                self.stopCharging()
                 self.remove_car_from_list(self._guest_car.vehicle_id)
                 self._guest_car = None
 
@@ -557,6 +555,7 @@ class Charger:
         self.manager.add_car(car_instance)
 
     def remove_car_from_list(self, vehicle_id):
+        self.stopCharging()
         self.manager.remove_car(vehicle_id)
 
 class Tesla_charger(Charger):
