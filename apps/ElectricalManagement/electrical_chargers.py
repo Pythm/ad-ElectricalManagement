@@ -1235,7 +1235,7 @@ class Audi_charger(Charger):
                     vin = self.charger_id,
                     action = "start_charger"
                 )
-                #self.ADapi.create_task(self.connected_vehicle._force_API_update())
+                self.ADapi.log(f"Start charging {self.charger}") ###
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
 
@@ -1245,12 +1245,12 @@ class Audi_charger(Charger):
 
     def stop_Audi_charging(self):
         try:
-                self.ADapi.call_service('audiconnect/execute_vehicle_action',
-                    namespace = self.namespace,
-                    vin = self.charger_id,
-                    action = "stop_charger"
-                )
-            #self.ADapi.create_task(self.connected_vehicle._force_API_update())
+            self.ADapi.call_service('audiconnect/execute_vehicle_action',
+                namespace = self.namespace,
+                vin = self.charger_id,
+                action = "stop_charger"
+            )
+            self.ADapi.log(f"Stop charging {self.charger}") ###
         except Exception as e:
             self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
 
@@ -1376,7 +1376,7 @@ class Audi_charger(Charger):
     def ChargingStarted(self, entity, attribute, old, new, kwargs) -> None:
         """ Charger started charging. Check if controlling car and if chargetime has been set up """
 
-        self.ADapi.log(f"{self.charger} charging started updated to {newAmp}") ###
+        self.ADapi.log(f"{self.charger} charging started updated to {new}") ###
 
         if self.connected_vehicle is None:
             if not self.findCarConnectedToCharger():
@@ -1404,7 +1404,7 @@ class Audi_charger(Charger):
     def ChargingStopped(self, entity, attribute, old, new, kwargs) -> None:
         """ Charger stopped. """
 
-        self.ADapi.log(f"{self.charger} charging stopped updated to {newAmp}") ###
+        self.ADapi.log(f"{self.charger} charging stopped updated to {new}") ###
 
         connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if connected_charger is self:
