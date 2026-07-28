@@ -44,7 +44,7 @@ from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3

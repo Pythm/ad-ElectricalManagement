@@ -120,6 +120,13 @@ class Heater:
 
         self.vacation_state = new == 'on'
         self.off_retry_count = 3
+        if (
+            self.vacation_state
+            and self.HeatAt is None
+            and self.electricalPriceApp.tomorrow_valid
+            and not self.heater_data.vacation_keep_off
+        ):
+            self.heater_getNewPrices(0)
         self.heater_setNewValues()
 
     def _automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
