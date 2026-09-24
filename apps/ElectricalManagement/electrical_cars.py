@@ -436,6 +436,8 @@ class Car:
         """ Returns the charging state of the car.
             Valid returns: 'Complete' / 'None' / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower'.
         """
+        if self.connected_charger is None:
+            return False
         if self.car_data.charger_sensor is not None:
             try:
                 state = self.ADapi.get_state(self.car_data.charger_sensor,
@@ -500,6 +502,11 @@ class Tesla_car(Car):
         )
         self.onboard_charger = None
 
+        self.ADapi.listen_state(self.car_charging_state_changed, car_data.charger_sensor,
+            namespace = namespace,
+            attribute = 'charging_state'
+        ) ###
+
         if self.car_data.destination_location_tracker:
            self.ADapi.listen_state(self.destination_updated, self.car_data.destination_location_tracker,
             namespace = self.namespace
@@ -507,6 +514,21 @@ class Tesla_car(Car):
 
         """ End initialization Tesla Car Class
         """
+
+    def car_charging_state_changed(self, entity, attribute, old, new, kwargs) -> None:
+        if new is None:
+            return
+        if self.connected_charger is None:
+            self.ADapi.log(f"Car charging state for {self.carName} changed to {new} without connected charger") ###
+            return
+
+        if new == 'Starting':
+            new = 'Charging'
+        if not self.connected_charger.compareChargingState(
+            car_status = new
+        ):
+            self.ADapi.log(f"State of car is {new} not equal to charger: {self.connected_charger.getChargingState()}. Need to unlink") ###
+            Registry.unlink(self)
 
     def wakeMeUp(self) -> None:
         """ Function to wake up connected cars.

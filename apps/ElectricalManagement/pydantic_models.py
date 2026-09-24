@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Callable
@@ -69,6 +69,9 @@ class HeaterBlock(BaseModel):
     windowsensors: Optional[List[str]] = None
     daytime_savings: Optional[List[Dict[str, Any]]] = None
     temperatures: Optional[List[Dict[str, Any]]] = None
+    turn_off_after: time | None = None
+    turn_off_before: time | None = None
+    notify_when_finished: bool = False
 
     ConsumptionData: Dict[int, Dict[int, TempConsumption]] = Field(default_factory=dict)
     prev_consumption: float = 0.0

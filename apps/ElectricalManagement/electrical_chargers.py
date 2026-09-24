@@ -88,6 +88,7 @@ class Charger:
                     self.kWhRemaining()
                     self.connected_vehicle.findNewChargeTime()
                     self._register_battery_soc_for_calculation()
+                    self.ADapi.log(f"Connected {car.carName} to {self.charger}") ###
                     return True
 
         if self.connected_vehicle is None:
@@ -924,12 +925,12 @@ class Easee(Charger):
         elif new == 'completed':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
-                self.ADapi.log(f"Guest car when Easee was complete is {self._guest_car}") ###
                 if self._guest_car is not None:
-                    self.ADapi.call_service('input_boolean/turn_off',
-                        entity_id = self.charger_data.guest,
-                        namespace = self.namespace,
-                    )
+                    self.ADapi.log(f"{self._guest_car.carName} connected to {self.charger} is complete. Check it disconnects properly") ###
+                    #self.ADapi.call_service('input_boolean/turn_off',
+                    #    entity_id = self.charger_data.guest,
+                    #    namespace = self.namespace,
+                    #)
         elif new == 'disconnected':
             self.ADapi.run_in(self._check_if_still_disconnected, 720)
 
@@ -940,21 +941,36 @@ class Easee(Charger):
                     return
 
     def _check_if_still_disconnected(self, kwargs) -> None:
+        if self._guest_car is not None:
+            self.ADapi.log(f"{self._guest_car.carName} connected to {self.charger} when disconnected.") ###
+        else:
+            self.ADapi.log(f"No guest car connected to {self.charger} when disconnected.") ###
         if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'disconnected':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
-                if self._guest_car is not None:
-                    self.ADapi.call_service('input_boolean/turn_off',
-                        entity_id = self.charger_data.guest,
-                        namespace = self.namespace,
-                    )
+
+            if self._guest_car is not None:
+                self.ADapi.log(f"{self._guest_car.carName} disconnects.") ###
+                self.ADapi.call_service('input_boolean/turn_off',
+                    entity_id = self.charger_data.guest,
+                    namespace = self.namespace,
+                )
         elif self.connected_vehicle is not None: # Check if new car is connected.
             if self.connected_vehicle.getCarChargerState() == 'Disconnected':
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
                 self.findCarConnectedToCharger()
+            if self._guest_car is not None:
+                self.ADapi.log(f"{self.charger} was not disconnected 11 minutes later while charge guest is on") ###
         elif self.connected_vehicle is None: # New car connected.
+            if self._guest_car is not None:
+                self.ADapi.log(f"{self._guest_car.carName} disconnects based on new car connected.") ###
+                self.ADapi.call_service('input_boolean/turn_off',
+                    entity_id = self.charger_data.guest,
+                    namespace = self.namespace,
+                )
+                self.ADapi.log(f"{self.charger} disconnected and connected vehicle is None while charge guest is on") ###
             self.findCarConnectedToCharger()
 
 

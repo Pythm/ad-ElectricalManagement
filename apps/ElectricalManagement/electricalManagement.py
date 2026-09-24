@@ -589,7 +589,24 @@ class ElectricalUsage(ad.ADBase):
                                 setattr(persisted_heater, key, main_vacation_sensor)
                                 value_changed = True
                                 continue
-
+                    if key == 'turn_off_after' and 'turn_off_after' in heater_cfg: ### New Key in version 1.0.6
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['turn_off_after'])
+                                value_changed = True
+                                continue
+                    if key == 'turn_off_before' and 'turn_off_before' in heater_cfg: ### New Key in version 1.0.6
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['turn_off_before'])
+                                value_changed = True
+                                continue
+                    if key == 'notify_when_finished' and 'notify_when_finished' in heater_cfg: ### New Key in version 1.0.6
+                        if value is None:
+                            if key not in heater_cfg or heater_cfg[key] is None:
+                                setattr(persisted_heater, key, heater_cfg['notify_when_finished'])
+                                value_changed = True
+                                continue
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
                             setattr(persisted_heater, key, heater_cfg[key])
@@ -778,6 +795,9 @@ class ElectricalUsage(ad.ADBase):
                     'automate':                       switch_cfg.get('automate',self.automate),
                     'recipient':                      switch_cfg.get('recipient',self.recipients),
                     'daytime_savings':                switch_cfg.get('daytime_savings',[]),
+                    'turn_off_after':                 switch_cfg.get('turn_off_after', '22:00:00'),
+                    'turn_off_before':                switch_cfg.get('turn_off_before', '07:00:00'),
+                    'notify_when_finished':           switch_cfg.get('notify_when_finished', False),
                     'ConsumptionData':                {},
                     'prev_consumption':               0,
                     'time_to_save':                   [],
@@ -1196,31 +1216,25 @@ class ElectricalUsage(ad.ADBase):
             # Reduced enough
             return
 
-        if minute < 2:
-            # Do not turn down heating first minutes
+        if minute < 3:
             return
-        if minute > 7 or not self._persistence.queueChargingList:
-            self._reduce_heating()
 
-        if (
-            (self._persistence.max_usage.max_kwh_usage_pr_hour
-            + (self.max_target_kWh_buffer * (60 / remaining_minute)))*1000
-            - self.current_consumption
-            < -100
-            and now - self.lastTimeHeaterWasReduced > timedelta(minutes = 3)
-            and remaining_minute < 55
-            and self.available_Wh < -200
-        ):
-            if self.current_consumption > (self._persistence.max_usage.max_kwh_usage_pr_hour * 1000):
-                self.checkHighUsage()
-            else:
+        if self._reduce_heating():
+            return
+
+        if self.available_Wh < -200 and minute > 9:
+            if (
+                (self._persistence.max_usage.max_kwh_usage_pr_hour
+                + (self.max_target_kWh_buffer * (60 / remaining_minute)))*1000
+                - self.current_consumption
+                < -100
+            ):
                 if self.pause_charging:
                     if self._stop_chargers_due_to_overconsumption():
                         return
-                for charger in self.all_chargers():
-                    if charger.connected_vehicle is None:
-                        if charger.getChargingState() in ('Charging'):
-                            charger.stopCharging()
+
+                if self.current_consumption > (self._persistence.max_usage.max_kwh_usage_pr_hour * 1000):
+                    self.checkHighUsage()
 
                 if self.notify_overconsumption:
                     self._notify_overconsumption(hour = now.hour)
@@ -1375,98 +1389,99 @@ class ElectricalUsage(ad.ADBase):
             if car is None:
                 continue
 
-            if car.connected_charger is not None:
-                ChargingState = car.getCarChargerState()
-                if ChargingState in ('Complete', 'Disconnected'):
+            car_connected_to_charger = True
+            if car.connected_charger is None:
+                car_connected_to_charger = False
+
+            ChargingState = car.getCarChargerState()
+            if not ChargingState:
+                car_connected_to_charger = False
+            elif ChargingState in ('Complete', 'Disconnected'):
+                to_remove.add(queue_id)
+                self.charging_scheduler.removeFromCharging(car.vehicle_id)
+                car.connected_charger._CleanUpWhenChargingStopped()
+                if (
+                    len(self.charging_scheduler.chargingQueue) == 0 and
+                    not self.vacation_state and
+                    self.ADapi.now_is_between('01:00:00', '05:00:00')
+                ):
+                    if self.charging_scheduler.findNextChargerToStart(check_if_charging_time = check_if_charging_time) is None:
+                        if self.ADapi.now_is_between('01:00:00', '04:00:00'):
+                            self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, "04:30:01")
+                        else:
+                            self.ADapi.run_in(self.logIdleConsumption, 30)
+                    elif self._should_start_next_charging(vehicle_id = car.vehicle_id):
+                        next_vehicle_id = True
+
+            elif ChargingState in ('Stopped', 'awaiting_start'):
+                
+                if (
+                    self.charging_scheduler.isChargingTime(vehicle_id = car.vehicle_id) and 
+                    available_Wh > 1300 or
+                    not check_if_charging_time
+                ):
+                    self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                            remaining_minute = remaining_minute)
+                                                            
+                    return True
+                elif not car.dontStopMeNow():
                     to_remove.add(queue_id)
                     self.charging_scheduler.removeFromCharging(car.vehicle_id)
-                    car.connected_charger._CleanUpWhenChargingStopped()
-                    if (
-                        len(self.charging_scheduler.chargingQueue) == 0 and
-                        not self.vacation_state and
-                        self.ADapi.now_is_between('01:00:00', '05:00:00')
-                    ):
-                        if self.charging_scheduler.findNextChargerToStart(check_if_charging_time = check_if_charging_time) is None:
-                            if self.ADapi.now_is_between('01:00:00', '04:00:00'):
-                                self.checkIdleConsumption_Handler = self.ADapi.run_at(self.logIdleConsumption, "04:30:01")
-                            else:
-                                self.ADapi.run_in(self.logIdleConsumption, 30)
-                        elif self._should_start_next_charging(vehicle_id = car.vehicle_id):
-                            next_vehicle_id = True
 
-                elif ChargingState in ('Stopped', 'awaiting_start'):
-                    
-                    if (
-                        self.charging_scheduler.isChargingTime(vehicle_id = car.vehicle_id) and 
-                        available_Wh > 1300 or
-                        not check_if_charging_time
-                    ):
-                        self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                              remaining_minute = remaining_minute)
-                                                                
+            elif ChargingState == 'Charging':
+                if not check_if_charging_time:
+                    car.charging_on_solar = True
+                if (len(self.charging_scheduler.chargingQueue) > len(charging_list) and
+                    self._should_start_next_charging(vehicle_id = car.vehicle_id)
+                ):
+                    next_vehicle_id = True
+                else:
+                    next_vehicle_id = False
+
+                    if not car.isChargingAtMaxAmps():
+                        self._increase_charging_ampere(car, available_Wh)
                         return True
-                    elif not car.dontStopMeNow():
-                        to_remove.add(queue_id)
-                        self.charging_scheduler.removeFromCharging(car.vehicle_id)
 
-                elif ChargingState == 'Charging':
-                    if not check_if_charging_time:
-                        car.charging_on_solar = True
-                    if (len(self.charging_scheduler.chargingQueue) > len(charging_list) and
-                        self._should_start_next_charging(vehicle_id = car.vehicle_id)
-                    ):
-                        next_vehicle_id = True
-                    else:
-                        next_vehicle_id = False
+            elif ChargingState is None:
+                car.wakeMeUp()
+                self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
+                                                        remaining_minute = remaining_minute)
+                return True
 
-                        if not car.isChargingAtMaxAmps():
-                            self._increase_charging_ampere(car, available_Wh)
-                            return True
-
-                elif ChargingState is None:
-                    car.wakeMeUp()
+            elif (
+                car.connected_charger is not car.onboard_charger
+                and ChargingState == 'NoPower'
+            ):
+                if car.connected_charger.getChargingState() != 'Charging':
                     self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                          remaining_minute = remaining_minute)
+                                                            remaining_minute = remaining_minute)
                     return True
 
-                elif (
-                    car.connected_charger is not car.onboard_charger
+            else:
+                if (
+                    car.connected_charger is car.onboard_charger
                     and ChargingState == 'NoPower'
                 ):
-                    if car.connected_charger.getChargingState() != 'Charging':
-                        self._start_charging_from_chargeQueue(vehicle_id = car.vehicle_id,
-                                                              remaining_minute = remaining_minute)
-                        return True
-
+                    car.wakeMeUp()
+                    for charger in self.all_chargers():
+                        if (
+                            charger.connected_vehicle is None
+                            and charger.getChargingState() in ('Stopped', 'awaiting_start')
+                        ):
+                            Registry.unlink(car)
+                            charger.findCarConnectedToCharger()
                 else:
-                    if (
-                        car.connected_charger is car.onboard_charger
-                        and ChargingState == 'NoPower'
-                    ):
-                        car.wakeMeUp()
-                        for charger in self.all_chargers():
-                            if (
-                                charger.connected_vehicle is None
-                                and charger.getChargingState() in ('Stopped', 'awaiting_start')
-                            ):
-                                Registry.unlink(car)
-                                charger.findCarConnectedToCharger()
+                    car_connected_to_charger = False
 
-            elif not car.isConnected():
+            if not car.isConnected():
                 to_remove.add(queue_id)
                 self.charging_scheduler.removeFromCharging(car.vehicle_id)
                 car._handleChargeCompletion()
 
-            else:
-                if car.onboard_charger is not None:
-                    Registry.set_link(car, car.onboard_charger)
-                else:
-                    for charger in self.all_chargers():
-                        if (
-                            charger.connected_vehicle is None
-                            and charger._guest_car == car
-                        ):
-                            Registry.set_link(car, charger)
+            elif not car_connected_to_charger:
+                for charger in self.all_chargers():
+                    if charger.connected_vehicle is None:
+                        charger.findCarConnectedToCharger()
 
         charging_list[:] = [
             qid for qid in charging_list
@@ -1679,6 +1694,13 @@ class ElectricalUsage(ad.ADBase):
 
         added = False
         for car in self.all_cars_connected():
+            if car.connected_charger is None:
+                for charger in self.all_chargers():
+                    if charger.connected_vehicle is None:
+                        charger.findCarConnectedToCharger()
+            if car.connected_charger is None:
+                self.ADapi.log(f"{car.carName} is not connected") ###
+                continue
             if (
                 car.vehicle_id not in charging_list and
                 (car.getCarChargerState() == 'Charging' or car.connected_charger.getChargingState() == 'Charging')
@@ -1759,7 +1781,14 @@ class ElectricalUsage(ad.ADBase):
     def _stop_chargers_due_to_overconsumption(self) -> bool:
         for queue_id in reversed(self._persistence.queueChargingList):
             car = Registry.get_car(queue_id)
-            if car is None or car.connected_charger is None:
+            if car is None:
+                continue
+            if car.connected_charger is None:
+                for charger in self.all_chargers():
+                    if charger.connected_vehicle is None:
+                        charger.findCarConnectedToCharger()
+            if car.connected_charger is None:
+                self.ADapi.log(f"{car.carName} is not connected") ###
                 continue
 
             if car.connected_charger.getChargingState() == "Charging":
@@ -1801,7 +1830,8 @@ class ElectricalUsage(ad.ADBase):
                     if wattconsumption > 30:
                         heater.setSaveState()
             if self.available_Wh > -100:
-                return
+                return True
+        return False
 
     def _get_heaters_reduced_previous_consumption(self, avail:float = 0) -> float:
         """ Function that finds the value of power consumption when heating for items that are turned down

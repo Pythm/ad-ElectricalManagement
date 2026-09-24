@@ -785,7 +785,7 @@ class Climate(Heater):
             self.notify_app.send_notification(
                 message = f"No Window near {self.heater} is open and it is getting hot inside! {in_temp}°",
                 message_title = f"Window closed",
-                message_recipient = self.heater_data.recipients,
+                message_recipient = self.heater_data.recipient,
                 also_if_not_home = False
             )
             self.notify_on_window_closed = False
@@ -799,7 +799,7 @@ class Climate(Heater):
                 self.notify_app.send_notification(
                     message = f"Window near {self.heater} is open and inside temperature is {in_temp}°",
                     message_title = "Window open",
-                    message_recipient = self.heater_data.recipients,
+                    message_recipient = self.heater_data.recipient,
                     also_if_not_home = False
                 )
                 self.notify_on_window_open = False
@@ -898,4 +898,68 @@ class On_off_switch(Heater):
             charging_scheduler = charging_scheduler,
             notify_app = notify_app,
             print_save_hours = print_save_hours,
+        )
+
+        self.turn_off_action:str = 'turn_off_' + str(self.heater)
+        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace = self.namespace)
+
+        if self.heater_data.notify_when_finished and self.heater_data.turn_off_before is not None and self.heater_data.turn_off_after is not None:
+            self.start_listen_state()
+
+    def _dryer_is_running(self, entity, attribute, old, new, kwargs):
+        """ Reacts to powerconsumption and waiting for it to fall again """
+
+        self.ADapi.listen_state(self._dryer_is_stopping, self.heater_data.consumptionSensor,
+            constrain_state=lambda x: float(x) < 15,
+            duration = 30,
+            oneshot = True,
+            namespace = self.namespace
+        )
+
+    def _dryer_is_stopping(self, entity, attribute, old, new, kwargs):
+        """ Reacts to powerconsumption falling and notifies """
+
+        if self.isSaveState:
+            return
+
+        data = {
+            'tag' : str(self.heater),
+            'actions' : [{ 'action' : self.turn_off_action, 'title' : 'Turn Off', 'destructive' : True, 'icon' : 'sfsymbols:stop.circle.fill' }]
+            }
+
+        if self.ADapi.now_is_between(self.heater_data.turn_off_after, self.heater_data.turn_off_before):
+            self.turn_off_appliance()
+
+        self.notify_app.send_notification(
+            message = f"Consumption finished",
+            message_title = f"{self.heater}",
+            message_recipient = self.heater_data.recipient,
+            also_if_not_home = True,
+            data = data
+        )
+        self.start_listen_state()
+
+    def _notify_event(self, event_name, data, **kwargs) -> None:
+        if data['action'] == self.turn_off_action:
+            self.turn_off_appliance()
+
+    def turn_off_appliance(self) -> None:
+        self.ADapi.call_service('switch/turn_off',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+        self.ADapi.run_in(self.turn_back_on, 60)
+    
+    def turn_back_on(self, kwargs) -> None:
+        self.ADapi.call_service('switch/turn_on',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+
+    def start_listen_state(self) -> None:
+        self.ADapi.listen_state(self._dryer_is_running, self.heater_data.consumptionSensor,
+            constrain_state=lambda x: float(x) > 100,
+            duration = 30,
+            oneshot = True,
+            namespace = self.namespace
         )

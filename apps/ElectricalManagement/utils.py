@@ -22,7 +22,7 @@ def cancel_timer_handler(ADapi, handler, name) -> bool:
 def cancel_listen_handler(ADapi, handler, name) -> bool:
     if handler is not None:
         try:
-            ADapi.cancel_listen_state(handler)
+            ADapi.cancel_listen_state(handler, silent=True)
         except Exception as e:
             ADapi.log(
                 f"Not able to stop listen handler for {name}. Exception: {e}",
