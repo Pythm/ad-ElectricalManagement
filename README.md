@@ -604,6 +604,32 @@ Define switch entity with `switch`.
       #recipient: Define other recipients that configured in main configuration.
 ```
 
+### Notify when a program is finished (dryer, washing machine)
+
+A switch with a power sensor can also tell you when the appliance has finished, for example a dryer. It needs `consumptionSensor` in W.
+
+```yaml
+  heater_switches:
+    - switch: switch.dryer
+      consumptionSensor: sensor.dryer_electric_consumption_w
+      kWhconsumptionSensor: sensor.dryer_electric_consumption_kWh
+      notify_when_finished: true
+      turn_off_after: '22:00:00'
+      turn_off_before: '07:00:00'
+```
+
+The appliance counts as running when the power has been above `start_threshold` for `start_duration` seconds, and as finished when it has then been below `stop_threshold` for `stop_duration` seconds. A notification with a "Turn Off" button is sent. If the program finishes between `turn_off_after` and `turn_off_before` the switch is turned off automatically, and turned on again after `turn_back_on_after` seconds. Nothing is sent when the power fell because the app itself switched the appliance off to save electricity, and none while the sensor is `unavailable`.
+
+| Key | Default | Description |
+|---|---|---|
+| `notify_when_finished` | `false` | Turns the function on. |
+| `turn_off_after` / `turn_off_before` | `22:00:00` / `07:00:00` | Window for the automatic turn-off. |
+| `start_threshold` / `stop_threshold` | `100` / `15` | Watts. |
+| `start_duration` / `stop_duration` | `30` / `30` | Seconds the power must stay above / below the threshold. Raise `stop_duration` for appliances with long low-power phases. |
+| `turn_back_on_after` | `60` | Seconds until the switch is turned on again after the app turned it off. `0` never turns it on again. |
+
+These keys are saved with the switch. A key you set in the YAML replaces the saved value at the next start. Removing a key from the YAML keeps the saved value, so set `notify_when_finished: false` to turn it off. Switches that control a hot-water boiler leave `notify_when_finished` off.
+
 ---
 
 ## 📄 Contributions

@@ -901,25 +901,82 @@ class On_off_switch(Heater):
         )
 
         self.turn_off_action:str = 'turn_off_' + str(self.heater)
-        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action", namespace = self.namespace)
-
-        if self.heater_data.notify_when_finished and self.heater_data.turn_off_before is not None and self.heater_data.turn_off_after is not None:
-            self.start_listen_state()
-
-    def _dryer_is_running(self, entity, attribute, old, new, kwargs):
-        """ Reacts to powerconsumption and waiting for it to fall again """
-
-        self.ADapi.listen_state(self._dryer_is_stopping, self.heater_data.consumptionSensor,
-            constrain_state=lambda x: float(x) < 15,
-            duration = 30,
-            oneshot = True,
+        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action",
+            action = self.turn_off_action,
             namespace = self.namespace
         )
 
-    def _dryer_is_stopping(self, entity, attribute, old, new, kwargs):
-        """ Reacts to powerconsumption falling and notifies """
+        # Detection of finished program (notify_when_finished)
+        self.running:bool = False
+        self.debounce_handler = None
+        self.turn_back_on_handler = None
+        if (
+            self.heater_data.notify_when_finished
+            and self.heater_data.turn_off_before is not None
+            and self.heater_data.turn_off_after is not None
+        ):
+            self.start_finished_detection()
+
+    def start_finished_detection(self) -> None:
+        """ Starts watching the consumption sensor for a program that starts and finishes. """
+
+        if self.heater_data.consumptionSensor is None:
+            self.ADapi.log(f"{self.heater} has notify_when_finished but no consumptionSensor.", level = 'WARNING')
+            return
+        power = self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)
+        self.ADapi.listen_state(self._power_changed, self.heater_data.consumptionSensor,
+            namespace = self.namespace
+        )
+        self._evaluate(power)
+
+    def _power_changed(self, entity, attribute, old, new, kwargs) -> None:
+        self._evaluate(new)
+
+    def _evaluate(self, value) -> None:
+        """ Starts or cancels the timer that confirms that the appliance started or finished.
+            Every new reading is checked, so a sensor that changes often works as well. """
+
+        try:
+            watts = float(value)
+        except (TypeError, ValueError):
+            # unavailable or unknown. Do not notify on missing data.
+            self._cancel_debounce()
+            return
+
+        if not self.running:
+            if watts > self.heater_data.start_threshold:
+                self._start_debounce(self._dryer_is_running, self.heater_data.start_duration)
+            else:
+                self._cancel_debounce()
+        else:
+            if watts < self.heater_data.stop_threshold:
+                self._start_debounce(self._dryer_is_stopping, self.heater_data.stop_duration)
+            else:
+                self._cancel_debounce()
+
+    def _start_debounce(self, callback, seconds:int) -> None:
+        if self.debounce_handler is None:
+            self.debounce_handler = self.ADapi.run_in(callback, seconds)
+
+    def _cancel_debounce(self) -> None:
+        if self.debounce_handler is not None:
+            self.ADapi.cancel_timer(self.debounce_handler, silent = True)
+            self.debounce_handler = None
+
+    def _dryer_is_running(self, **kwargs) -> None:
+        """ Consumption has been high long enough. Now waiting for it to fall again """
+
+        self.debounce_handler = None
+        self.running = True
+
+    def _dryer_is_stopping(self, **kwargs) -> None:
+        """ Consumption has been low long enough. Notifies that the program is finished """
+
+        self.debounce_handler = None
+        self.running = False
 
         if self.isSaveState:
+            # Consumption fell because the switch is off to save, not because the program finished.
             return
 
         data = {
@@ -937,29 +994,23 @@ class On_off_switch(Heater):
             also_if_not_home = True,
             data = data
         )
-        self.start_listen_state()
 
     def _notify_event(self, event_name, data, **kwargs) -> None:
-        if data['action'] == self.turn_off_action:
-            self.turn_off_appliance()
+        self.turn_off_appliance()
 
     def turn_off_appliance(self) -> None:
         self.ADapi.call_service('switch/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
         )
-        self.ADapi.run_in(self.turn_back_on, 60)
-    
-    def turn_back_on(self, kwargs) -> None:
+        if self.heater_data.turn_back_on_after > 0:
+            if self.turn_back_on_handler is not None:
+                self.ADapi.cancel_timer(self.turn_back_on_handler, silent = True)
+            self.turn_back_on_handler = self.ADapi.run_in(self.turn_back_on, self.heater_data.turn_back_on_after)
+
+    def turn_back_on(self, **kwargs) -> None:
+        self.turn_back_on_handler = None
         self.ADapi.call_service('switch/turn_on',
             entity_id = self.heater,
-            namespace = self.namespace
-        )
-
-    def start_listen_state(self) -> None:
-        self.ADapi.listen_state(self._dryer_is_running, self.heater_data.consumptionSensor,
-            constrain_state=lambda x: float(x) > 100,
-            duration = 30,
-            oneshot = True,
             namespace = self.namespace
         )

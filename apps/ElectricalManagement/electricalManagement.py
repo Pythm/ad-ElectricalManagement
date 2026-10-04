@@ -13,7 +13,7 @@ import importlib.util
 import copy
 
 import bisect
-from datetime import timedelta
+from datetime import timedelta, time as dt_time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Iterable, Optional
 
@@ -573,13 +573,25 @@ class ElectricalUsage(ad.ADBase):
         # --------------------------------------------------------------------------- #
         # Setup heaters and switches
         # --------------------------------------------------------------------------- #
+        def _to_time(value) -> dt_time | None:
+            """ Converts '22:00:00' from the configuration to a time object. """
+            if isinstance(value, dt_time):
+                return value
+            try:
+                return dt_time.fromisoformat(str(value))
+            except ValueError:
+                self.ADapi.log(f"Not able to read {value} as a time. Use the format 'HH:MM:SS'.", level = 'WARNING')
+                return None
+
         def _merge_heater_cfg(heater_cfg: dict, persisted_heater) -> bool:
             value_changed = False
             if persisted_heater:
                 common_keys = [
                     'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
                     'max_continuous_hours', 'on_for_minimum', 'pricedrop',
-                    'pricedifference_increase', 'vacation', 'automate', 'recipient'
+                    'pricedifference_increase', 'vacation', 'automate', 'recipient',
+                    'notify_when_finished', 'turn_off_after', 'turn_off_before',
+                    'start_threshold', 'stop_threshold', 'start_duration', 'stop_duration', 'turn_back_on_after'
                 ]
                 for key in common_keys:
                     value = getattr(persisted_heater, key, None)
@@ -589,24 +601,13 @@ class ElectricalUsage(ad.ADBase):
                                 setattr(persisted_heater, key, main_vacation_sensor)
                                 value_changed = True
                                 continue
-                    if key == 'turn_off_after' and 'turn_off_after' in heater_cfg: ### New Key in version 1.0.6
-                        if value is None:
-                            if key not in heater_cfg or heater_cfg[key] is None:
-                                setattr(persisted_heater, key, heater_cfg['turn_off_after'])
+                    if key in ('turn_off_after', 'turn_off_before'):
+                        if heater_cfg.get(key) is not None:
+                            new_time = _to_time(heater_cfg[key])
+                            if new_time is not None and value != new_time:
+                                setattr(persisted_heater, key, new_time)
                                 value_changed = True
-                                continue
-                    if key == 'turn_off_before' and 'turn_off_before' in heater_cfg: ### New Key in version 1.0.6
-                        if value is None:
-                            if key not in heater_cfg or heater_cfg[key] is None:
-                                setattr(persisted_heater, key, heater_cfg['turn_off_before'])
-                                value_changed = True
-                                continue
-                    if key == 'notify_when_finished' and 'notify_when_finished' in heater_cfg: ### New Key in version 1.0.6
-                        if value is None:
-                            if key not in heater_cfg or heater_cfg[key] is None:
-                                setattr(persisted_heater, key, heater_cfg['notify_when_finished'])
-                                value_changed = True
-                                continue
+                        continue
                     if key in heater_cfg and heater_cfg[key] is not None:
                         if value != heater_cfg[key]:
                             setattr(persisted_heater, key, heater_cfg[key])
@@ -798,6 +799,11 @@ class ElectricalUsage(ad.ADBase):
                     'turn_off_after':                 switch_cfg.get('turn_off_after', '22:00:00'),
                     'turn_off_before':                switch_cfg.get('turn_off_before', '07:00:00'),
                     'notify_when_finished':           switch_cfg.get('notify_when_finished', False),
+                    'start_threshold':                switch_cfg.get('start_threshold', 100),
+                    'stop_threshold':                 switch_cfg.get('stop_threshold', 15),
+                    'start_duration':                 switch_cfg.get('start_duration', 30),
+                    'stop_duration':                  switch_cfg.get('stop_duration', 30),
+                    'turn_back_on_after':             switch_cfg.get('turn_back_on_after', 60),
                     'ConsumptionData':                {},
                     'prev_consumption':               0,
                     'time_to_save':                   [],

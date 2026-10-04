@@ -72,6 +72,11 @@ class HeaterBlock(BaseModel):
     turn_off_after: time | None = None
     turn_off_before: time | None = None
     notify_when_finished: bool = False
+    start_threshold: float = 100
+    stop_threshold: float = 15
+    start_duration: int = 30
+    stop_duration: int = 30
+    turn_back_on_after: int = 60
 
     ConsumptionData: Dict[int, Dict[int, TempConsumption]] = Field(default_factory=dict)
     prev_consumption: float = 0.0
