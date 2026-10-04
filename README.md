@@ -281,7 +281,7 @@ self.fire_event("MODE_CHANGE", mode = 'your_mode_name')
 ```
 
 > [!TIP]
-> `ElectricalManagement` now supports the same translation on Modes as Lightwand. Check out the documentation for Lightwand in the [translation section](https://github.com/Pythm/ad-Lightwand?tab=readme-ov-file#translating-or-changing-modes) to listen for another event than `"MODE_CHANGE"` or use your own names for the pre defined mode names and change `"fire"` and `"false-alarm"` to comply with rest of your smart home. To adopt the translation one lightwand app needs to be configured with the translation configuration.
+> `ElectricalManagement` now supports the same translation on Modes as Lightwand. Check out the documentation for Lightwand in the [translation section](https://github.com/Pythm/ad-Lightwand?tab=readme-ov-file#translating-or-changing-modes) to listen for another event than `"MODE_CHANGE"` or use your own names for the pre defined mode names and change `"fire"` and `"false-alarm"` to comply with rest of your smart home. To adopt the translation, configure the `ModeTranslation` app that comes with Lightwand 2.3.0 and add `dependencies: mode_translation` to `ElectricalManagement`, so the names are loaded before this app starts (older Lightwand versions: one Lightwand room app configured with the translation settings). Without Lightwand installed the English names are used.
 
 ---
 
