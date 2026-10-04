@@ -40,6 +40,8 @@ class Charger:
         self.reason_for_no_current_handler = None
         self.session_start_charge:float = 0.0
         self._guest_car = None
+        # kWh the guest asked for last time, used as start value for the next guest. Not stored between restarts.
+        self._last_guest_kWh:float = 5.0
 
         Registry.register_charger(self)
 
@@ -546,7 +548,15 @@ class Charger:
 
         self.add_car_to_list(self._guest_car)
         Registry.set_link(self._guest_car, self)
-        self.connected_vehicle.car_data.kWh_remain_to_charge = 10
+        self.connected_vehicle.car_data.kWh_remain_to_charge = self._last_guest_kWh
+
+    def setGuestKWh(self, kWh:float) -> None:
+        """ Sets kWh to charge for the connected guest car and remembers it for the next guest. """
+
+        if kWh <= 0:
+            raise ValueError(f"kWh must be above 0, got {kWh}")
+        self._last_guest_kWh = kWh
+        self.connected_vehicle.car_data.kWh_remain_to_charge = kWh
 
     def add_car_to_list(self, car_instance):
         self.manager.add_car(car_instance)

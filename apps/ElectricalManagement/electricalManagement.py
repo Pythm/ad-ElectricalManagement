@@ -2260,7 +2260,7 @@ class ElectricalUsage(ad.ADBase):
         for charger in self.all_chargers():
             if action == 'kWhremaining'+str(charger.charger):
                 try:
-                    charger.connected_vehicle.car_data.kWh_remain_to_charge = float(data['reply_text'])
+                    charger.setGuestKWh(float(str(data['reply_text']).replace(',', '.')))
                 except (ValueError, TypeError):
                     charger.kWhRemaining()
                     self.ADapi.log(

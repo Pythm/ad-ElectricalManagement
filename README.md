@@ -322,7 +322,7 @@ Instead of calculating the optimal charging time, you can set a fixed price thre
 
 Create Home Assistant helpers to manage charging:
 
-1. **Guest Function**: There is a `guest` function defined with an `input_boolean` on chargers. This allows guests to charge. You will need to set up a phone to receive nofication and long press the received notification to select either charge now, or input estimated kWh to charge.
+1. **Guest Function**: There is a `guest` function defined with an `input_boolean` on chargers. This allows guests to charge. You will need to set up a phone to receive nofication and long press the received notification to select either charge now, or input estimated kWh to charge. When the guest switch is turned on the expected kWh starts at the value last entered for that charger (5 kWh the first time after AppDaemon starts), and a new value from the notification replaces it.
 
 ---
 
