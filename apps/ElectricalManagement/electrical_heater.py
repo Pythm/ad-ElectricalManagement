@@ -996,7 +996,8 @@ class On_off_switch(Heater):
         )
 
     def _notify_event(self, event_name, data, **kwargs) -> None:
-        self.turn_off_appliance()
+        if data.get('action') == self.turn_off_action:
+            self.turn_off_appliance()
 
     def turn_off_appliance(self) -> None:
         self.ADapi.call_service('switch/turn_off',
