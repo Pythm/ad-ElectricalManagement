@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import inspect
 import uuid
 from typing import Optional
 
@@ -230,15 +229,18 @@ class Charger:
                 if connected_charger is not onboard_charger:
                     onboard_charger.setChargingAmps(charging_amp_set = onboard_charger.getmaxChargingAmps())
 
-        stack = inspect.stack() # Check if called from child
-        if stack[1].function != 'setChargingAmps':
-            self.charger_data.ampereCharging = charging_amp_set
-            self.ADapi.call_service('number/set_value',
-                value = self.charger_data.ampereCharging,
-                entity_id = self.charger_data.charging_amps,
-                namespace = self.namespace
-            )
+        self._apply_charging_amps(charging_amp_set)
         return charging_amp_set
+
+    def _apply_charging_amps(self, amps:int) -> None:
+        """ Sends the ampere to the charger. Child classes override this to use their own API. """
+
+        self.charger_data.ampereCharging = amps
+        self.ADapi.call_service('number/set_value',
+            value = self.charger_data.ampereCharging,
+            entity_id = self.charger_data.charging_amps,
+            namespace = self.namespace
+        )
 
     def Charger_ChargeCableConnected(self, entity, attribute, old, new, kwargs) -> None:
         """ Function that reacts to charger_sensor connected or disconnected. """
@@ -309,78 +311,74 @@ class Charger:
         if connected_charger is self:
             self.setChargingAmps(charging_amp_set = self.charger_data.min_ampere) # Set to minimum amp for preheat.
 
-    def startCharging(self) -> bool:
-        """ Starts charger. Parent class returns boolen to child if ready to start charging """
+    # Child classes that must send the stop command even when the charger does not report
+    # 'Charging' or 'Starting' (Tesla, Easee, Audi) set this to True.
+    SEND_STOP_WHEN_NOT_CHARGING:bool = False
+
+    def startCharging(self) -> None:
+        """ Starts charger. Does the bookkeeping and sends the command with _send_start_command.
+            The command is repeated by _check_that_charging_started until charging is reported.
+            Child classes override _send_start_command, not this method. """
 
         if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
             self.checkCharging_handler = None
         if self.doNotStartMe:
-            return False
+            return
         self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
 
         self.charging_scheduler.markAsCharging(self.connected_vehicle.vehicle_id)
-        stack = inspect.stack()
-        if stack[1].function == 'startCharging':
-            return True
-        else:
-            self.ADapi.call_service('switch/turn_on',
-                entity_id = self.charger_data.charger_switch,
-                namespace = self.namespace,
-            )
-        return False
+        self._send_start_command()
 
-    def stopCharging(self, force_stop:bool = False) -> bool:
-        """ Stops charger. Parent class returns boolen to child if able to stop charging """
+    def stopCharging(self, force_stop:bool = False) -> None:
+        """ Stops charger. Does the bookkeeping and sends the command with _send_stop_command.
+            Child classes override _send_stop_command, not this method. """
 
         if self.connected_vehicle is not None:
             if not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop):
-                return False
+                return
 
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
-        if self.getChargingState() in ('Charging', 'Starting'):
+        is_charging = self.getChargingState() in ('Charging', 'Starting')
+        if is_charging:
             self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_stopped, 60)
+        if is_charging or self.SEND_STOP_WHEN_NOT_CHARGING:
+            self._send_stop_command()
 
-            stack = inspect.stack()
-            if stack[1].function != 'stopCharging':
-                self.ADapi.call_service('switch/turn_off',
-                    entity_id = self.charger_data.charger_switch,
-                    namespace = self.namespace,
-                )
-        return True
+    def _send_start_command(self) -> None:
+        """ Sends the command that starts charging. Override in child classes. """
 
-    def _check_that_charging_started(self, kwargs) -> bool:
+        self.ADapi.call_service('switch/turn_on',
+            entity_id = self.charger_data.charger_switch,
+            namespace = self.namespace,
+        )
+
+    def _send_stop_command(self) -> None:
+        """ Sends the command that stops charging. Override in child classes. """
+
+        self.ADapi.call_service('switch/turn_off',
+            entity_id = self.charger_data.charger_switch,
+            namespace = self.namespace,
+        )
+
+    def _check_that_charging_started(self, kwargs) -> None:
+        """ Repeats the start command every 60 seconds until charging is reported.
+            The repeat also wakes up cars that sleep and update slowly. """
+
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         if not self.getChargingState() in ('Charging', 'Complete', 'Disconnected'):
             self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
+            self._send_start_command()
 
-            stack = inspect.stack()
-            if stack[1].function in ('startCharging', '_check_that_charging_started'):
-                return False
-            else:
-                self.ADapi.call_service('switch/turn_on',
-                    entity_id = self.charger_data.charger_switch,
-                    namespace = self.namespace,
-                )
-        return True
+    def _check_that_charging_stopped(self, kwargs) -> None:
+        """ Repeats the stop command every 60 seconds while the charger reports 'Charging'. """
 
-    def _check_that_charging_stopped(self, kwargs) -> bool:
         if self.connected_vehicle is not None:
             cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
             if self.connected_vehicle.dontStopMeNow():
-                return True
+                return
             if self.getChargingState() == 'Charging':
                 self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_stopped, 60)
-
-                stack = inspect.stack()
-                if stack[1].function in ('stopCharging', '_check_that_charging_stopped'):
-                    return False
-                else:
-                    self.ADapi.call_service('switch/turn_off',
-                        entity_id = self.charger_data.charger_switch,
-                        namespace = self.namespace,
-                    )
-
-        return True
+                self._send_stop_command()
 
     def _updateMaxkWhCharged(self, session: float) -> None:
         if self.connected_vehicle.car_data.max_kWh_charged < session:
@@ -685,11 +683,8 @@ class Tesla_charger(Charger):
             return True
         return False
 
-    def setChargingAmps(self, charging_amp_set:int = 16) -> int:
-        """ Function to set ampere charging to received value.
-            returns actual restricted within min/max ampere. """
-
-        self.charger_data.ampereCharging = super().setChargingAmps(charging_amp_set = charging_amp_set)
+    def _apply_charging_amps(self, amps:int) -> None:
+        self.charger_data.ampereCharging = amps
         self.ADapi.call_service('tesla_custom/api',
             namespace = self.namespace,
             command = 'CHARGING_AMPS',
@@ -717,9 +712,10 @@ class Tesla_charger(Charger):
             if float(new) > self.charger_data.maxChargerAmpere:
                 self.charger_data.maxChargerAmpere = new
 
-    def startCharging(self) -> None:
-        if super().startCharging():
-            self.ADapi.create_task(self.start_Tesla_charging())
+    SEND_STOP_WHEN_NOT_CHARGING = True
+
+    def _send_start_command(self) -> None:
+        self.ADapi.create_task(self.start_Tesla_charging())
 
     async def start_Tesla_charging(self):
         if self.connected_vehicle is not None:
@@ -733,9 +729,8 @@ class Tesla_charger(Charger):
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
 
-    def stopCharging(self, force_stop:bool = False) -> None:
-        if super().stopCharging(force_stop = force_stop):
-            self.ADapi.create_task(self.stop_Tesla_charging())
+    def _send_stop_command(self) -> None:
+        self.ADapi.create_task(self.stop_Tesla_charging())
 
     async def stop_Tesla_charging(self):
         try:
@@ -755,13 +750,8 @@ class Tesla_charger(Charger):
             and connected_charger is self
         ):
             Registry.unlink_by_charger(self)
-
-        elif not super()._check_that_charging_started(0):
-            self.ADapi.create_task(self.start_Tesla_charging())
-
-    def _check_that_charging_stopped(self, kwargs) -> None:
-        if not super()._check_that_charging_stopped(0):
-            self.ADapi.create_task(self.stop_Tesla_charging())
+        else:
+            super()._check_that_charging_started(kwargs)
 
     def setVolts(self):
         if self.connected_vehicle.isConnected():
@@ -1021,18 +1011,14 @@ class Easee(Charger):
         except (ValueError, TypeError):
             self.charger_data.phases = 1
 
-    def setChargingAmps(self, charging_amp_set:int = 16) -> None:
-        """ Function to set ampere charging to received value.
-            returns actual restricted within min/max ampere. """
-
-        charging_amp_set = super().setChargingAmps(charging_amp_set = charging_amp_set)
+    def _apply_charging_amps(self, amps:int) -> None:
         if (
-            self.charger_data.ampereCharging != charging_amp_set
-            and self.charger_data.ampereCharging != charging_amp_set -1
+            self.charger_data.ampereCharging != amps
+            and self.charger_data.ampereCharging != amps -1
         ):
             self.ADapi.call_service('easee/set_charger_dynamic_limit',
                 namespace = self.namespace,
-                current = charging_amp_set,
+                current = amps,
                 charger_id = self.charger_id
             )
 
@@ -1044,56 +1030,27 @@ class Easee(Charger):
             return True
         return False
 
-    def startCharging(self) -> None:
-        if super().startCharging():
-            try:
-                self.ADapi.call_service('easee/action_command',
-                    namespace = self.namespace,
-                    action_command = 'resume',
-                    charger_id = self.charger_id
-                )
-            except Exception as e:
-                self.ADapi.log(f"{self.charger} Could not Start Charging. Exception {e}", level = 'WARNING')
+    SEND_STOP_WHEN_NOT_CHARGING = True
 
-    def stopCharging(self, force_stop:bool = False) -> None:
-        if super().stopCharging(force_stop = force_stop):
-            try:
-                self.ADapi.call_service('easee/action_command',
-                    namespace = self.namespace,
-                    action_command = 'pause',
-                    charger_id = self.charger_id
-                )
-            except Exception as e:
-                self.ADapi.log(f"{self.charger} Could not Stop Charging. Exception: {e}", level = 'WARNING')
+    def _send_start_command(self) -> None:
+        try:
+            self.ADapi.call_service('easee/action_command',
+                namespace = self.namespace,
+                action_command = 'resume',
+                charger_id = self.charger_id
+            )
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} Could not Start Charging. Exception {e}", level = 'WARNING')
 
-    def _check_that_charging_started(self, kwargs) -> None:
-        if not super()._check_that_charging_started(0):
-            try:
-                self.ADapi.call_service('easee/action_command',
-                    namespace = self.namespace,
-                    action_command = 'resume',
-                    charger_id = self.charger_id
-                    )
-            except Exception as e:
-                self.ADapi.log(
-                    f"Could not Start Charging in _check_that_charging_started for {self.charger}. Exception: {e}",
-                    level = 'WARNING'
-                )
-
-    def _check_that_charging_stopped(self, kwargs) -> None:
-        if not super()._check_that_charging_stopped(0):
-            try:
-                self.ADapi.call_service('easee/action_command',
-                    namespace = self.namespace,
-                    action_command = 'pause',
-                    charger_id = self.charger_id
-                    )
-            except Exception as e:
-                self.ADapi.log(
-                    f"Could not Stop Charging in _check_that_charging_stopped for {self.charger}. Exception: {e}",
-                    level = 'WARNING'
-                )
-
+    def _send_stop_command(self) -> None:
+        try:
+            self.ADapi.call_service('easee/action_command',
+                namespace = self.namespace,
+                action_command = 'pause',
+                charger_id = self.charger_id
+            )
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} Could not Stop Charging. Exception: {e}", level = 'WARNING')
 
 class Onboard_charger(Charger):
     """ Child class of Charger used for onboard for Car. """
@@ -1239,9 +1196,10 @@ class Audi_charger(Charger):
 
         return False
 
-    def startCharging(self) -> None:
-        if super().startCharging():
-            self.start_Audi_charging()
+    SEND_STOP_WHEN_NOT_CHARGING = True
+
+    def _send_start_command(self) -> None:
+        self.start_Audi_charging()
 
     def start_Audi_charging(self):
         if self.connected_vehicle is not None:
@@ -1255,9 +1213,8 @@ class Audi_charger(Charger):
             except Exception as e:
                 self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
 
-    def stopCharging(self, force_stop:bool = False) -> None:
-        if super().stopCharging(force_stop = force_stop):
-            self.stop_Audi_charging()
+    def _send_stop_command(self) -> None:
+        self.stop_Audi_charging()
 
     def stop_Audi_charging(self):
         try:
@@ -1277,17 +1234,8 @@ class Audi_charger(Charger):
             and connected_charger is self
         ):
             Registry.unlink_by_charger(self)
-
-        elif not super()._check_that_charging_started(0):
-            self.start_Audi_charging()
-
-    def _check_that_charging_stopped(self, kwargs) -> None:
-        if not super()._check_that_charging_stopped(0):
-            self.stop_Audi_charging()
-
-
-    ####### TESTING AUDI #######
-
+        else:
+            super()._check_that_charging_started(kwargs)
 
     def kWhRemaining(self) -> float:
         """ Calculates kWh remaining to charge from car battery sensor/size and charge limit.
