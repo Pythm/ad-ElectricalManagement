@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import math
-import uuid
 from typing import Iterable, Optional
 
 from electrical_cars import Car, UNAVAIL
-from pydantic_models import CarData
 from utils import cancel_timer_handler, cancel_listen_handler
 
 from registry import Registry
+from guest import GuestManager, DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
 # Easee: resume resends at 60 s while 'ready_to_charge' before backing off to EASEE_READY_BACKOFF_SECONDS.
 EASEE_READY_RESENDS_AT_60S = 10
@@ -45,18 +44,15 @@ class Charger:
         self._recheck_findCarConnectedToCharger_handler = None
         self.reason_for_no_current_handler = None
         self.session_start_charge:float = 0.0
-        self._guest_car = None
-        # kWh the guest asked for last time, used as start value for the next guest. Not stored between restarts.
-        self._last_guest_kWh:float = 5.0
 
         Registry.register_charger(self)
 
-        # Switch to allow guest to charge
+        # Switch to allow guest to charge: the GuestManager owns the guest car, the switch listener
+        # and the create / tear-down sequence (see guest.py).
+        self.guest_manager: Optional[GuestManager] = None
         if isinstance(charger_data.guest, str):
-            self.guestCharging = self.ADapi.get_state(charger_data.guest, namespace = namespace) == 'on'
-            self.ADapi.listen_state(self.guestChargingListen, charger_data.guest,
-                namespace = namespace
-            )
+            self.guest_manager = GuestManager(api = api, charger = self)
+            self.guestCharging = self.guest_manager.switch_is_on
         else:
             self.guestCharging = False
 
@@ -76,6 +72,10 @@ class Charger:
 
         """ End initialization Charger Class """
 
+    @property
+    def _guest_car(self) -> Optional[Car]:
+        """ The guest car of this charger, or None. Kept for callers that read it directly. """
+        return self.guest_manager.guest if self.guest_manager is not None else None
 
     def findCarConnectedToCharger(self) -> bool:
         """ A check to see if a car is connected to the charger """
@@ -406,6 +406,9 @@ class Charger:
                 self._send_stop_command()
 
     def _updateMaxkWhCharged(self, session: float) -> None:
+        if getattr(self.connected_vehicle, 'is_guest', False):
+            # A guest session says nothing about the car that normally charges here.
+            return
         if self.connected_vehicle.car_data.max_kWh_charged < session:
             self.connected_vehicle.car_data.max_kWh_charged = session
 
@@ -529,84 +532,28 @@ class Charger:
                     data = data
                 )
 
+    # ---- guest: thin delegates to the GuestManager (guest.py) ---------------------------- #
+
     def guestChargingListen(self, entity, attribute, old, new, kwargs) -> None:
-        """ Handles smart chargers when guest connects on HA switch change """
+        """ Guest switch change. The GuestManager registers its own listener; this stays for
+            callers that fire the switch change directly. """
 
-        self.guestCharging = new == 'on'
-        if (
-            new == 'on'
-            and old == 'off'
-        ):
-            self._addGuestCar()
-            if self._guest_car is not None:
-                self.notify_charge_now_or_kWhRemain(self._guest_car.carName)
-
-        elif (
-            new == 'off'
-            and old == 'on'
-        ):
-            if self.connected_vehicle is not None:
-                if (
-                    self._guest_car is not None
-                    and self.connected_vehicle.vehicle_id == self._guest_car.vehicle_id
-                ):
-                    self.connected_vehicle._handleChargeCompletion()
-                    self.remove_car_from_list(self.connected_vehicle.vehicle_id)
-                    Registry.unlink_by_charger(self)
-                    self._guest_car = None
-                elif (
-                    self.connected_vehicle.isConnected()
-                    and self.kWhRemaining() > 0
-                ):
-                    self.connected_vehicle.findNewChargeTime()
-
-            if self._guest_car is not None:
-                self.remove_car_from_list(self._guest_car.vehicle_id)
-                self._guest_car = None
+        if self.guest_manager is not None:
+            self.guest_manager.switch_changed(entity, attribute, old, new, kwargs)
 
     def _addGuestCar(self):
-        """ Create a “dumb” guest car """
+        """ Creates the guest car (idempotent). """
 
-        if self._guest_car is not None:
-            return
-        guest_car_cfg = CarData()
-        guest_id = f"guest_{uuid.uuid4().hex[:8]}"
-
-        self._guest_car = Car(
-            api = self.ADapi,
-            namespace = self.namespace,
-            carName = guest_id,
-            vehicle_id = guest_id,
-            car_data = guest_car_cfg,
-            charging_scheduler = self.charging_scheduler,
-        )
-
-        self.add_car_to_list(self._guest_car)
-        Registry.set_link(self._guest_car, self)
-        self.connected_vehicle.car_data.kWh_remain_to_charge = self._last_guest_kWh
+        if self.guest_manager is not None:
+            self.guest_manager.begin_guest(reason = 'guest car requested', notify = False)
 
     def setGuestKWh(self, kWh:float) -> None:
-        """ Sets kWh to charge for the guest car and remembers it for the next guest.
-            Only the guest car is changed, never a Tesla that happens to be on the charger. """
+        """ Sets kWh to charge for the guest car and remembers it for the next guest. """
 
-        if kWh <= 0:
-            raise ValueError(f"kWh must be above 0, got {kWh}")
-        self._last_guest_kWh = kWh
-        if self._guest_car is None:
-            self.ADapi.log(f"{self.charger}: kWh {kWh} received for a guest car but no guest car exists. Ignored.", level = 'INFO')
+        if self.guest_manager is None:
+            self.ADapi.log(f"{self.charger}: kWh {kWh} received for a guest car but the charger has no guest switch. Ignored.", level = 'INFO')
             return
-        self._guest_car.car_data.kWh_remain_to_charge = kWh
-
-    def add_car_to_list(self, car_instance):
-        self.manager.add_car(car_instance)
-
-    def remove_car_from_list(self, vehicle_id):
-        self.stopCharging()
-        # stopCharging returns early for a car with charge_now (dontStopMeNow); the start/stop verify
-        # loop must not survive the removal of the car it was started for.
-        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
-            self.checkCharging_handler = None
-        self.manager.remove_car(vehicle_id)
+        self.guest_manager.set_kWh(kWh)
 
 class Tesla_charger(Charger):
     """ Tesla
@@ -818,6 +765,7 @@ class Easee(Charger):
         charging_scheduler,
         notify_app,
         recipients,
+        guest_remove_after_minutes:int = DEFAULT_GUEST_REMOVE_AFTER_MINUTES,
     ):
 
         charger_id:str = api.ADapi.get_state(charger_data.charger_sensor,
@@ -826,6 +774,9 @@ class Easee(Charger):
         )
 
         self._cars:list = cars
+        # Seconds the Easee must report 'disconnected' before _check_if_still_disconnected acts
+        # (guest session ended, or a Tesla relinked to its onboard charger). Config only, not persisted.
+        self._disconnected_check_seconds:int = max(1, int(guest_remove_after_minutes)) * 60
 
         super().__init__(
             api = api,
@@ -972,7 +923,7 @@ class Easee(Charger):
         elif new == 'disconnected':
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
                 self._check_if_still_disconnected_handler = None
-            self._check_if_still_disconnected_handler = self.ADapi.run_in(self._check_if_still_disconnected, 720)
+            self._check_if_still_disconnected_handler = self.ADapi.run_in(self._check_if_still_disconnected, self._disconnected_check_seconds)
 
         elif new == 'awaiting_start':
             if self.connected_vehicle is None:
@@ -981,37 +932,37 @@ class Easee(Charger):
                     return
 
     def _check_if_still_disconnected(self, kwargs) -> None:
+        """ Runs guest_remove_after_minutes after the Easee reported 'disconnected'. While a vehicle
+            is linked the Easee reads 'awaiting_start' instead of 'Disconnected' (getChargingState),
+            so this timer is what ends a guest session or relinks a Tesla to its onboard charger. """
+
         self._check_if_still_disconnected_handler = None
-        if self._guest_car is not None:
-            self.ADapi.log(f"{self._guest_car.carName} connected to {self.charger} when disconnected.") ###
+        guest = self._guest_car
+        minutes = self._disconnected_check_seconds // 60
+        if guest is not None:
+            self.ADapi.log(f"{guest.carName} connected to {self.charger} when disconnected.") ###
         else:
             self.ADapi.log(f"No guest car connected to {self.charger} when disconnected.") ###
         if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'disconnected':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
-                Registry.relink_to_onboard(self)
+                if self.connected_vehicle is not guest:
+                    Registry.relink_to_onboard(self)
 
-            if self._guest_car is not None:
-                self.ADapi.log(f"{self._guest_car.carName} disconnects.") ###
-                self.ADapi.call_service('input_boolean/turn_off',
-                    entity_id = self.charger_data.guest,
-                    namespace = self.namespace,
-                )
+            if guest is not None:
+                self.ADapi.log(f"{guest.carName} disconnects.") ###
+                self.guest_manager.end_guest(reason = f"{self.charger} disconnected for {minutes} minutes")
         elif self.connected_vehicle is not None: # Check if new car is connected.
             if self.connected_vehicle.getCarChargerState() == 'Disconnected':
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
                 self.findCarConnectedToCharger()
-            if self._guest_car is not None:
-                self.ADapi.log(f"{self.charger} was not disconnected 11 minutes later while charge guest is on") ###
+            if guest is not None:
+                self.ADapi.log(f"{self.charger} was not disconnected {minutes} minutes later while charge guest is on") ###
         elif self.connected_vehicle is None: # New car connected.
-            if self._guest_car is not None:
-                self.ADapi.log(f"{self._guest_car.carName} disconnects based on new car connected.") ###
-                self.ADapi.call_service('input_boolean/turn_off',
-                    entity_id = self.charger_data.guest,
-                    namespace = self.namespace,
-                )
-                self.ADapi.log(f"{self.charger} disconnected and connected vehicle is None while charge guest is on") ###
+            if guest is not None:
+                self.ADapi.log(f"{guest.carName} disconnects based on new car connected.") ###
+                self.guest_manager.end_guest(reason = f"{self.charger} has no linked vehicle {minutes} minutes after disconnect")
             self.findCarConnectedToCharger()
 
 

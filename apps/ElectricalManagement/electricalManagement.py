@@ -45,6 +45,7 @@ from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
+from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
 __version__ = "1.0.6"
 
@@ -537,7 +538,19 @@ class ElectricalUsage(ad.ADBase):
         self._setup_cars()
         self._setup_easee()
         self._link_cars_to_chargers()
+        self._recreate_guest_sessions()
         self._purge_orphan_guest_queue_entries()
+
+    def _recreate_guest_sessions(self) -> None:
+        """ A guest switch that is on at startup means a guest session was running when the app
+            reloaded: recreate the guest car (stable id guest_<charger_id>) so the session survives.
+            Runs after the persisted links are restored so the guest link is the one that wins, and
+            before the orphan purge so the guest's own queue entry is kept. """
+
+        for charger in self.all_chargers():
+            guest_manager = getattr(charger, 'guest_manager', None)
+            if guest_manager is not None:
+                guest_manager.recreate_at_startup()
 
     def _purge_orphan_guest_queue_entries(self) -> None:
         """ Guest cars are not persisted but their queue entries are. After a restart a 'guest_<id>' entry
@@ -841,6 +854,21 @@ class ElectricalUsage(ad.ADBase):
                                                specs = EASEE_SPECS,
                                                persistent_data = self._persistence.charger.get(charger))
 
+            # Config only (not persisted): minutes the Easee must be 'disconnected' before a guest
+            # session is ended. Default 12 (the 720 s the app always used).
+            guest_remove_after_minutes = cfg.get('guest_remove_after_minutes', DEFAULT_GUEST_REMOVE_AFTER_MINUTES)
+            try:
+                guest_remove_after_minutes = int(guest_remove_after_minutes)
+                if guest_remove_after_minutes < 1:
+                    raise ValueError("below 1")
+            except (ValueError, TypeError):
+                self.ADapi.log(
+                    f"{charger}: guest_remove_after_minutes '{cfg.get('guest_remove_after_minutes')}' is not a whole number "
+                    f"of minutes >= 1. Using {DEFAULT_GUEST_REMOVE_AFTER_MINUTES}.",
+                    level = 'WARNING'
+                )
+                guest_remove_after_minutes = DEFAULT_GUEST_REMOVE_AFTER_MINUTES
+
             # all_cars() is a live dict view: cars added later (guests) are visible to the Easee.
             easee = Easee(
                 api = self,
@@ -851,6 +879,7 @@ class ElectricalUsage(ad.ADBase):
                 charging_scheduler = self.charging_scheduler,
                 notify_app = self.notify_app,
                 recipients = self.recipients,
+                guest_remove_after_minutes = guest_remove_after_minutes,
             )
             self.chargers[easee.charger_id] = easee
 
@@ -2567,34 +2596,22 @@ class ElectricalUsage(ad.ADBase):
                 return
 
         for charger in self.all_chargers():
+            # Guest notification replies act on the guest car only, never on a Tesla that is on the
+            # charger. Without a guest they are ignored with an INFO log (GuestManager).
             if action == 'kWhremaining'+str(charger.charger):
-                # Guest notification replies act on the guest car only, never on a Tesla that is on the charger.
-                guest = charger._guest_car
-                if guest is None:
+                guest_manager = getattr(charger, 'guest_manager', None)
+                if guest_manager is None:
                     self.ADapi.log(f"kWh remaining received for {charger.charger} but there is no guest car. Ignored.", level = 'INFO')
                     return
-                try:
-                    charger.setGuestKWh(float(str(data['reply_text']).replace(',', '.')))
-                except (ValueError, TypeError):
-                    charger.kWhRemaining()
-                    self.ADapi.log(
-                        f"User input {data['reply_text']} on setting kWh remaining for Guest car. Not valid number. "
-                        f"Using {guest.car_data.kWh_remain_to_charge} to calculate charge time",
-                        level = 'INFO'
-                    )
-                guest.findNewChargeTime()
+                guest_manager.set_kWh_from_reply(data.get('reply_text'))
                 return
 
             if action == 'chargeNow'+str(charger.charger):
-                guest = charger._guest_car
-                if guest is None:
+                guest_manager = getattr(charger, 'guest_manager', None)
+                if guest_manager is None:
                     self.ADapi.log(f"Charge now received for {charger.charger} but there is no guest car. Ignored.", level = 'INFO')
                     return
-                guest.charge_now = True
-                if charger.connected_vehicle is guest:
-                    charger.startCharging()
-                else:
-                    self.ADapi.log(f"Charge now for guest on {charger.charger}: guest is not linked to the charger, not starting.", level = 'INFO')
+                guest_manager.charge_now()
                 return
 
     def _awayStateListen_Main(self, entity, attribute, old, new, kwargs) -> None:
