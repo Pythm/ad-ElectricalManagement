@@ -24,6 +24,9 @@ No configuration changes are needed. Things that behave differently:
 - **Price app not ready**: if ElectricalPriceCalc has no prices yet at startup the app uses 1 hour slots and retries (for `pricearea`, the price fetch runs in the background). If `electricalPriceApp` cannot be found the app logs an error and stops.
 - **Config is validated**: unknown keys are ignored, but invalid values are logged at ERROR and the app does not start. `options` is optional; `notify_receiver` can be a single name or a list.
 - `get_instance()` and the singleton are removed.
+- **Battery size learning** now subtracts percent from percent and kWh from kWh (it used to mix the two), so learned `battery_size` values will move a little over the next sessions.
+- **Links between cars and chargers are one-to-one**: linking a car to a charger detaches any other car from that charger. A guest car switched on while a Tesla is linked to the Easee detaches the Tesla cleanly. Leftover `guest_...` queue entries are removed at startup.
+- **Audi (still untested on a real car)**: the plug sensor is a `binary_sensor`, charging states are normalised (`charging`, `readyForCharging`, `chargePurposeReached`, `notReadyForCharging` ...), and the start/stop service uses the new optional `device_id` (falls back to `vin` with a warning). The start command is no longer repeated every 60 seconds: it is verified after `verify_minutes` (default 20) and retried at most `max_command_retries` (default 2) times, then a warning/notification. Optional `charge_power_kW` sets the assumed charging power. The Tesla start/wake loop is unchanged.
 
 ---
 

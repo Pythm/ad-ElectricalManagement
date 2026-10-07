@@ -62,12 +62,40 @@ class Registry:
     def set_link(cls, car: "Car", charger: "Charger") -> None:
         """
         Link a car and a charger both in memory and in the persistent
-        data structures.
+        data structures. Links are kept 1:1:
+
+        * the charger's previous car (if another car was linked to this charger) is detached:
+          its ``connected_charger`` and persisted ``connected_charger_id`` are cleared.
+        * the car's previous charger (if the car was linked to another charger) is detached:
+          its ``connected_vehicle`` is cleared - EXCEPT when that charger is the car's own
+          onboard charger. The onboard charger keeps pointing at its car (``set_onboard_link``
+          semantics) while the car is linked to an external charger such as the Easee; the
+          Tesla_charger auto-link on 'Stopped' and the onboard start/stop commands depend on it.
 
         * `car.connected_charger`  ←  charger
         * `charger.connected_vehicle`  ←  car
         * `car.car_data.connected_charger_id`  ←  charger.charger_id
         """
+        if car is None or charger is None:
+            return
+
+        # Detach the charger's previous car
+        previous_car = getattr(charger, "connected_vehicle", None)
+        if previous_car is not None and previous_car is not car:
+            if getattr(previous_car, "connected_charger", None) is charger:
+                previous_car.connected_charger = None
+                previous_car.car_data.connected_charger_id = None
+
+        # Detach the car's previous charger (never the car's own onboard charger)
+        previous_charger = getattr(car, "connected_charger", None)
+        if (
+            previous_charger is not None
+            and previous_charger is not charger
+            and previous_charger is not getattr(car, "onboard_charger", None)
+            and getattr(previous_charger, "connected_vehicle", None) is car
+        ):
+            previous_charger.connected_vehicle = None
+
         # In‑memory links
         car.connected_charger = charger
         charger.connected_vehicle = car
@@ -79,6 +107,9 @@ class Registry:
     def unlink(cls, car: "Car") -> Optional["Charger"]:
         """
         Remove the association between a car and its charger.
+
+        The charger side is only cleared when the charger still points at this car,
+        so unlinking a stale car never drops another car that was linked meanwhile.
 
         Returns the charger that was detached, or ``None`` if the car
         was not linked.
@@ -92,7 +123,8 @@ class Registry:
 
         # Clear in‑memory references
         car.connected_charger = None
-        charger.connected_vehicle = None
+        if getattr(charger, "connected_vehicle", None) is car:
+            charger.connected_vehicle = None
 
         return charger
 

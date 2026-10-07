@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import math
 import uuid
-from typing import Optional
+from typing import Iterable, Optional
 
-from electrical_cars import Car
+from electrical_cars import Car, UNAVAIL
 from pydantic_models import CarData
 from utils import cancel_timer_handler, cancel_listen_handler
 
@@ -106,7 +106,7 @@ class Charger:
 
         chargingState = self.getChargingState()
         if chargingState in ('Complete', 'Disconnected'):
-            if self.guestCharging:
+            if self.guestCharging and self.connected_vehicle is not None:
                 self.connected_vehicle.car_data.kWh_remain_to_charge = -1
             return -1
 
@@ -165,15 +165,19 @@ class Charger:
             pwr = 0
         return pwr
 
-    def setmaxChargingAmps(self) -> bool:
-        """ Set maxChargerAmpere from charger sensors """
+    def getChargingPowerW(self) -> float:
+        """ Watt the charger is assumed to draw right now, as used by the core when it stops chargers
+            for the hourly cap: ampere * voltPhase. Chargers with a live power sensor override this. """
 
-        self.charger_data.maxChargerAmpere = 32
-        self.ADapi.log(
-            f"Setting maxChargerAmpere to 32. Set value in child class of charger.",
-            level = 'WARNING'
-        )
-        return True
+        return self.charger_data.ampereCharging * self.charger_data.voltPhase
+
+    def setVolts(self) -> None:
+        """ Learn volts from charger sensors. Default: keep the configured/persisted value. """
+        pass
+
+    def setPhases(self) -> None:
+        """ Learn phases from charger sensors. Default: keep the configured/persisted value. """
+        pass
 
     def getmaxChargingAmps(self) -> int:
         """ Returns the maximum ampere the car/charger can get/deliver """
@@ -367,7 +371,10 @@ class Charger:
             The repeat also wakes up cars that sleep and update slowly. """
 
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
-        if not self.getChargingState() in ('Charging', 'Complete', 'Disconnected'):
+        state = self.getChargingState()
+        # Deliberately no UNAVAIL filter here: the repeated command is also what wakes a sleeping car
+        # whose integration reports 'unavailable'/'unknown'.
+        if not state in ('Charging', 'Complete', 'Disconnected'):
             self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
             self._send_start_command()
 
@@ -405,12 +412,20 @@ class Charger:
         battery_reg_counter = getattr(self.connected_vehicle.car_data, 'battery_reg_counter', 0)
 
         if battery_sensor is not None:
-            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
+            try:
+                soc_now = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace))
+            except (ValueError, TypeError):
+                return
+            # Percent minus percent, and kWh minus kWh (the kWh already in the session when the
+            # start SOC was registered). Mixing the two units gave a battery size that was off by
+            # session_start_charge percentage points.
+            pctCharged = soc_now - self.connected_vehicle.pct_start_charge
+            session_kWh = session - self.session_start_charge
 
             if pctCharged > 35:
-                self._updateBatterySize(session, pctCharged, battery_reg_counter)
+                self._updateBatterySize(session_kWh, pctCharged, battery_reg_counter)
             elif pctCharged > 10 and self.connected_vehicle.car_data.battery_size == 100 and battery_reg_counter == 0:
-                self.connected_vehicle.car_data.battery_size = (session / pctCharged)*100
+                self.connected_vehicle.car_data.battery_size = (session_kWh / pctCharged)*100
 
     def _updateBatterySize(self, session: float, pctCharged: float, battery_reg_counter: int) -> None:
         if battery_reg_counter == 0:
@@ -507,14 +522,18 @@ class Charger:
             and old == 'off'
         ):
             self._addGuestCar()
-            self.notify_charge_now_or_kWhRemain(self.connected_vehicle.carName)
+            if self._guest_car is not None:
+                self.notify_charge_now_or_kWhRemain(self._guest_car.carName)
 
         elif (
             new == 'off'
             and old == 'on'
         ):
             if self.connected_vehicle is not None:
-                if self.connected_vehicle.vehicle_id == self._guest_car.vehicle_id:
+                if (
+                    self._guest_car is not None
+                    and self.connected_vehicle.vehicle_id == self._guest_car.vehicle_id
+                ):
                     self.connected_vehicle._handleChargeCompletion()
                     self.remove_car_from_list(self.connected_vehicle.vehicle_id)
                     Registry.unlink_by_charger(self)
@@ -551,18 +570,26 @@ class Charger:
         self.connected_vehicle.car_data.kWh_remain_to_charge = self._last_guest_kWh
 
     def setGuestKWh(self, kWh:float) -> None:
-        """ Sets kWh to charge for the connected guest car and remembers it for the next guest. """
+        """ Sets kWh to charge for the guest car and remembers it for the next guest.
+            Only the guest car is changed, never a Tesla that happens to be on the charger. """
 
         if kWh <= 0:
             raise ValueError(f"kWh must be above 0, got {kWh}")
         self._last_guest_kWh = kWh
-        self.connected_vehicle.car_data.kWh_remain_to_charge = kWh
+        if self._guest_car is None:
+            self.ADapi.log(f"{self.charger}: kWh {kWh} received for a guest car but no guest car exists. Ignored.", level = 'INFO')
+            return
+        self._guest_car.car_data.kWh_remain_to_charge = kWh
 
     def add_car_to_list(self, car_instance):
         self.manager.add_car(car_instance)
 
     def remove_car_from_list(self, vehicle_id):
         self.stopCharging()
+        # stopCharging returns early for a car with charge_now (dontStopMeNow); the start/stop verify
+        # loop must not survive the removal of the car it was started for.
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
+            self.checkCharging_handler = None
         self.manager.remove_car(vehicle_id)
 
 class Tesla_charger(Charger):
@@ -583,6 +610,14 @@ class Tesla_charger(Charger):
             namespace = Car.namespace,
             attribute = 'id'
         )
+        if charger_id is None:
+            # Same fallback as Tesla_car.vehicle_id so car and onboard charger stay paired and two
+            # Teslas never collide on None in the Registry.
+            api.ADapi.log(
+                f"{charger}: no 'id' attribute on {Car.car_data.online_sensor}. Using '{charger}' as charger id.",
+                level = 'ERROR'
+            )
+            charger_id = charger
 
         self._cars:list = [Car]
 
@@ -652,47 +687,6 @@ class Tesla_charger(Charger):
 
         return state
 
-    def setmaxChargingAmps(self) -> bool:
-        """ Set maxChargerAmpere from charger sensors. """
-
-        if (
-            self.connected_vehicle.isConnected()
-            and self.getChargingState() not in ('Disconnected', 'Complete')
-        ):
-            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
-            if connected_charger is self:
-                try:
-                    maxAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
-                        namespace = self.namespace,
-                        attribute = 'max'))
-                    )
-                    self.charger_data.maxChargerAmpere = maxAmpere
-
-                except (ValueError, TypeError) as ve:
-                    self.ADapi.log(
-                        f"{self.charger} Could not get maxChargingAmps. ValueError: {ve}",
-                        level = 'DEBUG'
-                    )
-                    return False
-
-            # Update Voltphase calculations
-            try:
-                self.charger_data.volts = math.ceil(float(self.ADapi.get_state(self.charger_data.charger_power,
-                    namespace = self.namespace,
-                    attribute = 'charger_volts'
-                )))
-            except (ValueError, TypeError):
-                pass
-            try:
-                self.charger_data.phases = int(self.ADapi.get_state(self.charger_data.charger_power,
-                    namespace = self.namespace,
-                    attribute = 'charger_phases'
-                ))
-            except (ValueError, TypeError):
-                pass
-            return True
-        return False
-
     def _apply_charging_amps(self, amps:int) -> None:
         self.charger_data.ampereCharging = amps
         self.ADapi.call_service('tesla_custom/api',
@@ -704,7 +698,10 @@ class Tesla_charger(Charger):
     def MaxAmpereChanged(self, entity, attribute, old, new, kwargs) -> None:
         """ Detects if smart charger (Easee) increases ampere available to charge and updates internal charger to follow. """
 
+        if new is None or new in UNAVAIL:
+            return
         try:
+            new_max = int(math.ceil(float(new)))
             chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                 namespace = self.namespace))
             )
@@ -719,8 +716,10 @@ class Tesla_charger(Charger):
         except (ValueError, TypeError):
             pass
         else:
-            if float(new) > self.charger_data.maxChargerAmpere:
-                self.charger_data.maxChargerAmpere = new
+            # maxChargerAmpere is an int: storing the raw attribute string made the next
+            # 'int > str' comparison in setChargingAmps raise TypeError.
+            if new_max > self.charger_data.maxChargerAmpere:
+                self.charger_data.maxChargerAmpere = new_max
 
     SEND_STOP_WHEN_NOT_CHARGING = True
 
@@ -827,6 +826,8 @@ class Easee(Charger):
         if self.charger_data.phases == 3:
             self.charger_data.min_ampere = 11
 
+        self._check_if_still_disconnected_handler = None
+
         self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
 
         """ End initialization Easee Charger Class """
@@ -932,7 +933,9 @@ class Easee(Charger):
                     #    namespace = self.namespace,
                     #)
         elif new == 'disconnected':
-            self.ADapi.run_in(self._check_if_still_disconnected, 720)
+            if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
+                self._check_if_still_disconnected_handler = None
+            self._check_if_still_disconnected_handler = self.ADapi.run_in(self._check_if_still_disconnected, 720)
 
         elif new == 'awaiting_start':
             if self.connected_vehicle is None:
@@ -941,6 +944,7 @@ class Easee(Charger):
                     return
 
     def _check_if_still_disconnected(self, kwargs) -> None:
+        self._check_if_still_disconnected_handler = None
         if self._guest_car is not None:
             self.ADapi.log(f"{self._guest_car.carName} connected to {self.charger} when disconnected.") ###
         else:
@@ -982,27 +986,19 @@ class Easee(Charger):
 
         if (
             new == 'limited_by_car'
+            and self.connected_vehicle is not None
         ):
-            chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
-                namespace = self.namespace))
-            )
+            try:
+                chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
+                    namespace = self.namespace))
+                )
+            except (ValueError, TypeError):
+                return
             if (
                 self.connected_vehicle.car_data.car_limit_max_ampere != chargingAmpere
                 and chargingAmpere >= 6
             ):
                 self.connected_vehicle.car_data.car_limit_max_ampere = chargingAmpere
-
-    def setmaxChargingAmps(self) -> bool:
-        """ Set maxChargerAmpere from charger sensors """
-
-        try:
-            self.charger_data.maxChargerAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.max_charger_limit,
-                namespace = self.namespace))
-            )
-        except (ValueError, TypeError):
-            return False
-
-        return True
 
     def setVolts(self):
         try:
@@ -1020,6 +1016,9 @@ class Easee(Charger):
         )
         except (ValueError, TypeError):
             self.charger_data.phases = 1
+        # Minimum ampere if locked to 3 phase (same rule as in __init__, applied when learned later).
+        if self.charger_data.phases == 3:
+            self.charger_data.min_ampere = 11
 
     def _apply_charging_amps(self, amps:int) -> None:
         if (
@@ -1034,9 +1033,17 @@ class Easee(Charger):
 
     def findCarConnectedToCharger(self) -> bool:
         if super().findCarConnectedToCharger():
-            if self.connected_vehicle.onboard_charger is None:
-                # Set max ampere charging for unconnected cars.
-                self.reason_for_no_current_handler = self.ADapi.listen_state(self.reasonChange, reason_for_no_current, namespace = namespace)
+            if (
+                self.connected_vehicle is not None
+                and self.connected_vehicle.onboard_charger is None
+                and self.charger_data.reason_for_no_current is not None
+            ):
+                # Learn the max ampere the car accepts for cars without an onboard charger (guests).
+                cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current")
+                self.reason_for_no_current_handler = self.ADapi.listen_state(self.reasonChange,
+                    self.charger_data.reason_for_no_current,
+                    namespace = self.namespace
+                )
             return True
         return False
 
@@ -1108,9 +1115,67 @@ class Onboard_charger(Charger):
             namespace = self.namespace
         )
 
+# --------------------------------------------------------------------------- #
+# Audi Connect charging_state normalisation. ONE table for the whole app.
+#
+# UNVERIFIED: the audiconnect vehicle model (the file that produces the charging_state
+# strings) was not available; the values below follow the VW-group/Cariad API names used by
+# other integrations. Comparison is case-insensitive. A value that is not in the table is
+# reported ONCE with a WARNING and treated as "no transition" (previous state kept), so a
+# wrong guess here never sends a command, it only logs.
+# --------------------------------------------------------------------------- #
+AUDI_STATE_EXACT: dict[str, str] = {
+    'charging':          'Charging',
+    'readyforcharging':  'Stopped',
+    'conservation':      'Complete',
+    'error':             'Stopped',    # + WARNING once
+}
+AUDI_STATE_PREFIX: tuple[tuple[str, str], ...] = (
+    ('chargepurposereached', 'Complete'),   # chargePurposeReached_conservation / _notConservationCharging ...
+)
+AUDI_STATE_PLUG_DEPENDENT: tuple[str, ...] = ('notreadyforcharging',)
+
+
+def normalise_audi_charging_state(raw, plug_on: bool, previous: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """ Maps a raw audiconnect charging_state to the app's states.
+
+        Returns (state, warning). `state` is one of 'Charging' / 'Stopped' / 'Complete' /
+        'Disconnected' / 'NoPower' or `previous` when the raw value is unavailable/unknown/None or
+        not in the table (no transition). `warning` is a message the caller should log once. """
+
+    if raw is None:
+        return previous, None
+    key = str(raw).strip().lower()
+    if key in UNAVAIL or key == '':
+        return previous, None
+    if key in AUDI_STATE_PLUG_DEPENDENT:
+        # Car reports it can not charge: cable out -> Disconnected, cable in -> the EVSE gives no power.
+        return ('NoPower' if plug_on else 'Disconnected'), None
+    if key in AUDI_STATE_EXACT:
+        warning = f"charging_state is '{raw}' (car reports a charging error). Treated as Stopped." if key == 'error' else None
+        return AUDI_STATE_EXACT[key], warning
+    for prefix, state in AUDI_STATE_PREFIX:
+        if key.startswith(prefix):
+            return state, None
+    return previous, f"Unknown charging_state '{raw}'. Add it to AUDI_STATE_EXACT in electrical_chargers.py. Keeping state '{previous}'."
+
+
 class Audi_charger(Charger):
     """ Audi Connect
-        Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha. Easiest installation is via HACS. """
+        Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha.
+        Easiest installation is via HACS.
+
+        NEVER RAN ON A REAL CAR. What is unverified is marked in comments. Differences from the Tesla:
+        * the integration polls every 15 minutes, so there is no 60 s resend loop. One command, ONE verify
+          timer of `verify_minutes`, at most `max_command_retries` resends, then WARNING + notification.
+        * start/stop go through the `audiconnect/execute_vehicle_action` service which can block for
+          ~15 s while the integration confirms the command; it is called with `callback=` so the app
+          thread does not wait.
+        * no ampere control: the Audi charges at whatever the EVSE gives. `charge_power_kW` (optional)
+          gives the scheduler a realistic power estimate. """
+
+    SEND_STOP_WHEN_NOT_CHARGING = True
+    AUDI_ACTION_SERVICE = 'audiconnect/execute_vehicle_action'
 
     def __init__(self, api,
         Car,
@@ -1121,6 +1186,10 @@ class Audi_charger(Charger):
         charging_scheduler,
         notify_app,
         recipients,
+        device_id:Optional[str] = None,
+        verify_minutes:float = 20,
+        max_command_retries:int = 2,
+        charge_power_kW:Optional[float] = None,
     ):
 
         self._cars:list = [Car]
@@ -1135,327 +1204,273 @@ class Audi_charger(Charger):
             notify_app = notify_app,
             recipients = recipients,
         )
-        ### SET DEFAULT VALUES:
-        self.charger_data.voltPhase = 230
-        self.charger_data.min_ampere = 16
-        self.charger_data.ampereCharging = 16
-        self.charger_data.maxChargerAmpere = 16
-        ###
+
+        # Config only (not persisted). services.yaml declares `device_id` (HA device id) as the
+        # required target; `vin` is kept as the fallback the old code used.
+        self.device_id:Optional[str] = device_id
+        self.verify_minutes:float = verify_minutes
+        self.max_command_retries:int = max_command_retries
+        self.charge_power_kW:Optional[float] = charge_power_kW
+
+        # Command intent: 'start' / 'stop' / None. Set when a command is sent, cleared when the
+        # state sensor confirms it or when the retries are used up.
+        self._command_intent:Optional[str] = None
+        self._command_retries:int = 0
+        self._last_state:Optional[str] = None
+        self._warned_states:set = set()
+        self._warned_no_device_id:bool = False
+
+        if self.charge_power_kW:
+            # Estimate from the configured charger power: maxAmps = P / voltPhase. No ampere control,
+            # so min = max = the estimate.
+            self.setVoltPhase(volts = charger_data.volts, phases = charger_data.phases)
+            amps = max(1, int(round(float(self.charge_power_kW) * 1000 / self.charger_data.voltPhase)))
+            self.charger_data.min_ampere = amps
+            self.charger_data.ampereCharging = amps
+            self.charger_data.maxChargerAmpere = amps
+        else:
+            ### SET DEFAULT VALUES (old behaviour when charge_power_kW is not configured):
+            self.charger_data.voltPhase = 230
+            self.charger_data.min_ampere = 16
+            self.charger_data.ampereCharging = 16
+            self.charger_data.maxChargerAmpere = 16
+            ###
 
         self.noPowerDetected_handler = None
 
         Registry.set_onboard_link(Car, self)
 
-        self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_sensor,
-            namespace = self.namespace,
-            new = 'on',
-            duration = 10
-        )
-        self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_sensor,
-            namespace = self.namespace,
-            new = 'off'
-        )
-        self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_switch,
-            namespace = self.namespace
-        )
+        # charger_sensor is the text sensor `sensor.<car>_charging_state` (UNVERIFIED entity id, derived
+        # from the "Charging state" entity name in audiconnect/sensor.py). ChargingStarted/Stopped fire on
+        # the NORMALISED state, not on 'on'/'off'.
+        if self.charger_data.charger_sensor is not None:
+            self.ADapi.listen_state(self._charging_state_changed, self.charger_data.charger_sensor,
+                namespace = self.namespace
+            )
+        # charger_switch is the plug binary_sensor `binary_sensor.<car>_plug_state` (UNVERIFIED entity id,
+        # "Plug state" in audiconnect/binary_sensor.py). It is read-only; it only tells if the cable is in.
+        if self.charger_data.charger_switch is not None:
+            self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_switch,
+                namespace = self.namespace
+            )
 
         """ End initialization Audi Charger Class """
 
-    def getChargingState(self) -> str:
-        """ Returns the charging state of the charger.
-            Valid returns: 'Complete' / 'None' / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower'. 
-            States in sensor: 'notReadyForCharging' """
+    # ---- state -------------------------------------------------------------------------- #
 
-        try:
-            state = self.ADapi.get_state(self.charger_data.charger_sensor,
-                namespace = self.namespace,
-            )
-            if state == 'Starting':
-                state = 'Charging'
-        except (ValueError, TypeError) as ve:
+    def _plug_connected(self) -> bool:
+        if self.charger_data.charger_switch is None:
+            return False
+        return self.ADapi.get_state(self.charger_data.charger_switch, namespace = self.namespace) == 'on'
+
+    def _raw_charging_state(self):
+        if self.charger_data.charger_sensor is None:
             return None
-        except Exception as e:
-            self.ADapi.log(
-                f"{self.charger} Could not get charging_state from: "
-                f"{self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace)} "
-                f"Exception: {e}",
-                level = 'WARNING'
-            )
-            return None
-        # Set as connected charger if restarted after cable connected.
-        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+        return self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace)
 
-        if (
-            state == 'Stopped' and
-            connected_charger is None
-        ):
-            Registry.set_link(self.connected_vehicle, self)
+    def getChargingState(self) -> Optional[str]:
+        """ Returns the normalised charging state of the car's onboard charger.
+            Valid returns: 'Complete' / None / 'Stopped' / 'Charging' / 'Disconnected' / 'NoPower'.
+            unavailable/unknown/None and unknown strings return the previous state (no transition). """
 
-        if state == 'notReadyForCharging':
-            return 'Disconnected'
-        else:
-            self.ADapi.log(f"{self.charger} has state: {state}") ###
-        #elif not status == 'ready_to_charge':
-        #    self.ADapi.log(f"Status: {status} for {self.charger} is not defined", level = 'WARNING')
-        
+        raw = self._raw_charging_state()
+        state, warning = normalise_audi_charging_state(raw, self._plug_connected(), self._last_state)
+        if warning is not None and warning not in self._warned_states:
+            self._warned_states.add(warning)
+            self.ADapi.log(f"{self.charger}: {warning}", level = 'WARNING')
+        if state != self._last_state:
+            self.ADapi.log(f"{self.charger} charging_state '{raw}' -> {state}", level = 'DEBUG')
+            self._last_state = state
+
+        # Set as connected charger if restarted after cable connected (same rule as Tesla_charger).
+        # _cars[0] is the car itself: never None, unlike connected_vehicle after an unlink.
+        car = self._cars[0]
+        if state == 'Stopped' and car.connected_charger is None:
+            Registry.set_link(car, self)
+
         return state
 
-    def setChargingAmps(self, charging_amp_set:int = 16) -> int:
-        """ Function to set ampere charging to received value.
-            returns actual restricted within min/max ampere. """
+    def _charging_state_changed(self, entity, attribute, old, new, kwargs) -> None:
+        """ Listener on the charging_state sensor. Maps to the normalised state, confirms a pending
+            command and fires ChargingStarted / ChargingStopped on real transitions. """
 
-        return False
+        previous = self._last_state
+        state = self.getChargingState()
+        if state == previous:
+            return
+        self._reconcile_intent(state)
+        if state == 'Charging':
+            self.ChargingStarted(entity, attribute, old, new, kwargs)
+        elif previous == 'Charging':
+            self.ChargingStopped(entity, attribute, old, new, kwargs)
 
-    SEND_STOP_WHEN_NOT_CHARGING = True
+    # ---- commands (capped, verified) ---------------------------------------------------- #
 
-    def _send_start_command(self) -> None:
-        self.start_Audi_charging()
-
-    def start_Audi_charging(self):
-        if self.connected_vehicle is not None:
-            try:
-                self.ADapi.call_service('audiconnect/execute_vehicle_action',
-                    namespace = self.namespace,
-                    vin = self.charger_id,
-                    action = "start_charger"
-                )
-                self.ADapi.log(f"Start charging {self.charger}") ###
-            except Exception as e:
-                self.ADapi.log(f"{self.charger} Could not Start Charging. Exception: {e}", level = 'WARNING')
-
-    def _send_stop_command(self) -> None:
-        self.stop_Audi_charging()
-
-    def stop_Audi_charging(self):
-        try:
-            self.ADapi.call_service('audiconnect/execute_vehicle_action',
-                namespace = self.namespace,
-                vin = self.charger_id,
-                action = "stop_charger"
-            )
-            self.ADapi.log(f"Stop charging {self.charger}") ###
-        except Exception as e:
-            self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
-
-    def _check_that_charging_started(self, kwargs) -> None:
-        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
-        if (
-            self.getChargingState() == 'NoPower'
-            and connected_charger is self
-        ):
-            Registry.unlink_by_charger(self)
-        else:
-            super()._check_that_charging_started(kwargs)
-
-    def kWhRemaining(self) -> float:
-        """ Calculates kWh remaining to charge from car battery sensor/size and charge limit.
-            If those are not available it uses session energy to estimate how much is needed to charge """
-
-        chargingState = self.getChargingState()
-
-        if self.connected_vehicle is not None:
-            kWhRemain:float = self.connected_vehicle.kWhRemaining()
-            if self.charger_data.session_energy:
-                self.connected_vehicle.car_data.kWh_remain_to_charge = self.connected_vehicle.car_data.max_kWh_charged - float(self.ADapi.get_state(self.charger_data.session_energy,
-                    namespace = self.namespace)
-                )
-                self.ADapi.log(f"{self.charger} Remaining kWh {self.connected_vehicle.car_data.kWh_remain_to_charge}") ###
-                return self.connected_vehicle.car_data.kWh_remain_to_charge
-        
-        return -1
-
-    def getChargerPower(self) -> float:
-        """ Returns charger power in kWh """
-
-        pwr = self.ADapi.get_state(self.charger_data.charger_power, namespace = self.namespace)
-        try:
-            pwr = float(pwr)
-        except (ValueError, TypeError) as ve:
-            self.ADapi.log(f"{self.charger} Could not get charger_power: {pwr} Error: {ve}", level = 'DEBUG')
-            pwr = 0
-        self.ADapi.log(f"{self.charger} charger power {pwr}") ###
-        return pwr
-
-    def setmaxChargingAmps(self) -> bool:
-        """ Set maxChargerAmpere from charger sensors """
-        ### TODO Solve this and replace default values
-
-        self.charger_data.maxChargerAmpere = 32
-        self.ADapi.log(
-            f"Setting maxChargerAmpere to 32. Set value in child class of charger.",
-            level = 'WARNING'
-        )
+    def _intent_satisfied(self, intent:Optional[str], state:Optional[str]) -> bool:
+        if state is None:
+            return False
+        if intent == 'start':
+            return state in ('Charging', 'Complete', 'Disconnected')
+        if intent == 'stop':
+            return state != 'Charging'
         return True
 
-    def updateAmpereCharging(self, entity, attribute, old, new, kwargs) -> None:
-        """ Updates the charging ampere value in self.ampereCharging from charging_amps sensor """
+    def _reconcile_intent(self, state:Optional[str]) -> None:
+        """ Clears the pending command when the sensor confirms it. """
 
-        try:
-            newAmp = math.floor(float(new))
-        except (ValueError, TypeError) as ve:
-            self.ADapi.log(
-                f"{self.charger} Not able to get ampere charging. New is {new}. Error {ve}",
-                level = 'DEBUG'
-            )
-        else:
-            self.charger_data.ampereCharging = newAmp
-        self.ADapi.log(f"{self.charger} charging amp updated to {newAmp}") ###
+        if self._command_intent is not None and self._intent_satisfied(self._command_intent, state):
+            self.ADapi.log(f"{self.charger} {self._command_intent} confirmed, state {state}") ###
+            self._clear_intent()
 
-    def update_ampere_charging_from_sensor(self) -> int:
-        newAmp:int = 0
-        try:
-            newAmp = math.floor(float(self.ADapi.get_state(self.charger_data.charging_amps,
-                                namespace = self.namespace)))
-        except (ValueError, TypeError) as ve:
-            self.ADapi.log(
-                f"{self.charger} Not able to get ampere charging. New is {newAmp}. Error {ve}",
-                level = 'DEBUG'
-            )
-        else:
-            self.charger_data.ampereCharging = newAmp
-        self.ADapi.log(f"{self.charger} charging amp updated to {newAmp}") ###
-        return newAmp
+    def _clear_intent(self) -> None:
+        self._command_intent = None
+        self._command_retries = 0
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
+            self.checkCharging_handler = None
 
+    def _command_pending(self, intent:str) -> bool:
+        return (
+            self._command_intent == intent
+            and self.checkCharging_handler is not None
+            and self.ADapi.timer_running(self.checkCharging_handler)
+        )
 
-    def Charger_ChargeCableConnected(self, entity, attribute, old, new, kwargs) -> None:
-        """ Function that reacts to charger_sensor connected or disconnected. """
+    def _vehicle_for_commands(self):
+        return self.connected_vehicle if self.connected_vehicle is not None else self._cars[0]
 
-        cancel_listen_handler(ADapi = self.ADapi, handler = self.noPowerDetected_handler, name = self.charger)
-        self.noPowerDetected_handler = None
-        self.ADapi.log(f"{self.charger} Charger cable connected changed to {new}") ###
+    def startCharging(self) -> None:
+        """ Sends start_charger once and verifies after `verify_minutes`. A start that is still being
+            verified is not sent again (the queue runner calls this every minute). """
 
-        if self.connected_vehicle is None:
-            if not self.findCarConnectedToCharger():
+        if self.doNotStartMe:
+            return
+        if self._command_pending('start'):
+            self.ADapi.log(f"{self.charger} start already sent, waiting for the car to report", level = 'DEBUG')
+            return
+        self._begin_command('start')
+
+    def stopCharging(self, force_stop:bool = False) -> None:
+        if self.connected_vehicle is not None:
+            if not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop):
                 return
+        if self._command_pending('stop'):
+            return
+        self._begin_command('stop')
 
-        if (
-            self.connected_vehicle.isConnected()
-            and new == 'on'
-            and self.kWhRemaining() > 0
-        ):
-            if self.getChargingState() != 'NoPower':
-                # Listen for changes made from other connected chargers
-                self.noPowerDetected_handler = self.ADapi.listen_state(self.noPowerDetected, self.charger_data.charger_sensor,
-                    namespace = self.namespace,
-                    attribute = 'charging_state',
-                    new = 'NoPower'
-                )
+    def _begin_command(self, intent:str) -> None:
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
+            self.checkCharging_handler = None
+        self._command_intent = intent
+        self._command_retries = 0
+        if intent == 'start':
+            self.charging_scheduler.markAsCharging(self._vehicle_for_commands().vehicle_id)
+            self._send_start_command()
+        else:
+            self._send_stop_command()
+        self.checkCharging_handler = self.ADapi.run_in(self._verify_command, int(self.verify_minutes * 60))
 
-                self.connected_vehicle.findNewChargeTime()
+    def _verify_command(self, kwargs) -> None:
+        """ Runs `verify_minutes` after a command. Resends at most `max_command_retries` times. """
 
-            elif self.getChargingState() == 'NoPower':
-                self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
-
-
-    def ChargingStarted(self, entity, attribute, old, new, kwargs) -> None:
-        """ Charger started charging. Check if controlling car and if chargetime has been set up """
-
-        self.ADapi.log(f"{self.charger} charging started updated to {new}") ###
-
-        if self.connected_vehicle is None:
-            if not self.findCarConnectedToCharger():
-                return
-
-        if self.connected_vehicle.pct_start_charge == 100:
-            self._register_battery_soc_for_calculation()
-
-        if self.connected_vehicle.isConnected():
-            if not self.connected_vehicle.charging_scheduled_with_updated_data():
-                self.kWhRemaining()
-                self.connected_vehicle.findNewChargeTime()
-
-            elif not self.charging_scheduler.isChargingTime(vehicle_id = self.connected_vehicle.vehicle_id):
-                self.stopCharging()
-
+        self.checkCharging_handler = None
+        intent = self._command_intent
+        if intent is None:
+            return
+        raw = self._raw_charging_state()
+        state = self.getChargingState()
+        if raw is None or str(raw).lower() in UNAVAIL or state is None:
+            # Integration outage: no decision, check again after the next poll window.
+            self.checkCharging_handler = self.ADapi.run_in(self._verify_command, int(self.verify_minutes * 60))
+            return
+        if self._intent_satisfied(intent, state):
+            self._clear_intent()
+            return
+        if self._command_retries < self.max_command_retries:
+            self._command_retries += 1
+            self.ADapi.log(
+                f"{self.charger} {intent} not confirmed after {self.verify_minutes} min (state {state}). "
+                f"Resend {self._command_retries}/{self.max_command_retries}",
+                level = 'INFO'
+            )
+            if intent == 'start':
+                self._send_start_command()
             else:
-                self.setVolts()
-                self.setPhases()
-                self.setVoltPhase(
-                    volts = self.charger_data.volts,
-                    phases = self.charger_data.phases
-                )
+                self._send_stop_command()
+            self.checkCharging_handler = self.ADapi.run_in(self._verify_command, int(self.verify_minutes * 60))
+            return
 
-    def ChargingStopped(self, entity, attribute, old, new, kwargs) -> None:
-        """ Charger stopped. """
-
-        self.ADapi.log(f"{self.charger} charging stopped updated to {new}") ###
-
-        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
-        if connected_charger is self:
-            self.setChargingAmps(charging_amp_set = self.charger_data.min_ampere) # Set to minimum amp for preheat.
-
-
-    def _register_battery_soc_for_calculation(self) -> None:
-        if (
-            self.charger_data.session_energy is not None
-            and self.connected_vehicle.car_data.battery_sensor is not None
-        ):
-            try:
-                session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace))
-                soc = float(self.ADapi.get_state(self.connected_vehicle.car_data.battery_sensor, namespace = self.namespace))
-                self.ADapi.log(f"{self.charger} session energy: {session} and soc: {soc}") ###
-            except (ValueError, TypeError):
-                return
-            if session < 4 or self.connected_vehicle.pct_start_charge == 100:
-                self.connected_vehicle.pct_start_charge = soc
-                self.session_start_charge = session
-
-    def _calculateBatterySize(self, session: float) -> None:
-        battery_sensor = getattr(self.connected_vehicle.car_data, 'battery_sensor', None)
-        battery_reg_counter = getattr(self.connected_vehicle.car_data, 'battery_reg_counter', 0)
-
-        if battery_sensor is not None:
-            pctCharged = float(self.ADapi.get_state(battery_sensor, namespace = self.namespace)) - self.session_start_charge - self.connected_vehicle.pct_start_charge
-            self.ADapi.log(f"{self.charger} ptcCharged {pctCharged}") ###
-
-            if pctCharged > 35:
-                self._updateBatterySize(session, pctCharged, battery_reg_counter)
-            elif pctCharged > 10 and self.connected_vehicle.car_data.battery_size == 100 and battery_reg_counter == 0:
-                self.connected_vehicle.car_data.battery_size = (session / pctCharged)*100
-
-    def _updateBatterySize(self, session: float, pctCharged: float, battery_reg_counter: int) -> None:
-        if battery_reg_counter == 0:
-            avg = round((session / pctCharged) * 100, 2)
-        else:
-            avg = round(
-                ((self.connected_vehicle.car_data.battery_size * battery_reg_counter) + (session / pctCharged) * 100)
-                / (battery_reg_counter + 1),
-                2
+        message = (
+            f"{self.charger}: {intent} charging was sent {self.max_command_retries + 1} times but the car still "
+            f"reports {state}. Giving up until the next scheduled attempt."
+        )
+        self.ADapi.log(message, level = 'WARNING')
+        try:
+            self.notify_app.send_notification(
+                message = message,
+                message_title = f"🚘Charging {self.charger}",
+                message_recipient = self.recipients,
+                also_if_not_home = True,
+                data = {'tag': 'charging' + str(self.charger)}
             )
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} could not send notification: {e}", level = 'DEBUG')
+        if intent == 'start':
+            self.charging_scheduler.removeFromCharging(self._vehicle_for_commands().vehicle_id)
+        self._clear_intent()
 
-        self.connected_vehicle.car_data.battery_reg_counter += 1
+    def _service_target(self) -> dict:
+        if self.device_id:
+            return {'device_id': self.device_id}
+        if not self._warned_no_device_id:
+            self._warned_no_device_id = True
+            self.ADapi.log(
+                f"{self.charger}: no 'device_id' configured for the audiconnect services. services.yaml requires "
+                f"device_id (the Home Assistant device id of the car); falling back to vin={self.charger_id}, "
+                "which the service may reject. Add 'device_id' to the audi entry in the configuration.",
+                level = 'WARNING'
+            )
+        return {'vin': self.charger_id}
 
-        if self.connected_vehicle.car_data.battery_reg_counter > 100:
-            self.connected_vehicle.car_data.battery_reg_counter = 10
+    def _call_audi_action(self, action:str) -> None:
+        """ Calls the service without blocking the app thread: AppDaemon's call_service returns at once when
+            a `callback` is given (adapi.call_service, AppDaemon 4.5). The service itself can take ~15 s while
+            the integration confirms the command with the car. """
 
-        self.connected_vehicle.car_data.battery_size = avg
-        self.ADapi.log(f"{self.charger} updated battery size {avg}") ###
+        try:
+            self.ADapi.call_service(self.AUDI_ACTION_SERVICE,
+                namespace = self.namespace,
+                callback = self._audi_action_done,
+                action = action,
+                **self._service_target()
+            )
+            self.ADapi.log(f"{action} sent to {self.charger}") ###
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} Could not send {action}. Exception: {e}", level = 'WARNING')
 
+    def _audi_action_done(self, result) -> None:
+        # Runs on AppDaemon's event loop (task done-callback): keep it to a log line.
+        self.ADapi.log(f"{self.charger} audiconnect action result: {result}", level = 'DEBUG')
 
-    def setVoltPhase(self, volts, phases) -> None:
-        """ Helper for calculations on chargespeed.
-            VoltPhase is a make up name and simplification to calculate chargetime based on remaining kwh to charge
-            230v 1 phase,
-            266v is 3 phase on 230v without neutral (supported by tesla among others)
-            687v is 3 phase on 400v with neutral """
+    def _send_start_command(self) -> None:
+        self._call_audi_action('start_charger')
 
-        self.ADapi.log(f"{self.charger} setting volt {volts} phase {phases}") ###
-        if (
-            phases > 1
-            and self.charger_data.volts > 200
-            and self.charger_data.volts < 250
-        ):
-            self.charger_data.voltPhase = 266
+    def _send_stop_command(self) -> None:
+        self._call_audi_action('stop_charger')
 
-        elif (
-            phases == 3
-            and self.charger_data.volts > 300
-        ):
-            self.charger_data.voltPhase = 687
+    # ---- capabilities ------------------------------------------------------------------- #
 
-        elif (
-            phases == 1
-            and self.charger_data.volts > 200
-            and self.charger_data.volts < 250
-        ):
-            self.charger_data.voltPhase = volts
+    def setChargingAmps(self, charging_amp_set:int = 16) -> int:
+        """ The Audi has no ampere control (audiconnect exposes no current setter). Returns the
+            current estimate so callers that use the return value get an int. """
+
+        return int(self.charger_data.ampereCharging)
+
+    def getChargingPowerW(self) -> float:
+        """ Live draw from the `charging_power` sensor (kW, UNVERIFIED entity id
+            `sensor.<car>_charging_power`) when it reads above 0, else the ampere * voltPhase estimate. """
+
+        if self.charger_data.charger_power is not None:
+            power_kW = self.getChargerPower()
+            if power_kW > 0:
+                return power_kW * 1000
+        return super().getChargingPowerW()

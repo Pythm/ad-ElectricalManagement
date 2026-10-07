@@ -85,10 +85,6 @@ class Car:
 
         # Set up listeners
         if self.car_data.charger_sensor is not None:
-            #self.ADapi.listen_state(self.car_Car_ChargeCableConnected, self.car_data.charger_sensor,
-            #    namespace = self.namespace,
-            #    new = 'on'
-            #)
             self.ADapi.listen_state(self.car_ChargeCableDisconnected, self.car_data.charger_sensor,
                 namespace = self.namespace,
                 new = 'off'
@@ -100,18 +96,9 @@ class Car:
             Set a departure time in a HA datetime sensor for when car will be finished charging to 100%,
             to have a optimal battery when departing.
         """
-        self.max_range_handler = None
-        self.start_charging_max = None
-
-        """ Add Maxrange solution for charging finished to 100% at given time.
-            #self.ADapi.listen_state(self.MaxRangeListener, self.departure, namespace = self.namespace, duration = 5 )
-        """
 
         """ End initialization Car Class
         """
-
-    def set_connected_charger(self, charger: Charger) -> None:
-        Registry.set_link(self, charger)
 
         # Functions on when to charge Car
     def _finishByHourListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -225,11 +212,6 @@ class Car:
                                                      finish_by_hour = self.finish_by_hour)
 
         # Functions to react to car sensors
-    def car_Car_ChargeCableConnected(self, entity, attribute, old, new, kwargs) -> None:
-        """ Charge cable connected for car.
-        """
-        pass
-
     def car_ChargeCableDisconnected(self, entity, attribute, old, new, kwargs) -> None:
         """ Charge cable disconnected for car.
         """
@@ -243,12 +225,6 @@ class Car:
                     else:
                         Registry.unlink(self)
                         Registry.set_link(self, self.onboard_charger)
-
-            if self.max_range_handler is not None:
-                # TODO: Program charging to max at departure time.
-                # @HERE: Call a function that will cancel handler when car is disconnected
-                #self.ADapi.run_in(self.resetMaxRangeCharging, 1)
-                self.ADapi.log(f"{self.charger} Has a max_range_handler. Not Programmed yet", level = 'DEBUG')
 
     def isConnected(self) -> bool:
         """ Returns True if charge cable is connected.
@@ -384,6 +360,14 @@ class Car:
     def changeChargeLimit(self, chargeLimit:int = 100 ) -> None:
         """ Change charge limit.
         """
+        if self.car_data.charge_limit is None or str(self.car_data.charge_limit).startswith('sensor.'):
+            # number/set_value can not write to a read-only sensor (Audi 'target_state_of_charge' sensor).
+            self.ADapi.log(
+                f"{self.carName} charge_limit {self.car_data.charge_limit} is not a writable number entity. "
+                f"Not changing charge limit to {chargeLimit}.",
+                level = 'DEBUG'
+            )
+            return
         self.car_data.old_charge_limit = self.ADapi.get_state(self.car_data.charge_limit, namespace = self.namespace)
         self.ADapi.call_service('number/set_value',
             value = chargeLimit,
@@ -410,7 +394,7 @@ class Car:
                 )
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
-                    f"{self.carName} battery state error {battery_state} when setting new charge limit: {new}. Error: {ve}",
+                    f"{self.carName} battery state not readable when setting new charge limit: {new}. Error: {ve}",
                     level = 'DEBUG'
                 )
                 return
@@ -446,7 +430,7 @@ class Car:
                 )
             except (ValueError, TypeError) as ve:
                 self.ADapi.log(
-                    f"{self.charger} Could not get attribute = 'charging_state' from: "
+                    f"{self.carName} Could not get attribute = 'charging_state' from: "
                     f"{self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace)} "
                     f"Error: {ve}",
                     level = 'DEBUG'
@@ -454,8 +438,14 @@ class Car:
             else:
                 if state == 'Starting':
                     state = 'Charging'
-                return state
-        
+                if state is not None:
+                    return state
+                # No 'charging_state' attribute (Audi plug binary_sensor, generic cars): fall back to the
+                # charger below. An unavailable/unknown/missing entity still returns None as before.
+                sensor_state = self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace)
+                if sensor_state is None or sensor_state in UNAVAIL:
+                    return None
+
         if self.connected_charger is not None:
             return self.connected_charger.getChargingState()
         return None
@@ -491,6 +481,15 @@ class Tesla_car(Car):
             namespace = namespace,
             attribute = 'id'
         )
+        if self.vehicle_id is None:
+            # Tesla integration not loaded yet: without this fallback two Teslas would both get None
+            # and overwrite each other in the Registry.
+            api.log(
+                f"{carName}: no 'id' attribute on {car_data.online_sensor}. Using '{carName}' as vehicle id. "
+                "Tesla API commands will fail until the app is reloaded with the integration running.",
+                level = 'ERROR'
+            )
+            self.vehicle_id = carName
 
         super().__init__(
             api = api,
@@ -516,7 +515,8 @@ class Tesla_car(Car):
         """
 
     def car_charging_state_changed(self, entity, attribute, old, new, kwargs) -> None:
-        if new is None:
+        if new is None or new in UNAVAIL:
+            # Integration outage: no decision (and no unlink) on a missing value.
             return
         if self.connected_charger is None:
             self.ADapi.log(f"Car charging state for {self.carName} changed to {new} without connected charger") ###
@@ -534,7 +534,12 @@ class Tesla_car(Car):
         """ Function to wake up connected cars.
         """
         if self._polling_of_data():
-            if self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace) not in ('Complete', 'Disconnected'):
+            # The binary sensor state is on/off; the charging state lives in its 'charging_state' attribute.
+            charging_state = self.ADapi.get_state(self.car_data.charger_sensor,
+                namespace = self.namespace,
+                attribute = 'charging_state'
+            )
+            if charging_state not in ('Complete', 'Disconnected'):
                 if (
                     not self.recentlyUpdated()
                     and self.asleep()

@@ -128,19 +128,30 @@ CHARGER_SPECS: List[Tuple[str, str, str]] = [
     ('session_energy',           'sensor',        '_energy_added'),
 ]
 
+# Audi Connect (https://github.com/audiconnect/audi_connect_ha). Entity ids are UNVERIFIED on a real
+# car: they are the HA slugs of the entity names in the integration's platform files
+# (binary_sensor.py "Plug state", number.py "Global charge target", sensor.py "State of charge",
+# "Last Update", "Charging state", "Charging power"). Every one of them can be overridden in the
+# audi entry of the configuration with the same key.
 AUDI_SPECS: List[Tuple[str, str, str]] = [
-    ('charger_sensor',           'sensor',        '_plug_state'),
-    ('charge_limit',             'sensor',        '_target_state_of_charge'),
-    ('battery_sensor',           'sensor',        '_primary_engine_percent'),
-    ('location_tracker',         'device_tracker','_position'),
+    ('charger_sensor',           'binary_sensor', '_plug_state'),              # plug is a binary_sensor, not a sensor
+    ('charge_limit',             'number',        '_global_charge_target'),    # writable; the read-only sensor
+                                                                               # _target_state_of_charge can not be set.
+                                                                               # number.<car>_current_location_charge_target
+                                                                               # may be the one that stops the charge.
+    ('battery_sensor',           'sensor',        '_state_of_charge'),         # device_class battery, direct SOC
+    ('location_tracker',         'device_tracker','_position'),                # device_tracker.py not checked
     ('data_last_update_time',    'sensor',        '_last_update'),
 ]
 
 AUDI_CHARGER_SPECS: List[Tuple[str, str, str]] = [
-    ('charger_sensor',           'sensor',        '_charging_state'),
-    ('charger_switch',           'binary_sensor', '_plug_state'),
-    ('charger_power',            'sensor',        '_charging_power'),
+    ('charger_sensor',           'sensor',        '_charging_state'),          # raw text state, normalised in Audi_charger
+    ('charger_switch',           'binary_sensor', '_plug_state'),              # read-only plug sensor
+    ('charger_power',            'sensor',        '_charging_power'),          # kW
 ]
+
+# audi entry keys that only configure the Audi_charger (not persisted).
+AUDI_CHARGER_ARGS: Tuple[str, ...] = ('device_id', 'verify_minutes', 'max_command_retries', 'charge_power_kW')
 
 EASEE_SPECS: List[Tuple[str, str, str]] = [
     ('charger_sensor',          'sensor',   '_status'),
@@ -526,6 +537,35 @@ class ElectricalUsage(ad.ADBase):
         self._setup_cars()
         self._setup_easee()
         self._link_cars_to_chargers()
+        self._purge_orphan_guest_queue_entries()
+
+    def _purge_orphan_guest_queue_entries(self) -> None:
+        """ Guest cars are not persisted but their queue entries are. After a restart a 'guest_<id>' entry
+            without a Registry car would block findNextChargerToStart and take price slots. Only guest
+            entries are purged; other unknown ids are left alone (lists are shared by reference). """
+
+        def orphan_guest(vehicle_id) -> bool:
+            return (
+                isinstance(vehicle_id, str)
+                and vehicle_id.startswith('guest_')
+                and Registry.get_car(vehicle_id) is None
+            )
+
+        removed = [item.vehicle_id for item in self.charging_scheduler.chargingQueue if orphan_guest(item.vehicle_id)]
+        removed += [qid for qid in self._persistence.queueChargingList if orphan_guest(qid)]
+        removed += [qid for qid in self._persistence.solarChargingList if orphan_guest(qid)]
+        if not removed:
+            return
+        self.charging_scheduler.chargingQueue[:] = [
+            item for item in self.charging_scheduler.chargingQueue if not orphan_guest(item.vehicle_id)
+        ]
+        self._persistence.queueChargingList[:] = [
+            qid for qid in self._persistence.queueChargingList if not orphan_guest(qid)
+        ]
+        self._persistence.solarChargingList[:] = [
+            qid for qid in self._persistence.solarChargingList if not orphan_guest(qid)
+        ]
+        self.ADapi.log(f"Removed guest entries without a car from the charge queues: {sorted(set(removed))}", level = 'INFO')
 
     def _setup_tesla(self) -> None:
         for cfg in self.args.get('tesla') or []:
@@ -591,6 +631,10 @@ class ElectricalUsage(ad.ADBase):
             if 'plug_state' in cfg and not carName:
                 sensor_id = cfg['plug_state']
                 carName = sensor_id.replace('binary_sensor.', '').replace('_plug_state', '')
+            # 'plug_state' is the Audi name for the car's charger_sensor; make it win over autodiscovery
+            # on every run, not only on the first (car_defaults) run.
+            if cfg.get('plug_state') is not None and cfg.get('charger_sensor') is None:
+                cfg['charger_sensor'] = cfg['plug_state']
 
             persisted_car = self._persistence.car.get(carName)
             if not persisted_car:
@@ -634,18 +678,34 @@ class ElectricalUsage(ad.ADBase):
             )
             self.cars[audi_car.vehicle_id] = audi_car
 
+            # The charger reads its own copy of the config: the car merge above wrote the plug
+            # binary_sensor into cfg['charger_sensor'], which must not become the charger's state
+            # sensor (that is sensor.<car>_charging_state, config key 'charging_state').
+            charger_cfg = {k: v for k, v in cfg.items() if k != 'charger_sensor'}
+            if cfg.get('charging_state') is not None:
+                charger_cfg['charger_sensor'] = cfg['charging_state']
+            if cfg.get('charging_power') is not None and charger_cfg.get('charger_power') is None:
+                charger_cfg['charger_power'] = cfg['charging_power']
+            if charger_cfg.get('charger_switch') is None and cfg.get('plug_state') is not None:
+                charger_cfg['charger_switch'] = cfg['plug_state']
+
             persisted_charger = self._persistence.charger.get(carName)
             if not persisted_charger:
                 # charger_sensor: _charging_state, charger_switch: _plug_state, charger_power: _charging_power
-                defaults = integrated_charger_defaults(cfg)
-                cfg.update({k: v for k, v in defaults.items() if k not in cfg})
-                self._persistence.charger[carName] = ChargerData(**cfg)
+                defaults = integrated_charger_defaults(charger_cfg)
+                charger_cfg.update({k: v for k, v in defaults.items() if k not in charger_cfg})
+                self._persistence.charger[carName] = ChargerData(**charger_cfg)
 
-            self._merge_config_with_persistent(cfg = cfg,
+            self._merge_config_with_persistent(cfg = charger_cfg,
                                                name = carName,
                                                specs = AUDI_CHARGER_SPECS,
                                                persistent_data = self._persistence.charger.get(carName))
 
+            self._update_persistence_from_cfg(cfg = charger_cfg,
+                                              persistent_data = self._persistence.charger[carName],
+                                              common_keys = COMMON_CHARGER_KEYS)
+
+            charger_args = {k: cfg[k] for k in AUDI_CHARGER_ARGS if cfg.get(k) is not None}
             audi_charger = Audi_charger(
                 api = self,
                 Car = audi_car,
@@ -656,6 +716,7 @@ class ElectricalUsage(ad.ADBase):
                 charging_scheduler = self.charging_scheduler,
                 notify_app = self.notify_app,
                 recipients = self.recipients,
+                **charger_args
             )
             self.chargers[audi_charger.charger_id] = audi_charger
 
@@ -745,6 +806,9 @@ class ElectricalUsage(ad.ADBase):
                 cfg['charging_amps'] = cfg['current']
             if 'status' in cfg and not 'charger_sensor' in cfg:
                 cfg['charger_sensor'] = cfg['status']
+            elif 'charger_status' in cfg and not 'charger_sensor' in cfg:
+                # README documents `charger_status`; accept it as an alias of `status`.
+                cfg['charger_sensor'] = cfg['charger_status']
 
             persisted_charger = self._persistence.charger.get(charger)
             if not persisted_charger:
@@ -1174,13 +1238,14 @@ class ElectricalUsage(ad.ADBase):
         """Remove a guest car from the system """
 
         self.charging_scheduler.removeFromQueue(vehicle_id = vehicle_id)
-        to_remove = set()
-        for queue_id in self._persistence.queueChargingList:
-            if queue_id == vehicle_id:
-                to_remove.add(queue_id)
+        self.charging_scheduler.removeFromCharging(vehicle_id)
         self._persistence.queueChargingList[:] = [
             qid for qid in self._persistence.queueChargingList
-            if qid not in to_remove
+            if qid != vehicle_id
+        ]
+        self._persistence.solarChargingList[:] = [
+            qid for qid in self._persistence.solarChargingList
+            if qid != vehicle_id
         ]
 
         self.cars.pop(vehicle_id, None)
@@ -1984,9 +2049,8 @@ class ElectricalUsage(ad.ADBase):
                 continue
 
             if car.connected_charger.getChargingState() == "Charging":
-                self.available_Wh += (
-                    car.connected_charger.charger_data.ampereCharging * car.connected_charger.charger_data.voltPhase
-                )
+                # ampere * voltPhase for Tesla/Easee; the Audi returns its live charging_power sensor.
+                self.available_Wh += car.connected_charger.getChargingPowerW()
                 car.stopChargingCar(force_stop = True)
                 if self.available_Wh > REDUCED_ENOUGH_WH:
                     return True
@@ -2501,21 +2565,33 @@ class ElectricalUsage(ad.ADBase):
 
         for charger in self.all_chargers():
             if action == 'kWhremaining'+str(charger.charger):
+                # Guest notification replies act on the guest car only, never on a Tesla that is on the charger.
+                guest = charger._guest_car
+                if guest is None:
+                    self.ADapi.log(f"kWh remaining received for {charger.charger} but there is no guest car. Ignored.", level = 'INFO')
+                    return
                 try:
                     charger.setGuestKWh(float(str(data['reply_text']).replace(',', '.')))
                 except (ValueError, TypeError):
                     charger.kWhRemaining()
                     self.ADapi.log(
                         f"User input {data['reply_text']} on setting kWh remaining for Guest car. Not valid number. "
-                        f"Using {charger.connected_vehicle.car_data.kWh_remain_to_charge} to calculate charge time",
+                        f"Using {guest.car_data.kWh_remain_to_charge} to calculate charge time",
                         level = 'INFO'
                     )
-                charger.connected_vehicle.findNewChargeTime()
+                guest.findNewChargeTime()
                 return
 
             if action == 'chargeNow'+str(charger.charger):
-                charger.connected_vehicle.charge_now = True
-                charger.startCharging()
+                guest = charger._guest_car
+                if guest is None:
+                    self.ADapi.log(f"Charge now received for {charger.charger} but there is no guest car. Ignored.", level = 'INFO')
+                    return
+                guest.charge_now = True
+                if charger.connected_vehicle is guest:
+                    charger.startCharging()
+                else:
+                    self.ADapi.log(f"Charge now for guest on {charger.charger}: guest is not linked to the charger, not starting.", level = 'INFO')
                 return
 
     def _awayStateListen_Main(self, entity, attribute, old, new, kwargs) -> None:
