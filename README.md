@@ -11,6 +11,22 @@ The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
+### **v1.0.6** – behaviour changes (nothing to do in the default case)
+
+No configuration changes are needed. Things that behave differently:
+
+- **Charging reduction when over the kWh goal** now uses the correct amount: previously a reduction request made the chargers drop straight to their minimum amps, now they are lowered by the amps actually needed.
+- **Charging queue priority** is now actually applied to the queue order.
+- **The per-minute check runs at second 5** (not second 0) and charger reduction is skipped in minute 0 if the accumulated consumption sensor has not reset yet.
+- **Stale accumulated sensor**: `reload_config_entry` is called at most every 15 minutes.
+- **Heaters learn their `normal_power`** (they previously never did).
+- **Json storage** is written atomically, also after learning idle consumption and high usage, and an unreadable file is renamed to `*.corrupt-<time>.json` and the app starts fresh instead of failing to start.
+- **Price app not ready**: if ElectricalPriceCalc has no prices yet at startup the app uses 1 hour slots and retries (for `pricearea`, the price fetch runs in the background). If `electricalPriceApp` cannot be found the app logs an error and stops.
+- **Config is validated**: unknown keys are ignored, but invalid values are logged at ERROR and the app does not start. `options` is optional; `notify_receiver` can be a single name or a list.
+- `get_instance()` and the singleton are removed.
+
+---
+
 ### **v1.0.2** – “away” → “vacation”
 
 Renamed the **away** temperature mode to **vacation**:
@@ -79,7 +95,7 @@ Electrical Management app is fully relying on the [ad‑Weather](https://github.
 
 ## 🧭 Planned Changes
 
-I plan to make changes to integrate [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) with ElectricalManagement.
+I plan to make changes to integrate [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) with ElectricalManagement: ClimateCommander becomes one app per climate/heater with save/spend states, and ElectricalManagement controls those apps instead of its own `climate` entries. ElectricalManagement keeps controlling switches. Both configuration styles are planned to keep working.
 
 ---
 
@@ -156,7 +172,7 @@ A json file will be created in `{self.AD.config_dir}/persistent/electricity/` or
 The persistent data will be updated with key data and configuration of your entities.
 
 > [!TIP]  
-> You can check the json file for automatically found sensors for cars, chargers and heaters. Remember that the json is only written to during reboot and at 14.30.
+> You can check the json file for automatically found sensors for cars, chargers and heaters. The json is written during shutdown, at 14.30 and after the app has learned something new (idle consumption, high usage, heater consumption). `json_path` is the full path of the file, for example `/conf/persistent/electricity/electricalmanagement.json`.
 ---
 
 ### 🔌 Grid tariffs

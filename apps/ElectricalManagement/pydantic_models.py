@@ -3,15 +3,91 @@
 
 from __future__ import annotations
 from datetime import datetime, time, timedelta
-import json
+import os
+import time as time_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Callable
-from pydantic import BaseModel, Field, conlist, conint
-from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, conlist, conint, field_validator
+
+# WattSlot/Decision live in utils.py; re-exported here so existing
+# `from pydantic_models import WattSlot, Decision` keeps working.
+from utils import WattSlot, Decision  # noqa: F401
+
+LogFunc = Callable[[str, str], None]   # (message, level)
+
+# Top-level `options:` values the main app understands. Anything else is logged as a WARNING.
+KNOWN_OPTIONS = frozenset({
+    'notify_overconsumption_also_when_away',
+    'notify_overconsumption',
+    'pause_charging',
+})
+
+
+def _none_to_list(value: Any) -> Any:
+    return [] if value is None else value
+
+
+class ElectricalManagementConfig(BaseModel):
+    """ Validated view of the top-level apps.yaml arguments read by ElectricalUsage.
+
+        Defaults are identical to the previous ``self.args.get(...)`` calls. Unknown keys
+        (``module``, ``class``, ``dependencies``, ...) are ignored. The per-device lists
+        (tesla/audi/cars/easee/climate/heater_switches) are only checked to be lists of
+        dicts; their contents are still read from ``self.args`` and passed through untouched.
+    """
+    model_config = ConfigDict(extra='ignore')
+
+    electricalPriceApp: str
+    main_namespace: str = 'default'
+    notify_app: str | None = None
+    notify_receiver: List[str] = Field(default_factory=list)
+    home_name: str = 'home'
+    json_path: str | None = None
+
+    power_consumption: str | None = None
+    accumulated_consumption_current_hour: str | None = None
+    power_production: str | None = None
+    accumulated_production_current_hour: str | None = None
+
+    max_kwh_goal: float = 15
+    buffer: float = 0.4
+    options: List[str] = Field(default_factory=list)
+    automate: Union[bool, str] = True
+    away_state: str | None = None
+    vacation: str | None = None
+    infotext: str | None = None
+    stopAtPriceIncrease: float = 0.3
+    startBeforePrice: float = 0.01
+
+    tesla: List[Dict[str, Any]] = Field(default_factory=list)
+    audi: List[Dict[str, Any]] = Field(default_factory=list)
+    cars: List[Dict[str, Any]] = Field(default_factory=list)
+    easee: List[Dict[str, Any]] = Field(default_factory=list)
+    climate: List[Dict[str, Any]] = Field(default_factory=list)
+    heater_switches: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator('notify_receiver', mode='before')
+    @classmethod
+    def _receiver_to_list(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @field_validator('options', 'tesla', 'audi', 'cars', 'easee', 'climate', 'heater_switches', mode='before')
+    @classmethod
+    def _empty_list_when_missing(cls, value: Any) -> Any:
+        return _none_to_list(value)
+
+    def unknown_options(self) -> List[str]:
+        """ Options given in the config that the app does not know. Never an error. """
+        return [opt for opt in self.options if opt not in KNOWN_OPTIONS]
 
 
 class MaxUsage(BaseModel):
-    max_kwh_usage_pr_hour: int = 0
+    # float since 1.0.6 (was int); existing files with ints load fine.
+    max_kwh_usage_pr_hour: float = 0
     topUsage: List[float] = Field(default_factory=lambda: [0, 0, 0])
     calculated_difference_on_idle: float = 1.1
 
@@ -164,22 +240,6 @@ class ChargingQueueItem(BaseModel):
             exclude_none=True
         )
 
-@dataclass(order=True)
-class WattSlot:
-    start: datetime
-    end: datetime
-    available_Wh: float
-
-    @property
-    def duration_hours(self) -> float:
-        return (self.end - self.start).total_seconds() / 3600.0
-
-@dataclass(frozen=True)
-class Decision:
-    name: str
-    predicate: Callable[[], bool]
-    action:   Callable[[], None]
-
 
 class PersistenceData(BaseModel):
     max_usage: MaxUsage = Field(alias="MaxUsage", default_factory=MaxUsage)
@@ -191,15 +251,14 @@ class PersistenceData(BaseModel):
     chargingQueue: List[ChargingQueueItem] = Field(alias="chargingQueue", default_factory=list)
     queueChargingList: List[Any] = Field(alias="queueChargingList", default_factory=list)
     solarChargingList: List[Any] = Field(alias="solarChargingList", default_factory=list)
+    # WattSlot is a plain dataclass; pydantic 2 serialises it field-by-field, which is
+    # the same {"start", "end", "available_Wh"} shape the old json_encoders lambda produced.
     available_watt: List[WattSlot] = Field(alias="available_watt", default_factory=list)
     weather: WeatherData = Field(default_factory=WeatherData)
 
     model_config = {
         "arbitrary_types_allowed": True,
         "populate_by_name": False,
-        "json_encoders": {   # <‑‑ tell pydantic how to serialise a WattSlot
-            WattSlot: lambda ws: ws.__dict__,
-        },
     }
 
     def has_initialized_consuming_objects(self) -> bool:
@@ -209,16 +268,48 @@ class PersistenceData(BaseModel):
 def _json_path(path: str) -> Path:
     return Path(path).expanduser()
 
-def load_persistence(path: str) -> PersistenceData:
-    """Load a JSON file into a typed PersistenceData instance."""
+def _log(log: LogFunc | None, message: str, level: str) -> None:
+    if log is not None:
+        log(message, level)
+
+def load_persistence(path: str, log: LogFunc | None = None) -> PersistenceData:
+    """Load a JSON file into a typed PersistenceData instance.
+
+    Missing file: a fresh empty file is written. Unreadable/invalid file: it is moved aside
+    to ``<name>.corrupt-<epoch>.json`` (so nothing is lost), the error is logged and the app
+    starts with empty PersistenceData.
+    """
+    file_path = _json_path(path)
     try:
-        return PersistenceData.parse_file(_json_path(path))
+        raw = file_path.read_text()
     except FileNotFoundError:
         persistence = PersistenceData()
         dump_persistence(path, persistence)
         return persistence
 
+    try:
+        # ValidationError and json.JSONDecodeError are both ValueError subclasses.
+        return PersistenceData.model_validate_json(raw)
+    except (ValidationError, ValueError) as e:
+        corrupt_path = file_path.with_name(f"{file_path.stem}.corrupt-{int(time_module.time())}.json")
+        try:
+            os.replace(file_path, corrupt_path)
+        except OSError as rename_error:
+            _log(log, f"Could not move corrupt persistence file {file_path} aside: {rename_error}", 'ERROR')
+        _log(
+            log,
+            f"Persistence file {file_path} could not be read and was moved to {corrupt_path}. "
+            f"Starting with empty data. Error: {e}",
+            'ERROR'
+        )
+        persistence = PersistenceData()
+        dump_persistence(path, persistence)
+        return persistence
+
 def dump_persistence(path: str, data: PersistenceData) -> None:
-    """Write the PersistenceData back to JSON."""
-    with open(_json_path(path), 'w') as f:
+    """Write the PersistenceData back to JSON atomically (tmp file + os.replace)."""
+    file_path = _json_path(path)
+    tmp_path = file_path.with_name(file_path.name + '.tmp')
+    with open(tmp_path, 'w') as f:
         f.write(data.model_dump_json(exclude_none=True, by_alias=True, indent=4))
+    os.replace(tmp_path, file_path)

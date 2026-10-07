@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import bisect
 import math
-from datetime import timedelta
-from typing import Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
 
-# Local imports – adjust the module names to your actual project layout
 from pydantic_models import ChargingQueueItem, WattSlot
-from utils import get_next_runtime_aware
+from utils import get_next_runtime_aware, price_now_or_inf, slot_index_now
 
 class Scheduler:
-    """ Class for calculating and schedule charge times """
+    """ Class for calculating and schedule charge times.
+
+        `chargingQueue` and `available_watt` are the very list objects stored in the main app's
+        PersistenceData and are shared BY REFERENCE: the scheduler mutates them in place and
+        the main app refreshes `available_watt` with .clear()/.extend() so this reference
+        stays valid. Never rebind these attributes.
+    """
 
     def __init__(self, api,
         stopAtPriceIncrease:float,
@@ -47,7 +52,7 @@ class Scheduler:
         self,
         kWhRemaining: float = 2,
         totalW_AllChargers: float = 3600,
-        start_time: Optional[self.ADapi.datetime(aware=True)] = None,
+        start_time: Optional[datetime] = None,
     ) -> float:
         """ Estimate the *number of hours* it will take to finish a charge """
 
@@ -59,9 +64,14 @@ class Scheduler:
                 startTime = start_time, offset_seconds=0, delta_in_seconds=60 * 15
             )
 
+        wh_remaining = kWhRemaining * 1_000
+        if not self.available_watt:
+            # No per-slot budget yet (prices not received / idle consumption not calculated):
+            # fall back to a plain power-based estimate instead of claiming 0 hours.
+            return wh_remaining / max(totalW_AllChargers, 1)
+
         idx_start = bisect.bisect_left([s.start for s in self.available_watt], self.save_endHour)
 
-        wh_remaining = kWhRemaining * 1_000
         hours_to_charge = 0.0
 
         for slot in self.available_watt[idx_start:]:
@@ -105,7 +115,9 @@ class Scheduler:
         reverse: bool = False
     ) -> List[str]:
         """ Return a **new list** containing the same vehicle_ids but sorted
-        according to the priority stored in `self._persistence.chargingQueue` """
+        according to the priority stored in `self.chargingQueue`.
+        Callers that need the persisted queue reordered must assign back with
+        ``charging_list[:] = ...`` so the list object (shared with PersistenceData) is kept. """
 
         priority_map = self._vehicle_priority_map()
 
@@ -140,7 +152,8 @@ class Scheduler:
                 return True
 
             if entry.charge_below != 0:
-                return self.electricalPriceApp.electricity_price_now() <= entry.charge_below
+                # No current price (inf) -> not cheap -> do not charge on price.
+                return price_now_or_inf(self.electricalPriceApp) <= entry.charge_below
 
         if (
             self.ADapi.now_is_between("09:00:00", "14:00:00")
@@ -158,13 +171,14 @@ class Scheduler:
 
         if max_price == 0:
             max_price = self._update_prices_for_future_hours()
-            if max_price == -1:
+            if max_price is None or max_price == -1:
                 return False
-        return self.electricalPriceApp.electricity_price_now() <= max_price
+        return price_now_or_inf(self.electricalPriceApp) <= max_price
 
 
     def _update_prices_for_future_hours(self) -> float:
-        """ When tomorrow's price data is not yet available """
+        """ When tomorrow's price data is not yet available.
+            Returns the price limit, or -1 when no limit could be found (treated as 'not charging time'). """
 
         now = self.ADapi.datetime(aware=True)
         if all(c.price is not None for c in self.chargingQueue):
@@ -181,11 +195,16 @@ class Scheduler:
         else:
             est_hours = sum(c.estHourCharge for c in self.chargingQueue if c.estHourCharge)
 
+        # checkitem is a SLOT INDEX into elpricestoday (24/day hourly, 96/day in 15-minute mode),
+        # not an hour. On a normal hourly day starting at 00:00 the index of 'now' equals now.hour.
         price = self.electricalPriceApp.get_lowest_prices(
-            checkitem = now.hour,
+            checkitem = slot_index_now(self.electricalPriceApp.elpricestoday, now),
             hours = est_hours,
             min_change = 0.1
         )
+        if price is None:
+            # Price app has no data yet: no limit available, retry on the next call.
+            return -1
 
         for c in self.chargingQueue:
             c.price = price
@@ -426,10 +445,18 @@ class Scheduler:
             stopAtPriceIncrease=self.stopAtPriceIncrease,
         )
 
-        start_this_charger_at = charging_at
-        eta_stop_simultaneous = start_this_charger_at + timedelta(hours = hours_to_charge)
+        if charging_at is None:
+            # (None, None, price) is returned between 06:00 and 15:00 without tomorrow's prices,
+            # and (None, None, None) when no prices exist. Nothing to schedule yet.
+            self.ADapi.log(
+                f"No continuous charge window found for simultaneous charge of {simultaneous_charge}. "
+                f"Keeping individual charge times.",
+                level = 'DEBUG'
+            )
+            return
+
+        eta_stop_simultaneous = charging_at + timedelta(hours = hours_to_charge)
         if charging_stop is not None:
-            now = self.ADapi.datetime(aware=True)
             for c in simultaneous_items:
                 c.chargingStart = charging_at
                 c.chargingStop = charging_stop
@@ -516,7 +543,6 @@ class Scheduler:
             info_text = price_msg
 
         if self.infotext not in (None, "Charge "):
-            info_text.strip()
             self.ADapi.call_service(
                 "input_text/set_value",
                 value = info_text,

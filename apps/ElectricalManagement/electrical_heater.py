@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import math
 import bisect
 from datetime import timedelta
 
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 from pydantic_models import TempConsumption
 from utils import (
     cancel_timer_handler,
     cancel_listen_handler,
-    floor_even
+    floor_even,
+    price_now_or_inf,
+    to_float_or_none,
 )
-
-from scheduler import Scheduler
 
 UNAVAIL = ('unavailable', 'unknown')
 
@@ -30,7 +29,8 @@ class Heater:
         electricalPriceApp,
         charging_scheduler,
         notify_app,
-        print_save_hours
+        print_save_hours,
+        persist_callback = None,
     ):
         self.ADapi = api
         self.namespace = namespace
@@ -40,6 +40,9 @@ class Heater:
         self.charging_scheduler = charging_scheduler
         self.notify_app = notify_app
         self.print_save_hours = print_save_hours
+        # Optional callable from the main app that writes the persistence file after
+        # registerConsumption() has stored new learned data.
+        self.persist_callback = persist_callback
 
         # Vacation setup
         if self.heater_data.vacation is not None and self.ADapi.entity_exists(self.heater_data.vacation, namespace = self.namespace):
@@ -73,6 +76,8 @@ class Heater:
         self.checkConsumption_handler = None
         self.off_retry_handler = None
         self.off_retry_count = 3
+        # Vacation: oneshot listener that turns the switch off once consumption has dropped.
+        self._turn_off_after_consumption_handler = None
 
         # Helpers used on vacation
         self.HeatAt = None
@@ -85,14 +90,17 @@ class Heater:
         self.wind_amount:float = 0
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.namespace)
 
-        # Finding data if not set to persistent
-        if self.heater_data.normal_power < 30:
-            self.ADapi.listen_state(self._set_normal_power, self.heater_data.consumptionSensor,
-                constrain_state=lambda x: float(x) > 30,
+        # Finding data if not set to persistent. The oneshot listener is only consumed when the
+        # constraint passes (AppDaemon skips constrained callbacks without removing them), and the
+        # lambda must stay a lambda: AppDaemon only evaluates callables named '<lambda>' here.
+        self._normal_power_handler = None
+        if self.heater_data.normal_power < 30 and self.heater_data.consumptionSensor is not None:
+            self._normal_power_handler = self.ADapi.listen_state(self._set_normal_power, self.heater_data.consumptionSensor,
+                constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 0) > 30,
                 oneshot = True,
                 namespace = self.namespace
             )
-    
+
         self.windows_is_open:bool = False
         self.notify_on_window_open:bool = True
         self.notify_on_window_closed:bool = False
@@ -112,9 +120,11 @@ class Heater:
                 )
 
     def _set_normal_power(self, entity, attribute, old, new, kwargs) -> None:
+        """ Learns the heater's normal power from the first consumption reading above 30 W. """
 
-        if float(new) < 30:
-            self.heater_data.normal_power = float(new)
+        value = to_float_or_none(new)
+        if value is not None and value > 30:
+            self.heater_data.normal_power = value
 
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
@@ -209,10 +219,7 @@ class Heater:
         elif not isOn:
             if self.vacation_state:
                 if not self.heater_data.vacation_keep_off and self.HeatAt is not None:
-                    if (
-                        (start := self.HeatAt) <= now < (end := self.EndAt)
-                        or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-                    ):
+                    if self._vacation_heat_now(now):
                         self.ADapi.call_service('switch/turn_on',
                             entity_id = self.heater,
                             namespace = self.namespace
@@ -232,25 +239,41 @@ class Heater:
             (self.HeatAt is not None or self.heater_data.vacation_keep_off)
         ):
             if self.HeatAt is not None:
-                if (
-                    (start := self.HeatAt) <= now < (end := self.EndAt)
-                    or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-                ):
+                if self._vacation_heat_now(now):
                     return
             if self.heater_data.validConsumptionSensor:
-                if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
-                    self.ADapi.listen_state(self._turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
-                        namespace = self.namespace,
-                        constrain_state=lambda x: float(x) < 20
-                    )
+                consumption_now = to_float_or_none(
+                    self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)
+                )
+                # Unavailable sensor (None) falls through to the turn-off below.
+                if consumption_now is not None and consumption_now > 20:
+                    if self._turn_off_after_consumption_handler is None:
+                        # Added once per heating session, oneshot so it is gone after it fires.
+                        self._turn_off_after_consumption_handler = self.ADapi.listen_state(
+                            self._turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
+                            namespace = self.namespace,
+                            constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
+                            oneshot = True
+                        )
                     return
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
             )
 
+    def _vacation_heat_now(self, now) -> bool:
+        """ On vacation: True when inside the cheapest window (HeatAt..EndAt) or the price right now is
+            at most the window price plus half the pricedrop. No window price / no current price -> False. """
+
+        if self.HeatAt is not None and self.EndAt is not None and self.HeatAt <= now < self.EndAt:
+            return True
+        if self.price is None:
+            return False
+        return price_now_or_inf(self.electricalPriceApp) <= self.price + (self.heater_data.pricedrop/2)
+
     def _turnOffHeaterAfterConsumption(self, entity, attribute, old, new, kwargs) -> None:
 
+        self._turn_off_after_consumption_handler = None
         self.ADapi.call_service('switch/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
@@ -313,11 +336,13 @@ class Heater:
     def get_heater_kWh_consumption(self) -> float:
         """ Returns heater total consumption. """
 
+        raw_state = None
         try:
-            consumption = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
+            raw_state = self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace)
+            consumption = float(raw_state)
         except (TypeError, AttributeError) as ve:
             self.ADapi.log(
-                f"Could not get kWh consumption for {self.heater} {consumption} Error: {ve}",
+                f"Could not get kWh consumption for {self.heater} {raw_state} Error: {ve}",
                 level = 'DEBUG'
             )
             return None
@@ -454,6 +479,9 @@ class Heater:
             existing.Consumption = avg_consumption
             existing.Counter = counter
 
+        if self.persist_callback is not None:
+            self.persist_callback()
+
 
         # Helper functions for windows
     def windowOpened(self, entity, attribute, old, new, kwargs) -> None:
@@ -509,6 +537,15 @@ class Heater:
         idx = bisect.bisect_left(out_values, self.out_temp)
         return max(0, idx - 1)
 
+    def current_target_temp_entry(self) -> dict:
+        """ The `temperatures` entry for the current outside temperature.
+            With no temperatures configured an entry with offset 0 is returned,
+            so the heater's own target temperature is used unchanged. """
+
+        if not self.heater_data.temperatures:
+            return {'offset': 0}
+        return self.heater_data.temperatures[self.find_target_temperatures()]
+
     def getSaveTemp(self, current_target_temp:float, target_temp:dict) -> float:
         """ Returns save temperature. """
 
@@ -552,11 +589,14 @@ class Heater:
         self.heater_setNewValues()
 
     def weather_event(self, event_name, data, **kwargs) -> None:
-        """ Listens for weather change from the weather app """
+        """ Listens for weather change from the weather app. Missing keys keep the previous value. """
 
-        self.out_temp = float(data['temp'])
-        self.rain_amount = float(data['rain'])
-        self.wind_amount = float(data['wind'])
+        if data.get('temp') is not None:
+            self.out_temp = float(data['temp'])
+        if data.get('rain') is not None:
+            self.rain_amount = float(data['rain'])
+        if data.get('wind') is not None:
+            self.wind_amount = float(data['wind'])
 
 
 class Climate(Heater):
@@ -571,6 +611,7 @@ class Climate(Heater):
         charging_scheduler,
         notify_app,
         print_save_hours,
+        persist_callback = None,
     ):
 
         # Sensors
@@ -598,6 +639,7 @@ class Climate(Heater):
             charging_scheduler = charging_scheduler,
             notify_app = notify_app,
             print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
         )
         self.reset_continuous_hours = True
 
@@ -613,6 +655,8 @@ class Climate(Heater):
                 f"ValueError: {ve}",
                 level = 'DEBUG'
             )
+            self.min_temp = 5
+        if self.min_temp is None:  # get_state returns None (no exception) when the attribute is missing
             self.min_temp = 5
 
         # Get new prices to save and in addition to turn up heat for heaters before expensive hours
@@ -666,8 +710,7 @@ class Climate(Heater):
 
         self.isOverconsumption = True
         if self.ADapi.get_state(self.heater, namespace = self.namespace) in ('heat', 'cool'):
-            target_num = self.find_target_temperatures()
-            target_temp = self.heater_data.temperatures[target_num]
+            target_temp = self.current_target_temp_entry()
 
             if 'offset' in target_temp:
                 new_temperature = self.target_heater_temp + target_temp['offset']
@@ -708,8 +751,7 @@ class Climate(Heater):
         ):
             return
         self.isSaveState =  False
-        target_num = self.find_target_temperatures()
-        target_temp = self.heater_data.temperatures[target_num]
+        target_temp = self.current_target_temp_entry()
 
         try:
             heater_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='temperature'))
@@ -887,6 +929,7 @@ class On_off_switch(Heater):
         charging_scheduler,
         notify_app,
         print_save_hours,
+        persist_callback = None,
     ):
 
         super().__init__(
@@ -898,6 +941,7 @@ class On_off_switch(Heater):
             charging_scheduler = charging_scheduler,
             notify_app = notify_app,
             print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
         )
 
         self.turn_off_action:str = 'turn_off_' + str(self.heater)

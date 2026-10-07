@@ -4,6 +4,12 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 class Registry:
+    """ Process-wide lookup of Car and Charger instances by id.
+
+        The dicts are class attributes, so they survive an AppDaemon app reload. ElectricalUsage
+        therefore calls :meth:`clear` at the top of ``initialize`` so stale objects from the previous
+        run are never returned.
+    """
     _cars: Dict[str, "Car"] = {}
     _chargers: Dict[str, "Charger"] = {}
 
@@ -17,6 +23,22 @@ class Registry:
     def register_charger(cls, charger: "Charger") -> None:
         """Store a Charger instance in the global registry."""
         cls._chargers[charger.charger_id] = charger
+
+    @classmethod
+    def unregister_car(cls, vehicle_id: str) -> Optional["Car"]:
+        """Remove and return the Car with the given id, or ``None`` if not registered."""
+        return cls._cars.pop(vehicle_id, None)
+
+    @classmethod
+    def unregister_charger(cls, charger_id: str) -> Optional["Charger"]:
+        """Remove and return the Charger with the given id, or ``None`` if not registered."""
+        return cls._chargers.pop(charger_id, None)
+
+    @classmethod
+    def clear(cls) -> None:
+        """Forget every registered car and charger (used on app (re)initialisation)."""
+        cls._cars.clear()
+        cls._chargers.clear()
 
     @classmethod
     def get_car(cls, vehicle_id: str) -> Optional["Car"]:
