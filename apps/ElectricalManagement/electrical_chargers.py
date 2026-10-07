@@ -10,6 +10,12 @@ from utils import cancel_timer_handler, cancel_listen_handler
 
 from registry import Registry
 
+# Easee: resume resends at 60 s while 'ready_to_charge' before backing off to EASEE_READY_BACKOFF_SECONDS.
+EASEE_READY_RESENDS_AT_60S = 10
+EASEE_READY_BACKOFF_SECONDS = 600
+# Easee: minutes a zero `_current` sample must hold while 'charging' before ampereCharging is set to 0.
+EASEE_ZERO_CURRENT_MINUTES = 3
+
 class Charger:
 
     def __init__(self, api,
@@ -81,9 +87,11 @@ class Charger:
             if not car._polling_of_data() or not car.isConnected():
                 continue
 
-            if car.connected_charger is None or car.getCarChargerState() == 'NoPower':
-                if self.compareChargingState(
-                    car_status = car.getCarChargerState()
+            car_state = car.getCarChargerState()
+            if car.connected_charger is None or car_state == 'NoPower':
+                if (
+                    self._link_evidence_ok(car_state)
+                    and self.compareChargingState(car_status = car_state)
                 ):
                     Registry.set_link(car, self)
                     self.kWhRemaining()
@@ -96,6 +104,14 @@ class Charger:
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
                 self._recheck_findCarConnectedToCharger_handler = self.ADapi.run_in(self._recheck_findCarConnectedToCharger, 120)
         return False
+
+    def _link_evidence_ok(self, car_state) -> bool:
+        """ Whether a car state is evidence enough to link the car to this charger in
+            findCarConnectedToCharger. An unlinked car used to read as False there and could never
+            match; now it reads its own state, so this fence keeps the old reachable outcomes:
+            a None state (no reading) is never evidence. Easee tightens it to 'NoPower' only. """
+
+        return car_state is not None
 
     def _recheck_findCarConnectedToCharger(self, kwargs) -> None:
         self.findCarConnectedToCharger()
@@ -828,9 +844,26 @@ class Easee(Charger):
 
         self._check_if_still_disconnected_handler = None
 
+        # C7: resume commands sent by _check_that_charging_started while the Easee stays in
+        # 'ready_to_charge' (plugged, car not drawing). Reset on any status change.
+        self._ready_resend_count:int = 0
+        # C9: consecutive zero/unavailable `_current` samples while the Easee reports 'charging',
+        # one minute apart. Reset on any non-zero sample. Handle for the one-minute re-sample timer.
+        self._zero_current_samples:int = 0
+        self._zero_current_handler = None
+
         self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
 
         """ End initialization Easee Charger Class """
+
+    def _link_evidence_ok(self, car_state) -> bool:
+        """ The Easee links a car only on the evidence that was reachable before an unlinked car
+            could report its own state: the car says 'NoPower' (cable in, EVSE gives nothing) and
+            compareChargingState confirms the Easee is 'awaiting_start'. 'Charging' / 'Stopped' /
+            'Complete' from a Tesla are not evidence for the Easee: two Teslas on cloud data up to
+            11 min late could otherwise be linked to the wrong charger. """
+
+        return car_state == 'NoPower'
 
     def compareChargingState(self, car_status:str) -> bool:
         """ Returns True if car and charger match charging state. """
@@ -870,6 +903,10 @@ class Easee(Charger):
     def statusChange(self, entity, attribute, old, new, kwargs) -> None:
         """ Listens to changes in state of the charger.
             Easee state can be: 'awaiting_start' / 'charging' / 'completed' / 'disconnected' / from charger_status """
+
+        if new != 'ready_to_charge':
+            # C7: the state changed (or charging started): the ready_to_charge resend counter starts over.
+            self._ready_resend_count = 0
 
         if old == 'disconnected':
             if self.connected_vehicle is None:
@@ -1068,6 +1105,129 @@ class Easee(Charger):
             )
         except Exception as e:
             self.ADapi.log(f"{self.charger} Could not Stop Charging. Exception: {e}", level = 'WARNING')
+
+    # ---- C7: resume loop back-off in 'ready_to_charge' ---------------------------------- #
+
+    def _check_that_charging_started(self, kwargs) -> None:
+        """ Same 60 s resume loop as Charger._check_that_charging_started (same handle, same stop
+            states), except in 'ready_to_charge': the cable is in and the Easee offers power but the
+            car does not draw (asleep, or stopped in the car app). Resuming the Easee can not change
+            that, so after EASEE_READY_RESENDS_AT_60S resends the loop backs off to one resume every
+            EASEE_READY_BACKOFF_SECONDS and says so ONCE (WARNING + notification). The car is never
+            woken from here. The counter resets when the status changes (statusChange) or when this
+            check sees any other state. """
+
+        cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
+        state = self.getChargingState()
+        if state != 'ready_to_charge':
+            self._ready_resend_count = 0
+            # Deliberately no UNAVAIL filter here (see Charger._check_that_charging_started).
+            if not state in ('Charging', 'Complete', 'Disconnected'):
+                self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
+                self._send_start_command()
+            return
+
+        self._ready_resend_count += 1
+        if self._ready_resend_count < EASEE_READY_RESENDS_AT_60S:
+            delay = 60
+        else:
+            delay = EASEE_READY_BACKOFF_SECONDS
+            if self._ready_resend_count == EASEE_READY_RESENDS_AT_60S:
+                self._warn_still_ready_to_charge()
+        self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, delay)
+        self._send_start_command()
+        self.ADapi.log(f"{self.charger} ready_to_charge resume {self._ready_resend_count}, next in {delay} s ###", level = 'DEBUG')
+
+    def _warn_still_ready_to_charge(self) -> None:
+        car = self.connected_vehicle.carName if self.connected_vehicle is not None else 'no car'
+        message = (
+            f"Easee {self.charger} still ready_to_charge after {self._ready_resend_count} resume commands; "
+            f"car ({car}) may be asleep or stopped in the car app. Resume is now sent every "
+            f"{EASEE_READY_BACKOFF_SECONDS // 60} minutes."
+        )
+        self.ADapi.log(message, level = 'WARNING')
+        try:
+            self.notify_app.send_notification(
+                message = message,
+                message_title = f"🚘Charging {self.charger}",
+                message_recipient = self.recipients,
+                also_if_not_home = True,
+                data = {'tag': 'charging' + str(self.charger)}
+            )
+        except Exception as e:
+            self.ADapi.log(f"{self.charger} could not send notification: {e}", level = 'DEBUG')
+
+    # ---- C9: hold ampereCharging over momentary zero `_current` samples ------------------ #
+
+    def updateAmpereCharging(self, entity, attribute, old, new, kwargs) -> None:
+        """ `charging_amps` is the Easee `_current` sensor: the ACTUAL draw, not a set limit. """
+
+        self._sample_ampere(new)
+
+    def update_ampere_charging_from_sensor(self) -> int:
+        return self._sample_ampere(self.ADapi.get_state(self.charger_data.charging_amps, namespace = self.namespace))
+
+    def _easee_reports_charging(self) -> bool:
+        return self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'charging'
+
+    def _sample_ampere(self, raw) -> int:
+        """ Stores one `_current` sample in charger_data.ampereCharging and returns the value in use.
+
+            A momentary 0 (or unavailable) while the Easee reports 'charging' used to set
+            ampereCharging to 0: isChargingAtMaxAmps went false and the increase path then set the
+            dynamic limit to min_ampere + a few amps, cutting a 32 A limit to 6-10 A. Now a zero
+            sample while charging keeps the last non-zero value and re-samples every 60 s; the zero
+            is accepted once it has held for EASEE_ZERO_CURRENT_MINUTES consecutive minutes. Any
+            non-zero sample resets the counter. When the Easee is not charging a parsable sample
+            is stored as before (0 included); an unparsable one keeps the old value as before. """
+
+        try:
+            newAmp = math.floor(float(raw))
+            parsable = True
+        except (ValueError, TypeError) as ve:
+            self.ADapi.log(
+                f"{self.charger} Not able to get ampere charging. New is {raw}. Error {ve}",
+                level = 'DEBUG'
+            )
+            newAmp = 0
+            parsable = False
+
+        if newAmp > 0 or not self._easee_reports_charging():
+            self._reset_zero_current_samples()
+            if parsable:
+                self.charger_data.ampereCharging = newAmp
+            return self.charger_data.ampereCharging
+
+        # Easee says charging, sample says 0 / unavailable.
+        self._zero_current_samples += 1
+        if self._zero_current_samples > EASEE_ZERO_CURRENT_MINUTES:
+            self._reset_zero_current_samples()
+            self.ADapi.log(
+                f"{self.charger} current 0 for {EASEE_ZERO_CURRENT_MINUTES} minutes while charging; ampereCharging "
+                f"{self.charger_data.ampereCharging} -> 0 ###",
+                level = 'DEBUG'
+            )
+            self.charger_data.ampereCharging = 0
+            return 0
+
+        self.ADapi.log(
+            f"{self.charger} zero current sample {self._zero_current_samples}/{EASEE_ZERO_CURRENT_MINUTES + 1} while charging; "
+            f"keeping ampereCharging {self.charger_data.ampereCharging} ###",
+            level = 'DEBUG'
+        )
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._zero_current_handler, name = self.charger):
+            self._zero_current_handler = None
+        self._zero_current_handler = self.ADapi.run_in(self._resample_zero_current, 60)
+        return self.charger_data.ampereCharging
+
+    def _reset_zero_current_samples(self) -> None:
+        self._zero_current_samples = 0
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._zero_current_handler, name = self.charger):
+            self._zero_current_handler = None
+
+    def _resample_zero_current(self, kwargs) -> None:
+        self._zero_current_handler = None
+        self.update_ampere_charging_from_sensor()
 
 class Onboard_charger(Charger):
     """ Child class of Charger used for onboard for Car. """

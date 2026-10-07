@@ -26,6 +26,11 @@ No configuration changes are needed. Things that behave differently:
 - `get_instance()` and the singleton are removed.
 - **Battery size learning** now subtracts percent from percent and kWh from kWh (it used to mix the two), so learned `battery_size` values will move a little over the next sessions.
 - **Links between cars and chargers are one-to-one**: linking a car to a charger detaches any other car from that charger. A guest car switched on while a Tesla is linked to the Easee detaches the Tesla cleanly. Leftover `guest_...` queue entries are removed at startup.
+- **Cars and chargers, behaviour changes**:
+  - A car without a charger link is now read from its own sensor, so a Tesla that reports `NoPower` is linked to the Easee (when the Easee is `awaiting_start`) instead of being bound to its own wall connector. A Tesla charging on its own wall connector outside the planned hours is now seen (and stopped) even if it was unlinked.
+  - Easee in `ready_to_charge`: the first 10 `resume` commands are sent every minute as before, then every 10 minutes with one warning and one notification.
+  - Easee current sensor reading 0 while charging no longer lowers the stored amps for the first 3 minutes.
+  - `WAKE_UP` is sent to a sleeping Tesla when its data is older than 12 minutes (it used to be sent only when the data was fresh). Set `wake_when_stale: false` on a car to turn this off.
 - **Audi (still untested on a real car)**: the plug sensor is a `binary_sensor`, charging states are normalised (`charging`, `readyForCharging`, `chargePurposeReached`, `notReadyForCharging` ...), and the start/stop service uses the new optional `device_id` (falls back to `vin` with a warning). The start command is no longer repeated every 60 seconds: it is verified after `verify_minutes` (default 20) and retried at most `max_command_retries` (default 2) times, then a warning/notification. Optional `charge_power_kW` sets the assumed charging power. The Tesla start/wake loop is unchanged.
 
 ---

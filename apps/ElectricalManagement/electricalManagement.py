@@ -597,6 +597,7 @@ class ElectricalUsage(ad.ADBase):
                 carName = carName,
                 car_data = self._persistence.car[carName],
                 charging_scheduler = self.charging_scheduler,
+                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
             )
             self.cars[tesla_car.vehicle_id] = tesla_car
 
@@ -675,6 +676,7 @@ class ElectricalUsage(ad.ADBase):
                 vehicle_id = vehicle_id,
                 car_data = self._persistence.car[carName],
                 charging_scheduler = self.charging_scheduler,
+                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
             )
             self.cars[audi_car.vehicle_id] = audi_car
 
@@ -749,6 +751,7 @@ class ElectricalUsage(ad.ADBase):
                 vehicle_id = cfg['carName'],
                 car_data = self._persistence.car[cfg['carName']],
                 charging_scheduler = self.charging_scheduler,
+                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
             )
             self.cars[cfg['carName']] = car
 
@@ -1633,12 +1636,12 @@ class ElectricalUsage(ad.ADBase):
                 continue
 
             car_connected_to_charger = True
-            if car.connected_charger is None:
-                car_connected_to_charger = False
-
             ChargingState = car.getCarChargerState()
-            if not ChargingState:
-                # None / '' / False all end up here.
+            if car.connected_charger is None or not ChargingState:
+                # An unlinked car now reports its OWN state (getCarChargerState no longer returns
+                # False without a charger). It must not enter the charger branches below, which
+                # all use car.connected_charger; it goes to the free-charger search at the end,
+                # exactly as it did when the state read was False. None / '' end up here too.
                 car_connected_to_charger = False
             elif ChargingState in ('Complete', 'Disconnected'):
                 to_remove.add(queue_id)

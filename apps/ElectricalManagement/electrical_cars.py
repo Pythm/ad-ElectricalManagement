@@ -10,6 +10,8 @@ from registry import Registry
 from scheduler import Scheduler
 
 UNAVAIL = ('unavailable', 'unknown')
+# Car data older than this is 'stale' (see Car.recentlyUpdated / Tesla_car.wakeMeUp).
+STALE_DATA_MINUTES = 12
 
 class Car:
     """ Car parent class
@@ -19,6 +21,12 @@ class Car:
     Set variables in childclass after init if needed:
         self.guestCharging:bool # Defaults to False
         self.connected_vehicle # Car to charge
+
+    Optional YAML arg on every car entry (tesla / audi / cars), config only, not persisted:
+        wake_when_stale: bool, default true. When true, Tesla_car.wakeMeUp sends WAKE_UP to a car
+        that is asleep and whose data is older than STALE_DATA_MINUTES. Set it to false to never
+        wake the car from that path (waking costs battery); the force-data-update button press
+        is still sent. Cars without a wake-up implementation ignore it.
     """
     def __init__(self, api,
         namespace:str,
@@ -26,12 +34,14 @@ class Car:
         vehicle_id:str, # ID of car
         car_data,
         charging_scheduler,
+        wake_when_stale:bool = True,
     ):
 
         self.ADapi = api
         self.namespace = namespace
         self.car_data = car_data
         self.charging_scheduler = charging_scheduler
+        self.wake_when_stale:bool = bool(wake_when_stale)
 
         self.vehicle_id = vehicle_id
         self.carName = carName
@@ -282,16 +292,26 @@ class Car:
         return True
 
     def recentlyUpdated(self) -> bool:
-        """ Returns True if car data is updated within the last 12 minutes.
-        """
+        """ Returns True if car data is updated within the last 12 minutes (STALE_DATA_MINUTES).
+
+            Was inverted (False for fresh data), so the only user, Tesla_car.wakeMeUp, sent WAKE_UP
+            when the data was fresh and never when it was stale. Without a data_last_update_time
+            sensor, or when its value can not be parsed, the data is treated as fresh (True) so no
+            wake-up is sent on missing information. """
         if self.car_data.data_last_update_time:
-            last_update = self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.data_last_update_time,
-                namespace = self.namespace)
-            )
-            now = self.ADapi.datetime(aware=True)
-            stale_time = now - last_update
-            if stale_time < timedelta(minutes = 12):
-                return False
+            try:
+                last_update = self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.data_last_update_time,
+                    namespace = self.namespace)
+                )
+                now = self.ADapi.datetime(aware=True)
+                stale_time = now - last_update
+            except (ValueError, TypeError) as ve:
+                self.ADapi.log(
+                    f"{self.carName} could not read {self.car_data.data_last_update_time}: {ve}. Treating data as fresh.",
+                    level = 'DEBUG'
+                )
+                return True
+            return stale_time < timedelta(minutes = STALE_DATA_MINUTES)
         return True
 
     def dontStopMeNow(self) -> bool:
@@ -418,10 +438,15 @@ class Car:
 
     def getCarChargerState(self) -> str:
         """ Returns the charging state of the car.
-            Valid returns: 'Complete' / 'None' / 'Stopped' / 'Charging' / 'Disconnected' / 'Starting' / 'NoPower'.
+            Valid returns: 'Complete' / None / 'Stopped' / 'Charging' / 'Disconnected' / 'NoPower'
+            ('Starting' is reported as 'Charging').
+
+            Read order: the car's own charger_sensor 'charging_state' attribute first, then the
+            connected charger's state when the car has no own reading, None at the very end.
+            An unlinked car (connected_charger is None) therefore returns its OWN state; it used to
+            return False, which made it impossible for findCarConnectedToCharger to ever match an
+            unlinked car. The matching rules decide what to do with the state, not this read.
         """
-        if self.connected_charger is None:
-            return False
         if self.car_data.charger_sensor is not None:
             try:
                 state = self.ADapi.get_state(self.car_data.charger_sensor,
@@ -475,6 +500,7 @@ class Tesla_car(Car):
         carName,
         car_data,
         charging_scheduler,
+        wake_when_stale:bool = True,
     ):
 
         self.vehicle_id = api.get_state(car_data.online_sensor,
@@ -498,6 +524,7 @@ class Tesla_car(Car):
             vehicle_id = self.vehicle_id,
             car_data = car_data,
             charging_scheduler = charging_scheduler,
+            wake_when_stale = wake_when_stale,
         )
         self.onboard_charger = None
 
@@ -532,7 +559,8 @@ class Tesla_car(Car):
 
     def wakeMeUp(self) -> None:
         """ Function to wake up connected cars.
-        """
+            WAKE_UP is sent only when the data is STALE (older than STALE_DATA_MINUTES), the car is
+            asleep and `wake_when_stale` is true; the force-data-update press is always sent. """
         if self._polling_of_data():
             # The binary sensor state is on/off; the charging state lives in its 'charging_state' attribute.
             charging_state = self.ADapi.get_state(self.car_data.charger_sensor,
@@ -541,7 +569,8 @@ class Tesla_car(Car):
             )
             if charging_state not in ('Complete', 'Disconnected'):
                 if (
-                    not self.recentlyUpdated()
+                    self.wake_when_stale
+                    and not self.recentlyUpdated()
                     and self.asleep()
                 ):
                     self.ADapi.call_service('tesla_custom/api',
