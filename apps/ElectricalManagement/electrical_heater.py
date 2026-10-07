@@ -130,6 +130,10 @@ class Heater:
 
         self.vacation_state = new == 'on'
         self.off_retry_count = 3
+        if not self.vacation_state:
+            # The vacation-only oneshot must not turn the switch off during normal operation.
+            cancel_listen_handler(ADapi = self.ADapi, handler = self._turn_off_after_consumption_handler, name = self.heater)
+            self._turn_off_after_consumption_handler = None
         if (
             self.vacation_state
             and self.HeatAt is None
@@ -340,7 +344,7 @@ class Heater:
         try:
             raw_state = self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace)
             consumption = float(raw_state)
-        except (TypeError, AttributeError) as ve:
+        except (TypeError, ValueError, AttributeError) as ve:
             self.ADapi.log(
                 f"Could not get kWh consumption for {self.heater} {raw_state} Error: {ve}",
                 level = 'DEBUG'
@@ -368,9 +372,10 @@ class Heater:
                 return
             self.kWh_consumption_when_turned_on = kWh_consumption
 
+            cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater)
             self._consumption_stops_register_usage_handler = self.ADapi.listen_state(self._consumption_stops_register_usage, self.heater_data.consumptionSensor,
                 namespace = self.namespace,
-                constrain_state=lambda x: float(x) < 20,
+                constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
                 hoursOffInt = hoursOffInt,
                 oneshot = True
             )
@@ -403,7 +408,7 @@ class Heater:
             elif self._consumption_stops_register_usage_handler is None:
                 self._consumption_stops_register_usage_handler = self.ADapi.listen_state(self._consumption_stops_register_usage, self.heater_data.consumptionSensor,
                     namespace = self.namespace,
-                    constrain_state=lambda x: float(x) < 20,
+                    constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
                     hoursOffInt = hoursOffInt,
                     oneshot = True
                 )
@@ -435,7 +440,7 @@ class Heater:
         try:
             consumption = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
             consumption -= self.kWh_consumption_when_turned_on
-        except (TypeError, AttributeError) as ve:
+        except (TypeError, ValueError, AttributeError) as ve:
             self.ADapi.log(
                 f"Could not get consumption for {self.heater} to register data. {consumption} Error: {ve}",
                 level = 'DEBUG'
@@ -552,8 +557,8 @@ class Heater:
         if self.heater_data.save_temp_offset is not None:
             current_target_temp += self.heater_data.save_temp_offset
         elif self.heater_data.save_temp is not None:
-            if current_target_temp > self.heater_data.save_temp + target_temp['offset']:
-                current_target_temp = self.heater_data.save_temp + target_temp['offset']
+            if current_target_temp > self.heater_data.save_temp + target_temp.get('offset', 0):
+                current_target_temp = self.heater_data.save_temp + target_temp.get('offset', 0)
         elif 'save' in target_temp:
             if current_target_temp > target_temp['save']:
                 current_target_temp = target_temp['save']
@@ -566,8 +571,8 @@ class Heater:
         """ Returns vacation temperature. """
 
         if self.heater_data.vacation_temp is not None:
-            if current_target_temp > self.heater_data.vacation_temp + target_temp['offset']:
-                current_target_temp = self.heater_data.vacation_temp + target_temp['offset']
+            if current_target_temp > self.heater_data.vacation_temp + target_temp.get('offset', 0):
+                current_target_temp = self.heater_data.vacation_temp + target_temp.get('offset', 0)
         elif 'vacation' in target_temp:
             if current_target_temp > target_temp['vacation']:
                 current_target_temp = target_temp['vacation']
@@ -579,13 +584,19 @@ class Heater:
     def updateIndoorTarget(self, entity, attribute, old, new, kwargs):
         """ Reacts to target temperature for room beening updated. """
 
-        self.target_indoor_temp = float(new)
+        value = to_float_or_none(new)
+        if value is None:  # unavailable/unknown input: keep the previous target
+            return
+        self.target_indoor_temp = value
         self.heater_setNewValues()
 
     def updateHeaterTarget(self, entity, attribute, old, new, kwargs):
         """ Reacts to target temperature for room beening updated. """
 
-        self.target_heater_temp = float(new)
+        value = to_float_or_none(new)
+        if value is None:
+            return
+        self.target_heater_temp = value
         self.heater_setNewValues()
 
     def weather_event(self, event_name, data, **kwargs) -> None:
@@ -619,7 +630,9 @@ class Climate(Heater):
             api.listen_state(self.updateIndoorTarget, heater_data.target_indoor_input,
                 namespace = namespace
             )
-            self.target_indoor_temp = float(api.get_state(heater_data.target_indoor_input, namespace = namespace))
+            value = to_float_or_none(api.get_state(heater_data.target_indoor_input, namespace = namespace))
+            # Input unavailable at startup: use the configured temperature until the listener fires.
+            self.target_indoor_temp = value if value is not None else heater_data.target_indoor_temp
         else:
             self.target_indoor_temp:float = heater_data.target_indoor_temp
 
@@ -627,7 +640,8 @@ class Climate(Heater):
             api.listen_state(self.updateHeaterTarget, heater_data.target_heater_input,
                 namespace = namespace
             )
-            self.target_heater_temp = float(api.get_state(heater_data.target_heater_input, namespace = namespace))
+            value = to_float_or_none(api.get_state(heater_data.target_heater_input, namespace = namespace))
+            self.target_heater_temp = value if value is not None else heater_data.target_heater_temp
         else:
             self.target_heater_temp:float = heater_data.target_heater_temp
         super().__init__(
@@ -673,6 +687,7 @@ class Climate(Heater):
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
         self.vacation_state = new == 'on'
+        self.off_retry_count = 3  # same reset as Heater: vacation_keep_off retries again on the next vacation
         if (
             self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
             and new == 'off'
@@ -869,7 +884,7 @@ class Climate(Heater):
         # Daytime Savings
         else:
             doDaytimeSaving = False
-            for daytime in self.heater_data.daytime_savings:
+            for daytime in self.heater_data.daytime_savings or []:
                 if (
                     'start' in daytime
                     and 'stop' in daytime

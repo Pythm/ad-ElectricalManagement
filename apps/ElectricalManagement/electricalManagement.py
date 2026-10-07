@@ -2190,7 +2190,7 @@ class ElectricalUsage(ad.ADBase):
         now_notAware = self.ADapi.datetime()
 
         if not heater.vacation_state:
-            for daytime in heater.heater_data.daytime_savings:
+            for daytime in heater.heater_data.daytime_savings or []:
                 if 'start' in daytime and 'stop' in daytime:
                     if not 'presence' in daytime:
                         start = self.ADapi.parse_datetime(daytime['start'])
@@ -2332,14 +2332,16 @@ class ElectricalUsage(ad.ADBase):
         for heater in self.heaters:
             if heater.heater_data.validConsumptionSensor and heater._consumption_stops_register_usage_handler is None:
                 try:
-                    heater_consumption += float(
+                    heater_watt = float(
                         self.ADapi.get_state(heater.heater_data.consumptionSensor, namespace = heater.namespace)
                     )
                 except (ValueError, TypeError):
                     pass
                 else:
-                    if heater_consumption > heater.heater_data.normal_power:
-                        heater.heater_data.normal_power = heater_consumption
+                    heater_consumption += heater_watt
+                    # Compare this heater's own reading, not the running total of all heaters.
+                    if heater_watt > heater.heater_data.normal_power:
+                        heater.heater_data.normal_power = heater_watt
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
