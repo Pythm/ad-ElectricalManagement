@@ -677,8 +677,13 @@ class Climate(Heater):
     def heater_getNewPrices(self, kwargs) -> None:
 
         super().heater_getNewPrices(0)
+        spend_kwargs: dict = {}
+        if self.heater_data.low_price_max_continuous_hours is not None:
+            # Only sent when configured, so an ElectricalPriceCalc without 'lowest_hours' keeps working
+            spend_kwargs['lowest_hours'] = self.heater_data.low_price_max_continuous_hours
         self.time_to_spend = self.electricalPriceApp.find_times_to_spend(
-            priceincrease = self.heater_data.priceincrease
+            priceincrease = self.heater_data.priceincrease,
+            **spend_kwargs
         )
 
         if self.time_to_spend and self.print_save_hours:

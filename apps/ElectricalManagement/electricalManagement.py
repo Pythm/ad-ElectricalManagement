@@ -189,6 +189,7 @@ CLIMATE_KEYS: Tuple[str, ...] = (
     'indoor_sensor_temp', 'target_indoor_input', 'target_indoor_temp', 'target_heater_input',
     'target_heater_temp', 'window_temp', 'window_offset', 'save_temp_offset', 'save_temp',
     'vacation_temp', 'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease',
+    'low_price_max_continuous_hours',
     'windowsensors', 'daytime_savings', 'temperatures'
 )
 
@@ -1044,6 +1045,7 @@ class ElectricalUsage(ad.ADBase):
                     'anemometer_speed':               heater_cfg.get('anemometer_speed',40),
                     'getting_cold':                   heater_cfg.get('getting_cold',18),
                     'priceincrease':                  heater_cfg.get('priceincrease',1),
+                    'low_price_max_continuous_hours': heater_cfg.get('low_price_max_continuous_hours',None),
                     'windowsensors':                  heater_cfg.get('windowsensors',[]),
                     'daytime_savings':                heater_cfg.get('daytime_savings',[]),
                     'temperatures':                   heater_cfg.get('temperatures',[]),

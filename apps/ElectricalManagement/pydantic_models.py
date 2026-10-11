@@ -142,6 +142,7 @@ class HeaterBlock(BaseModel):
     anemometer_speed: Optional[float] = None
     getting_cold: Optional[float] = 18
     priceincrease: Optional[float] = 1
+    low_price_max_continuous_hours: Optional[int] = None   # None: ElectricalPriceCalc default (3)
     windowsensors: Optional[List[str]] = None
     daytime_savings: Optional[List[Dict[str, Any]]] = None
     temperatures: Optional[List[Dict[str, Any]]] = None
