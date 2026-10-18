@@ -860,6 +860,11 @@ class Easee(Charger):
             self._ready_resend_count = 0
 
         if old == 'disconnected':
+            if self.guest_manager is not None and self.guest_manager.is_guest(self.connected_vehicle):
+                # Guest switch was turned on before the cable: the guest is already linked, so
+                # plan the charge time now from its default kWh.
+                self.guest_manager.schedule_if_cable_connected()
+                return
             if self.connected_vehicle is None:
                 if self.findCarConnectedToCharger():
                     if self.connected_vehicle is not None:

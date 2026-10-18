@@ -135,7 +135,24 @@ class GuestManager:
 
         if notify:
             self.charger.notify_charge_now_or_kWhRemain(guest.carName)
+
+        # Plan the charge time right away from the default kWh (last answer / 5 kWh), so the guest
+        # only needs the switch. A later kWh answer or Charge now re-plans. Only when a cable is in:
+        # getChargingState() reports a linked, unplugged Easee as 'awaiting_start'.
+        self.schedule_if_cable_connected()
         return guest
+
+    def cable_connected(self) -> bool:
+        """ Raw Easee sensor: is a cable plugged in (not disconnected / no reading)? """
+
+        status = self.ADapi.get_state(self.charger.charger_data.charger_sensor, namespace = self.namespace)
+        return status not in (None, 'disconnected', 'unavailable', 'unknown')
+
+    def schedule_if_cable_connected(self) -> None:
+        """ Queue the guest with the kWh it has now. Does nothing without a guest or a cable. """
+
+        if self.guest is not None and self.cable_connected():
+            self.guest.findNewChargeTime()
 
     def recreate_at_startup(self) -> None:
         """ Called by the core once all cars and chargers are set up and linked. If the switch is
