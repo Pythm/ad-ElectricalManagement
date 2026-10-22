@@ -21,7 +21,7 @@ No configuration changes are needed. Things that behave differently:
 - **Charging queue priority** is now actually applied to the queue order.
 - **The per-minute check runs at second 5** (not second 0) and charger reduction is skipped in minute 0 if the accumulated consumption sensor has not reset yet.
 - **Stale accumulated sensor**: `reload_config_entry` is called at most every 15 minutes.
-- **Heaters learn their `normal_power`** (they previously never did).
+- **Heater power is set with `power` (watts) and no longer learned.** Add `power:` with the rated watts to every `climate`, `heater_switches` and `climate_commander` entry. **Action needed:** a WARNING at startup lists the heaters without it. Without `power` the stored value is kept (or 300 W for a climate, 1000 W for a switch when nothing is stored). Why: learning only ever went up, and until 1.0.6 it stored the sum of several heaters running at the same time, so stored values can be far too high (a 2 kW water heater stored as 6.7 kW). The value is used for the charge plan after save periods, the total heater power, solar overproduction, and as consumption for heaters without a consumption sensor.
 - **Json storage** is written atomically, also after learning idle consumption and high usage, and an unreadable file is renamed to `*.corrupt-<time>.json` and the app starts fresh instead of failing to start.
 - **Price app not ready**: if ElectricalPriceCalc has no prices yet at startup the app uses 1 hour slots and retries (for `pricearea`, the price fetch runs in the background). If `electricalPriceApp` cannot be found the app logs an error and stops.
 - **Config is validated**: unknown keys are ignored, but invalid values are logged at ERROR and the app does not start. `options` is optional; `notify_receiver` can be a single name or a list.
@@ -37,6 +37,11 @@ No configuration changes are needed. Things that behave differently:
   - The per-minute wake-up (`wakeMeUp`) for a Tesla linked to its own charger that reports `NoPower` now runs only when it is time to charge for that car (or for solar charging); it used to run every minute as long as the car was in the charging list.
 - **`low_price_max_continuous_hours` works again** (climate/heaters only, optional). The README has described it for a long time, but the setting was read and never used: spend hours always used the 3 lowest hours of the day. It now replaces that fixed 3. **Nothing to do in the default case**: without the key the behaviour is as before (3). If you already have the key in your YAML, its value is used from now on, so a value other than 3 changes the number of spend hours. Needs [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) 0.1.8 or later; without the key an older ElectricalPriceCalc still works.
 - **Guest car on the Easee** is handled by one class (`guest.py`): the guest id is now stable (`guest_<charger id>`), a guest switch that is already on when AppDaemon restarts recreates the guest, the teardown (queue, solar list, links, timers, Easee pause, switch off) runs once and in a fixed order, and guest sessions no longer raise `max_kWh_charged`. A warning and notification is sent if the guest switch is turned on while a Tesla is linked to the Easee. New optional `guest_remove_after_minutes` (default 12) sets how long the Easee may stay disconnected before the guest is removed.
+- **New: `climate_commander`** (optional). Climates can now be controlled by [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) 1.4.0 or later: ElectricalManagement decides save / spend / overconsumption from prices and consumption, ClimateCommander turns that into a setpoint (heaters with an outdoor-temperature table, and HVAC with a fixed indoor temperature, also in cool mode). See [Climates controlled by ClimateCommander](#-climates-controlled-by-climatecommander-climate_commander). **Nothing to do** if you keep `climate:`.
+- **`climate:` is deprecated** (a WARNING is logged at startup). It still works unchanged. Move the climate to a ClimateCommander app when convenient; the learned consumption data is kept because it is stored under the entity id.
+- **`temperatures` table boundary**: an entry now applies from its `out` value and up, as documented. Before, an outdoor temperature of exactly `7.0` used the entry below `out: 7`. Only exact readings change.
+- **Expected heater consumption after a save period** (used for the charge plan) now looks up the learned data by hours off. It used minutes, so it always used the longest-off data. Charge time estimates after save periods change.
+- **Fire alarm**: `false-alarm` turns on only the climates and switches that ElectricalManagement turned off for the fire (before, every climate was turned on, also ones that were off). Heaters and switches now stay off until `false-alarm`; before, the periodic runner could turn a switch on again during the fire.
 - **Audi (still untested on a real car)**: the plug sensor is a `binary_sensor`, charging states are normalised (`charging`, `readyForCharging`, `chargePurposeReached`, `notReadyForCharging` ...), and the start/stop service uses the new optional `device_id` (falls back to `vin` with a warning). The start command is no longer repeated every 60 seconds: it is verified after `verify_minutes` (default 20) and retried at most `max_command_retries` (default 2) times, then a warning/notification. Optional `charge_power_kW` sets the assumed charging power. The Tesla start/wake loop is unchanged.
 
 ---
@@ -467,15 +472,74 @@ If the sensors does not work for your car, please open an issue.
 
 ---
 
+## 🌡️ Climates controlled by ClimateCommander (`climate_commander`)
+
+From version 1.0.6, a climate can be configured in [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) (1.4.0 or later) and controlled from here. The work is split:
+
+- **ClimateCommander** owns the climate: setpoint (outdoor-temperature table or fixed indoor temperature), windows, vacation, daytime savings, notifications, screens, HVAC modes (heat/cool/fan_only).
+- **ElectricalManagement** owns the electricity: save and spend periods from prices, reductions when you are over the kWh goal, solar overproduction, and the learned consumption used for the charge plan.
+
+ElectricalManagement sends one of four power states to the ClimateCommander device. What the device does with them is configured in ClimateCommander:
+
+| State | When | Heater with a `temperatures` table | HVAC / fixed indoor temperature |
+|---|---|---|---|
+| `normal` | otherwise | table setpoint | follows the indoor sensor |
+| `save` | inside a save period (and `automate` is on) | `save_temp_offset`, `save_temp` or the table's `save` | setpoint + `save_temp_offset` (default −0.3, opposite sign when cooling) |
+| `spend` | inside a spend period, or solar overproduction | + `spend_temp_offset` (default 1) | + `spend_temp_offset` (−1 when cooling) |
+| `reduce` | over the kWh goal | the lowest of the save and vacation temperature | same as `save` |
+
+List the ClimateCommander apps under `climate_commander`, with the energy keys for each:
+
+```yaml
+  climate_commander:
+    - app: heater_bathroom            # name of the ClimateCommander app
+      consumptionSensor: sensor.bathroom_floor_electric_consumption_w
+      kWhconsumptionSensor: sensor.bathroom_floor_electric_consumption_kwh
+      max_continuous_hours: 4
+      on_for_minimum: 6
+      pricedrop: 0.2
+      pricedifference_increase: 1.07
+      priceincrease: 0.4
+      low_price_max_continuous_hours: 3
+      #automate: input_boolean.automate_heater   # price savings on/off, default: the main `automate`
+      power: 2000                               # rated watts of the heater (set it on every entry)
+      #options:
+      #  - print_save_hours
+    - app: climate_living_room
+      climate: climate.daikin_living_room     # only needed when that app still lists several devices
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `app` | (required) | Name of the ClimateCommander app. |
+| `climate` | (optional) | Entity id. Needed only for an older ClimateCommander app with `HVAC:`/`Heaters:` lists. Without it the entry waits (up to 10 minutes) for the app to start. |
+| `power` | stored value, else `300` | Rated watts of the heater. Set it: it is not learned. |
+| `consumptionSensor`, `kWhconsumptionSensor` | found by name | As for `climate:`. |
+| `max_continuous_hours`, `on_for_minimum`, `pricedrop`, `pricedifference_increase` | `2`, `6`, `1`, `1.07` | Save periods, see [Savings Settings](#-savings-settings). |
+| `priceincrease`, `low_price_max_continuous_hours` | `1`, ElectricalPriceCalc default | Spend periods, see [Spending Settings](#-spending-settings). |
+| `automate` | main `automate` | `false` or an `input_boolean` that is off: no price savings. |
+| `recipient`, `options` | main values | `print_save_hours` logs the save hours. |
+
+Notes:
+- The vacation switch and `daytime_savings` are taken from the ClimateCommander device. Windows, temperatures and notifications are configured only there.
+- The state is re-sent at least every 10 minutes. If ElectricalManagement stops, the device goes back to `normal` by itself after 45 minutes.
+- A ClimateCommander app that is reloaded gets its state again within a minute.
+- No `dependencies:` are needed between the apps.
+
+---
+
 ## 🌡️ Climate
 
 Here you configure climate entities that you want to control based on outside temperature and electricity price.
+
+> [!WARNING]
+> `climate:` is deprecated and logs a WARNING. It still works. New setups should configure the climate in ClimateCommander and list it under [`climate_commander`](#-climates-controlled-by-climatecommander-climate_commander). ClimateCommander accepts the same keys (`heater`, `temperatures`, `target_heater_temp`, `save_temp`, `save_temp_offset`, `vacation_temp`, `window_temp`, ...); the energy keys stay here.
 
 > For HVAC and other climate entities that are not very power consuming, you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is written to keep a constant inside temperature.
 
 Climate entities are defined under `climate` and you configure the temperature it should heat to, based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
-If the heater does not have a consumption sensor, you can input its `power` in watts. The app uses this power to calculate how many heaters to turn down if needed to stay below the maximum kWh usage limit and together with the kWh sensor, it calculates expected available power during charging time.
+Set the heater's rated `power` in watts on every climate and switch (it is not learned from the consumption sensor). The app uses it to calculate how many heaters to turn down to stay below the maximum kWh usage limit, as the consumption of heaters without a consumption sensor, and together with the kWh sensor to calculate the expected available power during charging time. Without `power` a WARNING is logged and the stored value (or 300 W for a climate, 1000 W for a switch) is used.
 
 > [!IMPORTANT]  
 > If there is no kWh sensor for the heater, the calculation of needed power to reach normal operations after saving fails. The app still logs total consumption with your `power_consumption` sensor, but this does not take into account if the heater has been turned down for longer periods of time. This might affect calculated charging time.
@@ -486,7 +550,7 @@ If the heater does not have a consumption sensor, you can input its `power` in w
 
 The climate is programmed to react to outdoor conditions configured with [Weather Sensors](https://github.com/Pythm/ad-ElectricalManagement?tab=readme-ov-file#weather-sensors). It's also recommended to use an additional indoor temperature sensor defined with `indoor_sensor_temp`. With that you can set a indoor target, either with `target_indoor_temp` as an integer, or `target_indoor_input` as an Home Assistant input_number helper. As of version 1.0.3 you can also set a `target_heater_temp` to set the target the heater will adjust to. This is useful if you need a higher set temperature in the heater that the room measures. This can also be set with a Home Assistant helper `target_heater_input`.
 
-The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. Version 0.1.5 introduces additional ways to set climate temperatures.
+The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. An entry applies from its `out` value and up to the next entry; below the first entry the first one is used. Version 0.1.5 introduces additional ways to set climate temperatures.
 
 Easiest way is to define `offset` ± degrees based on outside temperature. The offset also applies to `save_temp` and `vacation_temp`. Alternative to save temp you can define saving temperature with a `save_temp_offset` if you are using an input_number to set target.
 
@@ -575,6 +639,7 @@ Define climate entity with `heater`.
 ```yaml
   climate:
     - heater: climate.floor_thermostat
+      power: 1200
       consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
@@ -623,6 +688,7 @@ Define switch entity with `switch`.
 ```yaml
   heater_switches:
     - switch: switch.hotwater
+      power: 2000
       consumptionSensor: sensor.hotwater_electric_consumption_w
       kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8
@@ -641,6 +707,7 @@ A switch with a power sensor can also tell you when the appliance has finished, 
 ```yaml
   heater_switches:
     - switch: switch.dryer
+      power: 1000
       consumptionSensor: sensor.dryer_electric_consumption_w
       kWhconsumptionSensor: sensor.dryer_electric_consumption_kWh
       notify_when_finished: true
@@ -726,6 +793,7 @@ electricity:
   # Climate
   climate:
     - heater: climate.floor_thermostat
+      power: 1200
       consumptionSensor: sensor.floor_thermostat_electric_consumed_w_2
       kWhconsumptionSensor: sensor.floor_thermostat_electric_consumed_kwh_2
       max_continuous_hours: 2
@@ -773,6 +841,7 @@ electricity:
 
   heater_switches:
     - switch: switch.hotwater
+      power: 2000
       consumptionSensor: sensor.hotwater_electric_consumption_w
       kWhconsumptionSensor: sensor.hotwater_electric_consumption_kWh
       max_continuous_hours: 8

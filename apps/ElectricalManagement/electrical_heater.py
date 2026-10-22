@@ -79,6 +79,9 @@ class Heater:
         # Vacation: oneshot listener that turns the switch off once consumption has dropped.
         self._turn_off_after_consumption_handler = None
 
+        # Set by the main app while a fire alarm keeps this heater off
+        self.fire_off:bool = False
+
         # Helpers used on vacation
         self.HeatAt = None
         self.EndAt = None
@@ -90,16 +93,7 @@ class Heater:
         self.wind_amount:float = 0
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.namespace)
 
-        # Finding data if not set to persistent. The oneshot listener is only consumed when the
-        # constraint passes (AppDaemon skips constrained callbacks without removing them), and the
-        # lambda must stay a lambda: AppDaemon only evaluates callables named '<lambda>' here.
-        self._normal_power_handler = None
-        if self.heater_data.normal_power < 30 and self.heater_data.consumptionSensor is not None:
-            self._normal_power_handler = self.ADapi.listen_state(self._set_normal_power, self.heater_data.consumptionSensor,
-                constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 0) > 30,
-                oneshot = True,
-                namespace = self.namespace
-            )
+        # normal_power comes from `power` in the YAML (see ElectricalUsage._apply_power), it is not learned.
 
         self.windows_is_open:bool = False
         self.notify_on_window_open:bool = True
@@ -118,13 +112,6 @@ class Heater:
                     new = 'off',
                     namespace = self.namespace
                 )
-
-    def _set_normal_power(self, entity, attribute, old, new, kwargs) -> None:
-        """ Learns the heater's normal power from the first consumption reading above 30 W. """
-
-        value = to_float_or_none(new)
-        if value is not None and value > 30:
-            self.heater_data.normal_power = value
 
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
@@ -187,6 +174,8 @@ class Heater:
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Turns heater on or off based on this hours electricity price. """
 
+        if self.fire_off:
+            return
         isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
         now = self.ADapi.datetime(aware = True)
 
@@ -282,6 +271,11 @@ class Heater:
             entity_id = self.heater,
             namespace = self.namespace
         )
+
+    def is_on(self) -> bool:
+        """ True when the switch is on (used to restore only what a fire alarm turned off). """
+
+        return self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
 
     def turn_on_heater(self) -> None:
         """ Turns heater back to normal operation. """
@@ -426,11 +420,6 @@ class Heater:
         cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater)
         self._consumption_stops_register_usage_handler = None
 
-        try:
-            if self.heater_data.normal_power < float(old):
-                self.heater_data.normal_power = float(old)
-        except (TypeError, ValueError):
-            pass
         self.registerConsumption(hoursOffInt = hoursOffInt)
 
     def registerConsumption(self, hoursOffInt:int = 0) -> None:
@@ -533,13 +522,13 @@ class Heater:
 
     def find_target_temperatures(self) -> int:
         """ Return the index of the *last* temperature entry whose ``out`` value
-        is less-than or equal to ``self.out_temp``. """
+        is less-than or equal to ``self.out_temp`` (an entry applies from its out value and up). """
 
         if not self.heater_data.temperatures:
             return 0
 
         out_values = [t['out'] for t in self.heater_data.temperatures]
-        idx = bisect.bisect_left(out_values, self.out_temp)
+        idx = bisect.bisect_right(out_values, self.out_temp)
         return max(0, idx - 1)
 
     def current_target_temp_entry(self) -> dict:
@@ -707,6 +696,10 @@ class Climate(Heater):
                 self.ADapi.log(f"Not able to set hvac_mode to heat for {self.heater}. Exception: {e}", level = 'INFO')
         self.heater_setNewValues()
 
+    def is_on(self) -> bool:
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        return state is not None and state != 'off' and state not in UNAVAIL
+
     def turn_on_heater(self) -> None:
         """ Turns climate on and set new values.  """
 
@@ -765,6 +758,8 @@ class Climate(Heater):
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Adjusts temperature based on weather and time to save/spend. """
 
+        if self.fire_off:
+            return
         if (
             self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
             or self.isOverconsumption
@@ -1076,6 +1071,140 @@ class On_off_switch(Heater):
     def turn_back_on(self, **kwargs) -> None:
         self.turn_back_on_handler = None
         self.ADapi.call_service('switch/turn_on',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+
+
+class ClimateCommanderHeater(Heater):
+    """ A climate entity controlled by a ClimateCommander app (`climate_commander:` in the YAML).
+
+        ElectricalManagement keeps the price, overconsumption and consumption-learning logic and
+        sends a power state ('normal', 'save', 'spend', 'reduce') to the ClimateCommander device,
+        which turns it into a setpoint. The device is looked up by app name on every push, so a
+        reloaded ClimateCommander app is found again. The state is re-sent at least every
+        PUSH_REFRESH_SECONDS; the device falls back to 'normal' by itself after STATE_VALID_MINUTES
+        without a refresh. """
+
+    PUSH_REFRESH_SECONDS = 600
+    STATE_VALID_MINUTES = 45
+
+    def __init__(self,
+        api,
+        namespace,
+        heater,
+        heater_data,
+        electricalPriceApp,
+        charging_scheduler,
+        notify_app,
+        print_save_hours,
+        cc_app:str,
+        cc_climate:str | None = None,
+        persist_callback = None,
+    ):
+        self.cc_app = cc_app
+        self.cc_climate = cc_climate
+        self._pushed_state = None
+        self._pushed_at = None
+        self._device_id = None
+        self._missing_logged = False
+        super().__init__(
+            api = api,
+            namespace = namespace,
+            heater = heater,
+            heater_data = heater_data,
+            electricalPriceApp = electricalPriceApp,
+            charging_scheduler = charging_scheduler,
+            notify_app = notify_app,
+            print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
+        )
+        self.reset_continuous_hours = True
+        self.ADapi.run_every(self._keepalive, "now+30", 60)
+
+    def device(self):
+        """ The ClimateCommander device, or None while that app is not running. """
+
+        app = self.ADapi.get_app(self.cc_app)
+        if app is None or not hasattr(app, 'get_device'):
+            return None
+        return app.get_device(self.cc_climate if self.cc_climate is not None else self.heater)
+
+    def _wanted_state(self) -> str:
+        if self.isOverconsumption:
+            return 'reduce'
+        if self.increase_now:
+            return 'spend'
+        if self._is_time_within_any_save_range() and self.automate:
+            return 'save'
+        if self._is_time_within_any_spend_range():
+            return 'spend'
+        return 'normal'
+
+    def _push(self, state:str) -> None:
+        device = self.device()
+        if device is None:
+            if not self._missing_logged:
+                self._missing_logged = True
+                self.ADapi.log(f"ClimateCommander app '{self.cc_app}' for {self.heater} is not running (yet).", level = 'WARNING')
+            return
+        self._missing_logged = False
+        device.set_power_state(state, valid_minutes = self.STATE_VALID_MINUTES, source = 'ElectricalManagement')
+        self._pushed_state = state
+        self._pushed_at = self.ADapi.datetime(aware = True)
+        self._device_id = id(device)
+
+    def _keepalive(self, **kwargs) -> None:
+        """ Re-sends the state when the ClimateCommander app was reloaded or the last push is old. """
+
+        device = self.device()
+        if device is None:
+            return
+        now = self.ADapi.datetime(aware = True)
+        if (
+            id(device) != self._device_id
+            or self._pushed_at is None
+            or (now - self._pushed_at).total_seconds() > self.PUSH_REFRESH_SECONDS
+        ):
+            self.heater_setNewValues()
+
+    def heater_getNewPrices(self, kwargs) -> None:
+        super().heater_getNewPrices(0)
+        spend_kwargs: dict = {}
+        if self.heater_data.low_price_max_continuous_hours is not None:
+            spend_kwargs['lowest_hours'] = self.heater_data.low_price_max_continuous_hours
+        self.time_to_spend = self.electricalPriceApp.find_times_to_spend(
+            priceincrease = self.heater_data.priceincrease,
+            **spend_kwargs
+        )
+        self.heater_setNewValues()
+        if self.time_to_spend and self.print_save_hours:
+            self.ADapi.log(f"{self.heater} Extra heating at: {self.electricalPriceApp.print_peaks(self.time_to_spend)}", level = 'INFO')
+
+    def heater_setNewValues(self, kwargs=None) -> None:
+        """ Sends the power state for now to the ClimateCommander device. """
+
+        if self.fire_off:
+            return
+        state = self._wanted_state()
+        if state != 'reduce':
+            device = self.device()
+            self.isSaveState = state == 'save' or (device is not None and device.in_daytime_saving())
+        self._push(state)
+
+    def is_on(self) -> bool:
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        return state is not None and state != 'off' and state not in UNAVAIL
+
+    def turn_on_heater(self) -> None:
+        self.ADapi.call_service('climate/turn_on',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+        self.heater_setNewValues()
+
+    def turn_off_heater(self) -> None:
+        self.ADapi.call_service('climate/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
         )

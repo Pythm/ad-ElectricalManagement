@@ -32,7 +32,7 @@ class ElectricalManagementConfig(BaseModel):
 
         Defaults are identical to the previous ``self.args.get(...)`` calls. Unknown keys
         (``module``, ``class``, ``dependencies``, ...) are ignored. The per-device lists
-        (tesla/audi/cars/easee/climate/heater_switches) are only checked to be lists of
+        (tesla/audi/cars/easee/climate/climate_commander/heater_switches) are only checked to be lists of
         dicts; their contents are still read from ``self.args`` and passed through untouched.
     """
     model_config = ConfigDict(extra='ignore')
@@ -64,6 +64,7 @@ class ElectricalManagementConfig(BaseModel):
     cars: List[Dict[str, Any]] = Field(default_factory=list)
     easee: List[Dict[str, Any]] = Field(default_factory=list)
     climate: List[Dict[str, Any]] = Field(default_factory=list)
+    climate_commander: List[Dict[str, Any]] = Field(default_factory=list)
     heater_switches: List[Dict[str, Any]] = Field(default_factory=list)
 
     @field_validator('notify_receiver', mode='before')
@@ -75,7 +76,7 @@ class ElectricalManagementConfig(BaseModel):
             return [value]
         return value
 
-    @field_validator('options', 'tesla', 'audi', 'cars', 'easee', 'climate', 'heater_switches', mode='before')
+    @field_validator('options', 'tesla', 'audi', 'cars', 'easee', 'climate', 'climate_commander', 'heater_switches', mode='before')
     @classmethod
     def _empty_list_when_missing(cls, value: Any) -> Any:
         return _none_to_list(value)
@@ -116,6 +117,7 @@ class WeatherData(BaseModel):
 
 class HeaterBlock(BaseModel):
     heater: str | None = None
+    cc_app: str | None = None   # name of the ClimateCommander app that controls this climate
     consumptionSensor: str | None = None
     validConsumptionSensor: bool | None = None
     normal_power: float = 0.0

@@ -44,7 +44,7 @@ from registry import Registry
 from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car, STALE_DATA_MINUTES
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
-from electrical_heater import Heater, Climate, On_off_switch
+from electrical_heater import Heater, Climate, On_off_switch, ClimateCommanderHeater
 from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
 __version__ = "1.0.6"
@@ -63,6 +63,10 @@ DEFAULT_SLOT_SECONDS = 3600                # heater runner period when the price
 CREATE_RUNNERS_RETRY_SECONDS = 60          # wait between retries while waiting for prices
 MAX_CREATE_RUNNERS_RETRIES = 20            # ~20 minutes, then fall back to DEFAULT_SLOT_SECONDS
 CLIMATE_RUNNER_MAX_INTERVAL = 900          # climate heaters re-evaluate at least every 15 minutes
+DEFAULT_CLIMATE_POWER = 300                # W, climate without `power`
+DEFAULT_SWITCH_POWER = 1000                # W, switch without `power`
+CC_RETRY_SECONDS = 30                      # climate_commander entry whose app is not running yet: retry
+CC_MAX_RETRIES = 20
 USAGE_RUNNER_INTERVAL = 60                 # checkElectricalUsage period
 USAGE_RUNNER_OFFSET_SECONDS = 5            # run at hh:mm:05 so the HA sensors have updated for the new minute
 QUEUE_RUNNER_INTERVAL = 600                # checkChargingQueue period when no consumption sensors exist
@@ -285,6 +289,7 @@ class ElectricalUsage(ad.ADBase):
         self._setup_vehicles()
         self._setup_heaters(main_vacation_sensor)
 
+        self._warn_missing_power()
         self._refresh_heaters()
         for heater in self._persistence.heater.values():
             heater.sort_temperatures()
@@ -360,6 +365,7 @@ class ElectricalUsage(ad.ADBase):
         self.notify_about_overconsumption:bool = False
         self.totalWattAllHeaters:float = 0
         self.houseIsOnFire:bool = False
+        self._fire_turned_off: set = set()   # heaters this app turned off for a fire alarm
         self.find_next_charger_counter:int = 0
         self.hour_to_add_to_high_consumption_hours = -1
         # Default until the vacation sensor (if any) is read in _get_vacation_state.
@@ -1002,11 +1008,45 @@ class ElectricalUsage(ad.ADBase):
 
         return valid_consumption_sensor, normal_power
 
+    def _apply_power(self, block, cfg: dict, default: float, entity: str) -> None:
+        """ normal_power (W) is the `power` key from the YAML. It is not learned from the consumption
+            sensor any more (learning only ever went up, and an old bug stored the sum of several heaters).
+            Without `power` the stored value is kept, or the default is used when nothing is stored. """
+
+        power = cfg.get('power')
+        if power is not None:
+            try:
+                block.normal_power = float(power)
+                return
+            except (TypeError, ValueError):
+                self.ADapi.log(f"{entity}: 'power' must be a number of watts, got {power}.", level = 'WARNING')
+        if not block.normal_power or block.normal_power < 30:
+            block.normal_power = default
+        self._missing_power.append(f"{entity} ({round(block.normal_power)} W)")
+
+    def _warn_missing_power(self) -> None:
+        if self._missing_power:
+            self.ADapi.log(
+                "Set 'power' (the heater's rated watts) for: " + ", ".join(self._missing_power) +
+                ". Without it the stored or default value in brackets is used.",
+                level = 'WARNING'
+            )
+            self._missing_power = []
+
     def _setup_heaters(self, main_vacation_sensor) -> None:
+        self._missing_power: list = []
         self._setup_climate_heaters(main_vacation_sensor)
+        self._setup_cc_heaters(main_vacation_sensor)
         self._setup_heater_switches(main_vacation_sensor)
 
     def _setup_climate_heaters(self, main_vacation_sensor) -> None:
+        if self.args.get('climate'):
+            self.ADapi.log(
+                "'climate:' heaters in ElectricalManagement are deprecated. Configure the climate in a "
+                "ClimateCommander app and list that app under 'climate_commander:' (see README). "
+                "'climate:' still works.",
+                level = 'WARNING'
+            )
         for heater_cfg in self.args.get('climate') or []:
             namespace = heater_cfg.get('namespace', self.HASS_namespace)
             heater_entity: str | None = heater_cfg.get('heater')
@@ -1061,6 +1101,7 @@ class ElectricalUsage(ad.ADBase):
                 self._persistence.heater[heater_entity] = HeaterBlock(**heater_cfg)
                 print_save_hours = True
 
+            self._apply_power(self._persistence.heater[heater_entity], heater_cfg, DEFAULT_CLIMATE_POWER, heater_entity)
             value_changed = self._merge_heater_cfg(heater_cfg, persisted_heater, main_vacation_sensor)
             value_change2 = self._merge_climate_cfg(heater_cfg, persisted_heater)
             if value_changed or value_change2:
@@ -1085,6 +1126,137 @@ class ElectricalUsage(ad.ADBase):
             )
             self.heaters.append(climate)
             climate.out_temp = self._persistence.weather.out_temp
+
+    # --------------------------------------------------------------------------- #
+    # Climates controlled by ClimateCommander apps (`climate_commander:`)
+    # --------------------------------------------------------------------------- #
+
+    def _setup_cc_heaters(self, main_vacation_sensor) -> None:
+        """ Each entry names a ClimateCommander app (`app`) and holds the energy keys. `climate` is
+            only needed when that app still has several devices (old list style). If the app is not
+            running yet and no `climate` is given, the entry is retried every CC_RETRY_SECONDS. """
+
+        self._cc_main_vacation_sensor = main_vacation_sensor
+        self._cc_pending: list = []
+        self._cc_retries: int = 0
+        for cc_cfg in self.args.get('climate_commander') or []:
+            if not isinstance(cc_cfg, dict) or not cc_cfg.get('app'):
+                self.ADapi.log(f"Skipping climate_commander entry {cc_cfg}: 'app' (the ClimateCommander app name) is missing.", level = 'WARNING')
+                continue
+            if not self._try_add_cc_heater(cc_cfg):
+                self._cc_pending.append(cc_cfg)
+        if self._cc_pending:
+            self.ADapi.run_in(self._retry_cc_heaters, CC_RETRY_SECONDS)
+
+    def _retry_cc_heaters(self, kwargs) -> None:
+        self._cc_retries += 1
+        self._cc_pending = [cfg for cfg in self._cc_pending if not self._try_add_cc_heater(cfg)]
+        self._warn_missing_power()
+        if not self._cc_pending:
+            return
+        if self._cc_retries < CC_MAX_RETRIES:
+            self.ADapi.run_in(self._retry_cc_heaters, CC_RETRY_SECONDS)
+            return
+        for cfg in self._cc_pending:
+            self.ADapi.log(
+                f"ClimateCommander app '{cfg['app']}' was not found. Add 'climate:' with the entity id to its "
+                "climate_commander entry, or check the app name.",
+                level = 'WARNING'
+            )
+
+    def _cc_device(self, cc_cfg: dict):
+        app = self.ADapi.get_app(cc_cfg['app'])
+        if app is None or not hasattr(app, 'get_device'):
+            return None
+        return app.get_device(cc_cfg.get('climate') or cc_cfg.get('heater'))
+
+    def _try_add_cc_heater(self, cc_cfg: dict) -> bool:
+        """ Creates the ClimateCommanderHeater. False when the entity id is not known yet. """
+
+        cc_cfg = dict(cc_cfg)   # do not change self.args
+        device = self._cc_device(cc_cfg)
+        heater_entity = cc_cfg.get('climate') or cc_cfg.get('heater')
+        if device is not None:
+            heater_entity = device.heater
+            namespace = device.namespace
+        elif heater_entity:
+            namespace = cc_cfg.get('namespace', self.HASS_namespace)
+        else:
+            return False
+        if any(h.heater == heater_entity for h in self.heaters):
+            self.ADapi.log(f"{heater_entity} is configured twice in ElectricalManagement. The second is skipped.", level = 'WARNING')
+            return True
+
+        if device is not None:
+            if device.vacation_entity is not None and 'vacation' not in cc_cfg:
+                cc_cfg['vacation'] = device.vacation_entity
+            cc_cfg['daytime_savings'] = device.daytime_savings
+        heater_name = heater_entity.replace('climate.', '')
+        print_save_hours = False
+        persisted_heater = self._persistence.heater.get(heater_entity)
+        if not persisted_heater:
+            validConsumptionSensor, normal_power = self._add_heater_missing(cc_cfg, heater_name, namespace, is_switch=False)
+            defaults: dict[str, Any] = {
+                'heater':                         heater_entity,
+                'validConsumptionSensor':         validConsumptionSensor,
+                'normal_power':                   normal_power,
+                'max_continuous_hours':           cc_cfg.get('max_continuous_hours', 2),
+                'on_for_minimum':                 cc_cfg.get('on_for_minimum', 6),
+                'pricedrop':                      cc_cfg.get('pricedrop', 1),
+                'pricedifference_increase':       cc_cfg.get('pricedifference_increase', 1.07),
+                'vacation':                       cc_cfg.get('vacation', self._cc_main_vacation_sensor),
+                'automate':                       cc_cfg.get('automate', self.automate),
+                'recipient':                      cc_cfg.get('recipient', self.recipients),
+                'priceincrease':                  cc_cfg.get('priceincrease', 1),
+                'low_price_max_continuous_hours': cc_cfg.get('low_price_max_continuous_hours', None),
+                'daytime_savings':                cc_cfg.get('daytime_savings', []),
+                'ConsumptionData':                {},
+                'prev_consumption':               0,
+                'time_to_save':                   [],
+            }
+            for k, v in defaults.items():
+                if k not in cc_cfg:
+                    cc_cfg[k] = v
+            self._persistence.heater[heater_entity] = HeaterBlock(**cc_cfg)
+            print_save_hours = True
+        else:
+            if self._merge_heater_cfg(cc_cfg, persisted_heater, self._cc_main_vacation_sensor):
+                print_save_hours = True
+            for key in ('priceincrease', 'low_price_max_continuous_hours', 'daytime_savings', 'vacation'):
+                if cc_cfg.get(key) is not None and getattr(persisted_heater, key, None) != cc_cfg[key]:
+                    setattr(persisted_heater, key, cc_cfg[key])
+                    print_save_hours = True
+        block = self._persistence.heater[heater_entity]
+        self._apply_power(block, cc_cfg, DEFAULT_CLIMATE_POWER, heater_entity)
+        block.cc_app = cc_cfg['app']
+        # Windows, temperatures and notifications belong to ClimateCommander
+        block.windowsensors = None
+
+        if 'print_save_hours' in (cc_cfg.get('options') or []):
+            print_save_hours = True
+
+        heater = ClimateCommanderHeater(
+            api = self.ADapi,
+            namespace = namespace,
+            heater = heater_entity,
+            heater_data = block,
+            electricalPriceApp = self.electricalPriceApp,
+            charging_scheduler = self.charging_scheduler,
+            notify_app = self.notify_app,
+            print_save_hours = print_save_hours,
+            cc_app = cc_cfg['app'],
+            cc_climate = cc_cfg.get('climate') or cc_cfg.get('heater'),
+            persist_callback = self._save_persistence,
+        )
+        heater.out_temp = self._persistence.weather.out_temp
+        self.heaters.append(heater)
+        self.totalWattAllHeaters = self._total_heater_watts()
+        if self._heater_runners_created:
+            # Added after startup: start its runner and give it save/spend periods now
+            self._start_heater_runner(heater)
+            if self.electricalPriceApp.elpricestoday:
+                self.ADapi.run_in(heater.heater_getNewPrices, 20)
+        return True
 
     def _setup_heater_switches(self, main_vacation_sensor) -> None:
         for switch_cfg in self.args.get('heater_switches') or []:
@@ -1132,6 +1304,7 @@ class ElectricalUsage(ad.ADBase):
                 self._persistence.heater[heater_entity] = HeaterBlock(**switch_cfg)
                 print_save_hours = True
 
+            self._apply_power(self._persistence.heater[heater_entity], switch_cfg, DEFAULT_SWITCH_POWER, heater_entity)
             value_changed = self._merge_heater_cfg(switch_cfg, persisted_heater, main_vacation_sensor)
             if value_changed:
                 print_save_hours = True
@@ -1233,11 +1406,18 @@ class ElectricalUsage(ad.ADBase):
         interval = min(duration, CLIMATE_RUNNER_MAX_INTERVAL)
         runtime_climate = get_next_runtime_aware(startTime = now, offset_seconds = 1, delta_in_seconds = interval)
 
+        self._heater_runner_times = (runtime_climate, interval, runtime_switch, duration)
         for heater in self.heaters:
-            if isinstance(heater, Climate):
-                self.ADapi.run_every(heater.heater_setNewValues, runtime_climate, interval)
-            else:
-                self.ADapi.run_every(heater.heater_setNewValues, runtime_switch, duration)
+            self._start_heater_runner(heater)
+
+    def _start_heater_runner(self, heater) -> None:
+        """ Periodic heater_setNewValues: climates every min(slot, 15 min), switches every slot. """
+
+        runtime_climate, interval, runtime_switch, duration = self._heater_runner_times
+        if isinstance(heater, (Climate, ClimateCommanderHeater)):
+            self.ADapi.run_every(heater.heater_setNewValues, runtime_climate, interval)
+        else:
+            self.ADapi.run_every(heater.heater_setNewValues, runtime_switch, duration)
 
     # Finished initialization.
 
@@ -2117,8 +2297,6 @@ class ElectricalUsage(ad.ADBase):
                         or valid_consumption
                     ):
                         self.available_Wh += heater_consumption_now
-                    if heater_consumption_now > heater.heater_data.normal_power:
-                        heater.heater_data.normal_power = heater_consumption_now
             else:
                 heater.last_reduced_state = now
                 wattconsumption, valid_consumption = heater.get_heater_consumption()
@@ -2279,10 +2457,11 @@ class ElectricalUsage(ad.ADBase):
                 if off_hours == 0:
                     continue
 
-                nested = heater_block.ConsumptionData.get(off_minutes)
+                # ConsumptionData is keyed by hours off (see findConsumptionAfterTurnedBackOn)
+                nested = heater_block.ConsumptionData.get(off_hours)
                 if not nested:
                     available_keys = [int(k) for k in heater_block.ConsumptionData.keys()]
-                    closest = closest_value(data = available_keys, target = off_minutes)
+                    closest = closest_value(data = available_keys, target = off_hours)
                     if closest is None:
                         continue
                     nested = heater_block.ConsumptionData[closest]
@@ -2347,9 +2526,6 @@ class ElectricalUsage(ad.ADBase):
                     pass
                 else:
                     heater_consumption += heater_watt
-                    # Compare this heater's own reading, not the running total of all heaters.
-                    if heater_watt > heater.heater_data.normal_power:
-                        heater.heater_data.normal_power = heater_watt
 
         idle_consumption = self.current_consumption - heater_consumption
         if idle_consumption <= 0:
@@ -2500,21 +2676,26 @@ class ElectricalUsage(ad.ADBase):
 
         heaters_to_remove = []
 
-        total_power = 0.0
         active_names = {h.heater for h in self.heaters}
+        # A ClimateCommander climate may be added later (its app starts after this one)
+        cc_apps = {cfg.get('app') for cfg in (self.args.get('climate_commander') or []) if isinstance(cfg, dict)}
+
+        # While a climate_commander entry waits for its app, its entity is unknown: keep everything
+        # (a heater moved from 'climate:' to 'climate_commander:' keeps its learned data)
+        cc_waiting = bool(getattr(self, '_cc_pending', None))
 
         for heater_name, heater_block in list(self._persistence.heater.items()):
-            if heater_block.normal_power:
-                total_power += heater_block.normal_power
-
-            if heater_name not in active_names:
+            if heater_name not in active_names and heater_block.cc_app not in cc_apps and not cc_waiting:
                 heaters_to_remove.append(heater_name)
 
         if heaters_to_remove:
             for key in heaters_to_remove:
                 del self._persistence.heater[key]
 
-        self.totalWattAllHeaters = total_power
+        self.totalWattAllHeaters = self._total_heater_watts()
+
+    def _total_heater_watts(self) -> float:
+        return sum(block.normal_power or 0.0 for block in self._persistence.heater.values())
 
 
     def mode_event(self, event_name, data, **kwargs) -> None:
@@ -2537,14 +2718,20 @@ class ElectricalUsage(ad.ADBase):
                 charger.doNotStartMe = True
 
             for heater in self.heaters:
-                heater.turn_off_heater()
+                if heater.is_on():
+                    heater.turn_off_heater()
+                    self._fire_turned_off.add(heater.heater)
+                heater.fire_off = True
 
 
         elif mode == translations.false_alarm:
             # Fire alarm stopped
             self.houseIsOnFire = False
             for heater in self.heaters:
-                heater.turn_on_heater()
+                heater.fire_off = False
+                if heater.heater in self._fire_turned_off:
+                    heater.turn_on_heater()
+            self._fire_turned_off = set()
 
             for charger in self.all_chargers():
                 charger.doNotStartMe = False
