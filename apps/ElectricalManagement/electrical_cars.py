@@ -27,6 +27,9 @@ class Car:
         that is asleep and whose data is older than STALE_DATA_MINUTES. Set it to false to never
         wake the car from that path (waking costs battery); the force-data-update button press
         is still sent. Cars without a wake-up implementation ignore it.
+        unlink_grace_minutes: number, default 0 (Tesla_car: 12). When the car reports a state that
+        differs from its external charger (e.g. Easee), wait this many minutes before unlinking and
+        check again, because cloud data from a sleeping car is often old or wrong. 0 unlinks at once.
     """
     def __init__(self, api,
         namespace:str,
@@ -35,6 +38,7 @@ class Car:
         car_data,
         charging_scheduler,
         wake_when_stale:bool = True,
+        unlink_grace_minutes:float = 0,
     ):
 
         self.ADapi = api
@@ -42,6 +46,8 @@ class Car:
         self.car_data = car_data
         self.charging_scheduler = charging_scheduler
         self.wake_when_stale:bool = bool(wake_when_stale)
+        self.unlink_grace_minutes:float = max(0.0, float(unlink_grace_minutes or 0))
+        self._unlink_grace_handler = None
 
         self.vehicle_id = vehicle_id
         self.carName = carName
@@ -501,6 +507,7 @@ class Tesla_car(Car):
         car_data,
         charging_scheduler,
         wake_when_stale:bool = True,
+        unlink_grace_minutes:float = STALE_DATA_MINUTES,
     ):
 
         self.vehicle_id = api.get_state(car_data.online_sensor,
@@ -525,6 +532,7 @@ class Tesla_car(Car):
             car_data = car_data,
             charging_scheduler = charging_scheduler,
             wake_when_stale = wake_when_stale,
+            unlink_grace_minutes = unlink_grace_minutes,
         )
         self.onboard_charger = None
 
@@ -546,15 +554,62 @@ class Tesla_car(Car):
             # Integration outage: no decision (and no unlink) on a missing value.
             return
         if self.connected_charger is None:
+            self._cancel_unlink_grace()
             self.ADapi.log(f"Car charging state for {self.carName} changed to {new} without connected charger") ###
             return
 
+        self.ADapi.log(f"Car charging state for {self.carName}: {old} -> {new}. Linked to {getattr(self.connected_charger, 'charger', None)} which reports {self.connected_charger.getChargingState()}") ###
+
         if new == 'Starting':
             new = 'Charging'
-        if not self.connected_charger.compareChargingState(
+        if self.connected_charger.compareChargingState(
             car_status = new
         ):
-            self.ADapi.log(f"State of car is {new} not equal to charger: {self.connected_charger.getChargingState()}. Need to unlink") ###
+            # Car and charger agree again: a pending grace check is no longer needed.
+            self._cancel_unlink_grace()
+            return
+
+        if (
+            self.unlink_grace_minutes > 0
+            and self.connected_charger is not self.onboard_charger
+        ):
+            # Cloud data from a (sleeping) car can be old or wrong while the external charger is the
+            # real sensor. Give the car time to report again before unlinking.
+            if self._unlink_grace_handler is None or not self.ADapi.timer_running(self._unlink_grace_handler):
+                self.ADapi.log(f"State of {self.carName} is {new} not equal to charger {self.connected_charger.getChargingState()}. Waiting {self.unlink_grace_minutes:g} min before unlinking") ###
+                self._unlink_grace_handler = self.ADapi.run_in(self._unlink_if_still_mismatched,
+                    self.unlink_grace_minutes * 60,
+                    charger = self.connected_charger
+                )
+            return
+
+        self.ADapi.log(f"State of car is {new} not equal to charger: {self.connected_charger.getChargingState()}. Need to unlink") ###
+        Registry.unlink(self)
+
+    def _cancel_unlink_grace(self) -> None:
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._unlink_grace_handler, name = self.carName):
+            self._unlink_grace_handler = None
+
+    def _unlink_if_still_mismatched(self, kwargs) -> None:
+        """ Grace period over: unlink only if the same charger is still linked and the car's current
+            state still differs from it. A missing value (unavailable) is no evidence, so keep the link. """
+        self._unlink_grace_handler = None
+        charger = kwargs.get('charger')
+        if self.connected_charger is None or self.connected_charger is not charger:
+            return
+        state = self.ADapi.get_state(self.car_data.charger_sensor,
+            namespace = self.namespace,
+            attribute = 'charging_state'
+        )
+        if state is None or state in UNAVAIL:
+            self.ADapi.log(f"{self.carName}: grace period over, car state is {state}. Keeping link") ###
+            return
+        if state == 'Starting':
+            state = 'Charging'
+        if charger.compareChargingState(car_status = state):
+            self.ADapi.log(f"{self.carName}: grace period over, car reports {state} and matches charger. Keeping link") ###
+        else:
+            self.ADapi.log(f"State of car is {state} not equal to charger: {charger.getChargingState()} after grace period. Need to unlink") ###
             Registry.unlink(self)
 
     def wakeMeUp(self) -> None:

@@ -298,6 +298,7 @@ class Charger:
 
         connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
         if connected_charger is self:
+            self.ADapi.log(f"{self.charger}: NoPower while linked to {getattr(self.connected_vehicle, 'carName', None)}. Unlinking (noPowerDetected)") ###
             Registry.unlink_by_charger(self)
 
     def ChargingStarted(self, entity, attribute, old, new, kwargs) -> None:
@@ -391,6 +392,7 @@ class Charger:
         # Deliberately no UNAVAIL filter here: the repeated command is also what wakes a sleeping car
         # whose integration reports 'unavailable'/'unknown'.
         if not state in ('Charging', 'Complete', 'Disconnected'):
+            self.ADapi.log(f"{self.charger}: resending start command, charger state is {state}") ###
             self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
             self._send_start_command()
 
@@ -646,6 +648,7 @@ class Tesla_charger(Charger):
             state == 'Stopped' and
             connected_charger is None
         ):
+            self.ADapi.log(f"{self.charger}: relinking {self._cars[0].carName} to its onboard charger on Stopped") ###
             Registry.set_link(self._cars[0], self)
 
         return state
@@ -721,6 +724,7 @@ class Tesla_charger(Charger):
             self.getChargingState() == 'NoPower'
             and connected_charger is self
         ):
+            self.ADapi.log(f"{self.charger}: NoPower 60 s after start command. Unlinking {getattr(self.connected_vehicle, 'carName', None)}") ###
             Registry.unlink_by_charger(self)
         else:
             super()._check_that_charging_started(kwargs)

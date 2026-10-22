@@ -42,7 +42,7 @@ from utils import (
 )
 from registry import Registry
 from scheduler import Scheduler
-from electrical_cars import Car, Tesla_car
+from electrical_cars import Car, Tesla_car, STALE_DATA_MINUTES
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch
 from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
@@ -612,6 +612,7 @@ class ElectricalUsage(ad.ADBase):
                 car_data = self._persistence.car[carName],
                 charging_scheduler = self.charging_scheduler,
                 wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
+                unlink_grace_minutes = cfg.get('unlink_grace_minutes', STALE_DATA_MINUTES),
             )
             self.cars[tesla_car.vehicle_id] = tesla_car
 
@@ -1736,7 +1737,12 @@ class ElectricalUsage(ad.ADBase):
                     car.connected_charger is car.onboard_charger
                     and ChargingState == 'NoPower'
                 ):
-                    car.wakeMeUp()
+                    if (
+                        not check_if_charging_time
+                        or self.charging_scheduler.isChargingTime(vehicle_id = car.vehicle_id)
+                    ):
+                        # Only wake (data update / WAKE_UP) when it is time to charge.
+                        car.wakeMeUp()
                     for charger in self.all_chargers():
                         if (
                             charger.connected_vehicle is None
