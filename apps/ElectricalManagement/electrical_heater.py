@@ -941,10 +941,10 @@ class Climate(Heater):
             try:
                 window_temp = float(self.ADapi.get_state(self.heater_data.window_temp, namespace = self.namespace))
             except (TypeError, AttributeError):
-                window_temp = self.target_heater_temp + self.heater_data.window_offset
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset   # offline sensor: at the threshold, no correction
                 self.ADapi.log(f"{self.heater_data.window_temp} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
-                window_temp = self.target_heater_temp + self.heater_data.window_offset
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset   # offline sensor: at the threshold, no correction
                 self.ADapi.log(f"Not able to get temperature from {self.heater_data.window_temp}. {e}", level = 'DEBUG')
             if window_temp > self.target_indoor_temp + self.heater_data.window_offset:
                 adjust = float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset))
