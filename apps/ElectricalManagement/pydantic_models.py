@@ -126,7 +126,7 @@ class HeaterBlock(BaseModel):
     on_for_minimum: int | None = None
     pricedrop: float | None = None
     pricedifference_increase: float | None = None
-    vacation: Union[str, bool] = False
+    vacation: Union[str, bool, None] = False
     automate: Union[str, bool] = False
     recipient: Optional[List[str]] = None
     indoor_sensor_temp: Optional[str] = None
@@ -135,15 +135,15 @@ class HeaterBlock(BaseModel):
     target_heater_input: Optional[str] = None
     target_heater_temp: Optional[float] = None
     window_temp: Optional[str] = None
-    window_offset: Optional[float] = None
+    window_offset: float = -3
     save_temp_offset: Optional[float] = None
     save_temp: Optional[float] = None
     vacation_temp: Optional[float] = None
     vacation_keep_off: bool = False
-    rain_level: Optional[float] = None
-    anemometer_speed: Optional[float] = None
-    getting_cold: Optional[float] = 18
-    priceincrease: Optional[float] = 1
+    rain_level: float = 3
+    anemometer_speed: float = 40
+    getting_cold: float = 18
+    priceincrease: float = 1
     low_price_max_continuous_hours: Optional[int] = None   # None: ElectricalPriceCalc default (3)
     windowsensors: Optional[List[str]] = None
     daytime_savings: Optional[List[Dict[str, Any]]] = None
@@ -160,6 +160,14 @@ class HeaterBlock(BaseModel):
     ConsumptionData: Dict[int, Dict[int, TempConsumption]] = Field(default_factory=dict)
     prev_consumption: float = 0.0
     time_to_save: List[PeakHour] = Field(default_factory=list)
+
+    @field_validator('window_offset', 'rain_level', 'anemometer_speed', 'getting_cold', 'priceincrease', mode='before')
+    @classmethod
+    def _null_means_default(cls, value: Any, info) -> Any:
+        """ A saved `null` (older files) gets the default instead of crashing in arithmetic later. """
+        if value is None:
+            return cls.model_fields[info.field_name].default
+        return value
 
     def sort_temperatures(self) -> None:
         """Sort the `temperatures` list by the `out` key. """

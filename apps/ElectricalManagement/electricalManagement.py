@@ -915,16 +915,13 @@ class ElectricalUsage(ad.ADBase):
             return None
 
     def _merge_heater_cfg(self, heater_cfg: dict, persisted_heater, main_vacation_sensor) -> bool:
+        """ Copies the common keys from the YAML onto the persisted block. A key that is not in the
+            YAML keeps its saved value (also `vacation`: a saved false/null is not repaired any more). """
+
         value_changed = False
         if persisted_heater:
             for key in HEATER_COMMON_KEYS:
                 value = getattr(persisted_heater, key, None)
-                if key == 'vacation': ### Temporary fix wrongly set vacation in persistence
-                    if isinstance(value, bool) or value is None:
-                        if key not in heater_cfg or heater_cfg[key] is None:
-                            setattr(persisted_heater, key, main_vacation_sensor)
-                            value_changed = True
-                            continue
                 if key in ('turn_off_after', 'turn_off_before'):
                     if heater_cfg.get(key) is not None:
                         new_time = self._to_time(heater_cfg[key])
@@ -2374,6 +2371,9 @@ class ElectricalUsage(ad.ADBase):
         hoursOffInt = 0
         # Deliberately naive: compared with naive datetimes from parse_datetime(daytime[...]).
         now_notAware = self.ADapi.datetime()
+        # The measurement starts 3 minutes after the heater is back to normal. That is the end of the
+        # save period, or the end of a daytime_savings window that still keeps the heater reduced.
+        measure_at = time_to_save_item.end + timedelta(minutes = 3)
 
         if not heater.vacation_state:
             for daytime in heater.heater_data.daytime_savings or []:
@@ -2384,12 +2384,29 @@ class ElectricalUsage(ad.ADBase):
                         if start <= end:
                             in_window = start <= now_notAware < end
                             off_hours = end - start
+                            start_aware = self.ADapi.parse_datetime(daytime['start'], aware = True)
+                            end_aware = self.ADapi.parse_datetime(daytime['stop'], aware = True)
                         else:
                             # Window crosses midnight (e.g. 22:00 -> 07:00).
                             in_window = now_notAware >= start or now_notAware < end
                             off_hours = end - start + timedelta(days = 1)
+                            if now_notAware >= start:
+                                start_aware = self.ADapi.parse_datetime(daytime['start'], aware = True)
+                                end_aware = self.ADapi.parse_datetime(daytime['stop'], aware = True, days_offset = 1)
+                            else:
+                                start_aware = self.ADapi.parse_datetime(daytime['start'], aware = True, days_offset = -1)
+                                end_aware = self.ADapi.parse_datetime(daytime['stop'], aware = True)
                         if in_window:
-                            hoursOffInt = int(off_hours.total_seconds() // 3600)
+                            if end_aware.date() == time_to_save_item.end.date() and end_aware > time_to_save_item.end:
+                                # The heater stays reduced until the daytime window ends later today:
+                                # measure after that, and count the hours off from the start of the
+                                # reduction (the earlier of the daytime start and the save start).
+                                # Example: save 06:00-10:00, daytime 07:30-22:00: measure at 22:03, 16 h off.
+                                measure_at = end_aware + timedelta(minutes = 3)
+                                off_from = min(start_aware, time_to_save_item.start)
+                                hoursOffInt = int((end_aware - off_from).total_seconds() // 3600)
+                            else:
+                                hoursOffInt = int(off_hours.total_seconds() // 3600)
                             break
             if hoursOffInt == 0:
                 try:
@@ -2397,8 +2414,7 @@ class ElectricalUsage(ad.ADBase):
                 except (ValueError, TypeError, AttributeError):
                     return
             if hoursOffInt > 0:
-                runtime = time_to_save_item.end + timedelta(minutes = 3)
-                self.ADapi.run_at(heater.findConsumptionAfterTurnedOn, runtime, hoursOffInt = hoursOffInt)
+                self.ADapi.run_at(heater.findConsumptionAfterTurnedOn, measure_at, hoursOffInt = hoursOffInt)
 
 
     def _reset_hourly(self, consumption) -> None:
@@ -2669,7 +2685,11 @@ class ElectricalUsage(ad.ADBase):
         if temp is None:
             self.ADapi.log(f"WEATHER_CHANGE event without 'temp': {data}", level = 'DEBUG')
             return
-        self._persistence.weather.out_temp = float(temp)
+        value = to_float_or_none(temp)
+        if value is None:
+            self.ADapi.log(f"WEATHER_CHANGE event with non-numeric 'temp': {temp!r}", level = 'DEBUG')
+            return
+        self._persistence.weather.out_temp = value
 
     def _refresh_heaters(self) -> None:
         """Remove orphan heater blocks and recompute the total wattage."""

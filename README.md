@@ -42,6 +42,24 @@ No configuration changes are needed. Things that behave differently:
 - **`temperatures` table boundary**: an entry now applies from its `out` value and up, as documented. Before, an outdoor temperature of exactly `7.0` used the entry below `out: 7`. Only exact readings change.
 - **Expected heater consumption after a save period** (used for the charge plan) now looks up the learned data by hours off. It used minutes, so it always used the longest-off data. Charge time estimates after save periods change.
 - **Fire alarm**: `false-alarm` turns on only the climates and switches that ElectricalManagement turned off for the fire (before, every climate was turned on, also ones that were off). Heaters and switches now stay off until `false-alarm`; before, the periodic runner could turn a switch on again during the fire.
+- **Heaters (`climate:`) and switches (`heater_switches:`), behaviour changes.** Nothing to do in the default case; the list is what a running instance will notice:
+  - **`climate:` manages hvac mode `heat` only.** A climate in `cool`, `fan_only`, `dry`, `auto` or `heat_cool` gets no commands from this app at all (one WARNING per entity at the first attempt). Use a [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) app for those. `off` is handled as before.
+  - **Unavailable climate or switch**: while the entity is `unavailable` or `unknown` no `set_temperature`, `turn_on` or `turn_off` is sent (one INFO line when it goes away and one when it is back). Before, the setpoint was re-sent and an unavailable switch was turned on every tick.
+  - **Window temperature correction is capped at 3 degrees**, the same cap as the indoor-sensor correction, and the cap applies to the sum of the two. Example: target 23, `window_offset` -3, window sensor 35: the setpoint goes 3 down (to 20). Before, it went 15 down and ended at the vacation / minimum floor.
+  - **Setpoint only sent when it changes**: the new target is rounded to 0.5 before it is compared with the heater's setpoint. A target of 22.3 with the heater at 22.5 is no longer re-sent every 15 minutes. A setpoint changed by hand is still overwritten at the next run, as before.
+  - **Spend periods apply at once**: when the price run (13:01, 00:05) finds a spend period that already covers now, the +1 is sent right away instead of at the next 15 minute run.
+  - **Fallback temperature when nothing is configured**: a climate without `save_temp`, `save_temp_offset`, `vacation_temp` or `save` / `vacation` in `temperatures` now uses the climate's own `min_temp` attribute (5 if the entity has none) where it used a fixed 10. The same fallback is used when the heater's setpoint cannot be read during an overconsumption reduce.
+  - **Vacation end** sends `hvac_mode: heat` only to a climate that this app turned off (`vacation_keep_off` or the fire alarm). A climate you turned off by hand before leaving stays off. After an AppDaemon restart during vacation, an `off` climate with `vacation_keep_off` counts as turned off by the app.
+  - **Window open while the main app reduces the heater**: closing the window no longer clears the overconsumption reduction. The heater is restored when the main app releases it (within minutes), as for any reduced heater. Without a reduction, closing the window restores the normal temperature as before.
+  - **"Window open" notification without an indoor temperature** (no `indoor_sensor_temp` and the climate reports no `current_temperature`) is sent without the figure; it used to print -50.
+  - **`windowsensors` on a `heater_switches` entry is ignored** (one WARNING at startup). Before, an open window turned the switch off.
+  - **`turn_back_on_after` is respected by the slot runner.** After the finished-appliance turn-off the switch stays off until `turn_back_on_after` seconds have passed, or until someone turns it on. With `0` the app never turns it on again. Before, the hourly runner turned every switch on again at the next full hour.
+  - **`notify_when_finished` works without a turn-off window**: the notification is sent whenever the key is on; the automatic turn-off needs both `turn_off_after` and `turn_off_before`.
+  - **No false "Consumption finished"**: after a fire alarm turned the switch off, and after the consumption sensor was `unavailable` in the middle of a program (a sensor that comes back low does not count as finished).
+  - **Consumption measurement after a save period that ends inside a `daytime_savings` window** (nobody home) now starts 3 minutes after the daytime window ends, with the hours off counted from the start of the reduction. Before, it started 3 minutes after the save period while the heater was still reduced, so the learned value was wrong. A window that crosses midnight and ends tomorrow is measured as before.
+  - **Consumption registered once**: the 20 minute check after a save period no longer registers a second sample when the consumption listener already did.
+  - **Heaters without a consumption sensor that are `off`** count as 0 W in the overconsumption logic (before: their `power`), so an off boiler is not "reduced" and its watts are not added to what can be turned back on.
+  - **Saved `vacation` is no longer repaired**: a persisted heater with `vacation: false` or `null` and no `vacation` key in the YAML keeps that value (before, the main vacation sensor was silently written in). Set `vacation:` on the entry if the heater should follow the vacation switch. A saved block without the key still loads.
 - **Audi (still untested on a real car)**: the plug sensor is a `binary_sensor`, charging states are normalised (`charging`, `readyForCharging`, `chargePurposeReached`, `notReadyForCharging` ...), and the start/stop service uses the new optional `device_id` (falls back to `vin` with a warning). The start command is no longer repeated every 60 seconds: it is verified after `verify_minutes` (default 20) and retried at most `max_command_retries` (default 2) times, then a warning/notification. Optional `charge_power_kW` sets the assumed charging power. The Tesla start/wake loop is unchanged.
 
 ---
@@ -537,6 +555,8 @@ Here you configure climate entities that you want to control based on outside te
 
 > For HVAC and other climate entities that are not very power consuming, you should check out [Climate Commander](https://github.com/Pythm/ad-ClimateCommander). That app is written to keep a constant inside temperature.
 
+Only hvac mode `heat` is managed by `climate:`. A climate in any other mode (`cool`, `fan_only`, `dry`, `auto`, `heat_cool`) gets no commands from this app; one WARNING is logged per entity. Use a ClimateCommander app for anything else.
+
 Climate entities are defined under `climate` and you configure the temperature it should heat to, based on the outside temperature. You configure it either by `name` or with the entity ID as `heater`, and the app will attempt to find consumption sensors based on some default zwave naming, or you can define current consumption using the `consumptionSensor` for the current consumption, and `kWhconsumptionSensor` for the total kWh that the climate has used.
 
 Set the heater's rated `power` in watts on every climate and switch (it is not learned from the consumption sensor). The app uses it to calculate how many heaters to turn down to stay below the maximum kWh usage limit, as the consumption of heaters without a consumption sensor, and together with the kWh sensor to calculate the expected available power during charging time. Without `power` a WARNING is logged and the stored value (or 300 W for a climate, 1000 W for a switch) is used.
@@ -553,6 +573,8 @@ The climate is programmed to react to outdoor conditions configured with [Weathe
 The `temperatures` dictionary consists of multiple temperature settings that adapt to the given `out`door temperature. An entry applies from its `out` value and up to the next entry; below the first entry the first one is used. Version 0.1.5 introduces additional ways to set climate temperatures.
 
 Easiest way is to define `offset` ± degrees based on outside temperature. The offset also applies to `save_temp` and `vacation_temp`. Alternative to save temp you can define saving temperature with a `save_temp_offset` if you are using an input_number to set target.
+
+On vacation the price savings never go below the vacation temperature (it is a floor), while spend hours still add 1 degree on top of it. Without any of `save_temp`, `save_temp_offset`, `vacation_temp`, `save` or `vacation` configured, the climate's own `min_temp` attribute is used as the fallback.
 
 ```yaml
       save_temp_offset: -0.5
@@ -614,9 +636,15 @@ You can define `vacation_keep_off`in options to keep the switch / climate off du
 
 ### 🪟 Window Sensors
 
-The app will lower the climate temperature for as long as windows are open. It will also notify if the indoor temperature drops below the `getting_cold` threshold. The threshold defaults to 18 degrees.
+The app will lower the climate temperature for as long as windows are open (a window must have been open for 120 seconds; closing is reacted to at once). The lowered temperature is the lowest of the save and the vacation temperature. If the main app is reducing the heater because of overconsumption at the same time, closing the window does not end that reduction; the heater is restored when the main app releases it.
 
-Define a window temperature sensor as `window_temp` to react quicker to sunny days and turn down heating before it gets too hot, with `window_offset` as an offset from target temperature. This is default to -3.
+Two notifications belong to the window sensors, with these exact thresholds:
+- "Window open" is sent once per opening when the indoor temperature is below `getting_cold` AND the outdoor temperature is below `getting_cold`. The threshold defaults to 18 degrees. No alert in summer, and none while the room is still warm. When no indoor temperature is known (no `indoor_sensor_temp` and the climate reports none) the text is sent without a figure.
+- "Window closed" ("getting hot inside") is sent once after a window was closed when the indoor temperature is at least the indoor target plus 10 degrees and the outdoor temperature is above `getting_cold`.
+
+`windowsensors` only applies to `climate:` entries. On a `heater_switches` entry it is ignored and a WARNING is logged at startup.
+
+Define a window temperature sensor as `window_temp` to react quicker to sunny days and turn down heating before it gets too hot, with `window_offset` as an offset from target temperature. This is default to -3. The correction from the window sensor and from the indoor sensor together is capped at 3 degrees: a window reading 35 with target 23 and offset -3 lowers the setpoint by 3, not by 15.
 
 ---
 
@@ -715,15 +743,17 @@ A switch with a power sensor can also tell you when the appliance has finished, 
       turn_off_before: '07:00:00'
 ```
 
-The appliance counts as running when the power has been above `start_threshold` for `start_duration` seconds, and as finished when it has then been below `stop_threshold` for `stop_duration` seconds. A notification with a "Turn Off" button is sent. If the program finishes between `turn_off_after` and `turn_off_before` the switch is turned off automatically, and turned on again after `turn_back_on_after` seconds. Nothing is sent when the power fell because the app itself switched the appliance off to save electricity, and none while the sensor is `unavailable`.
+The appliance counts as running when the power has been above `start_threshold` for `start_duration` seconds, and as finished when it has then been below `stop_threshold` for `stop_duration` seconds. A notification with a "Turn Off" button is sent. If the program finishes between `turn_off_after` and `turn_off_before` the switch is turned off automatically, and turned on again after `turn_back_on_after` seconds. The notification works on its own: without `turn_off_after` and `turn_off_before` (or with a value that cannot be read as a time) nothing is turned off automatically. Nothing is sent when the power fell because the app itself switched the appliance off (to save electricity, or for a fire alarm), and none while the sensor is `unavailable`. A sensor that becomes `unavailable` in the middle of a program forgets that program, so it does not count as finished when it comes back low.
+
+`turn_back_on_after` is a power cycle, not "off for the night". The default of 60 seconds turns the switch off and on again, which silences an appliance that beeps until it is powered down. For "off until the morning" use `0` (the app never turns it on again; the next person to turn it on by hand, or in Home Assistant, ends it) or a long value in seconds. While the app has turned the appliance off this way, the hourly runner that normally keeps a switch on leaves it off.
 
 | Key | Default | Description |
 |---|---|---|
 | `notify_when_finished` | `false` | Turns the function on. |
-| `turn_off_after` / `turn_off_before` | `22:00:00` / `07:00:00` | Window for the automatic turn-off. |
+| `turn_off_after` / `turn_off_before` | `22:00:00` / `07:00:00` | Window for the automatic turn-off. Both are needed for the turn-off; the notification works without them. |
 | `start_threshold` / `stop_threshold` | `100` / `15` | Watts. |
 | `start_duration` / `stop_duration` | `30` / `30` | Seconds the power must stay above / below the threshold. Raise `stop_duration` for appliances with long low-power phases. |
-| `turn_back_on_after` | `60` | Seconds until the switch is turned on again after the app turned it off. `0` never turns it on again. |
+| `turn_back_on_after` | `60` | Seconds until the switch is turned on again after the app turned it off (a power cycle). `0` never turns it on again; it stays off until someone turns it on. |
 
 These keys are saved with the switch. A key you set in the YAML replaces the saved value at the next start. Removing a key from the YAML keeps the saved value, so set `notify_when_finished: false` to turn it off. Switches that control a hot-water boiler leave `notify_when_finished` off.
 
