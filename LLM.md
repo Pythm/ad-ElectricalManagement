@@ -39,7 +39,7 @@ electricity:
   notify_receiver: [Me]
   climate_commander:
     - app: heater_bathroom        # name of a ClimateCommander app
-      power: 1500                 # rated watts, ask the user
+      power: 1500                 # rated watts, from the sensor history or the user
       kWhconsumptionSensor: sensor.bathroom_floor_energy
       max_continuous_hours: 4
   heater_switches:
@@ -89,7 +89,7 @@ Identity: `climate_commander` needs `app` (the CC app name; `climate`, alias `he
 
 | Key | Default | Notes |
 |---|---|---|
-| `power` | stored value, else 300 (climate, CC) / 1000 (switch) | Rated watts. ALWAYS ask. |
+| `power` | stored value, else 300 (climate, CC) / 1000 (switch) | Rated watts. ALWAYS set; find from the device's power sensor history, else ask. |
 | `consumptionSensor` | `sensor.<name>_electric_consumption_w` or `_electric_consumed_w` if it exists | W sensor of this device only. |
 | `kWhconsumptionSensor` | `..._electric_consumption_kwh` or `_electric_consumed_kwh` | Needed to learn the consumption after a save period. |
 | `max_continuous_hours`, `on_for_minimum` | 2, 6 | Save period length and check against low prices. |
@@ -130,7 +130,7 @@ Saved values: for heater and car entries, a key in the YAML replaces the saved v
 
 ## ALWAYS ask the user
 
-- **Rated watts for `power:`** on every `climate`, `heater_switches` and `climate_commander` entry (nameplate, manual or the installer). Never take it from the sensor history, a guess, or the old `normal_power` in the JSON: the app no longer learns it, the old learning only went up, and until 1.0.6 it stored the sum of several heaters. Without `power:` the stored value (or 300 / 1000 W) is used and one WARNING lists the entries.
+- **Rated watts for `power:`** on every `climate`, `heater_switches` and `climate_commander` entry. Find them yourself first: if the device has its own power sensor (the `consumptionSensor`, a W sensor), read its history read-only with `tools/ha_peak_power.py` from the [Pythm_AppdaemonApps](https://github.com/Pythm/Pythm_AppdaemonApps) repository (the same clone that holds `tools/ha_snapshot.py` and the `.local/ha_token` file from the [LLM guide](https://github.com/Pythm/Pythm_AppdaemonApps/blob/master/LLM_GUIDE.md); if the user has not cloned it yet, `git clone https://github.com/Pythm/Pythm_AppdaemonApps.git`, or download the single file from its `tools` folder): `python3 tools/ha_peak_power.py <sensor> ...` (it uses the user's HA token from `.local/ha_token`, which only the script reads, and prints max, p99 and the on-plateau of the last 30 days). Use the plateau when it is clear (several samples, max close to the plateau) and write the highest value rounded to 10 W. Tell the user which value you took and from which sensor, so it can be corrected. Only ask the user (nameplate, manual, installer) when there is no sensor, no history, the device never ran in the period, or the plateau is not clear. Never use the old stored `normal_power` from the JSON, EM's learned consumption, or a guess: the app no longer learns it, the old learning only went up, and until 1.0.6 it stored the sum of several heaters. Without `power:` the stored value (or 300 / 1000 W) is used and one WARNING lists the entries.
 - **Two sensors of one kind** (two power meters, two temperature sensors in a room, two hourly kWh sensors): is the second a backup, a sensor for another side of the house, or something else? Never decide from names or areas.
 - **Who gets notifications, and how.** (1) With `notify_app: notify_mobiles` (check the real app name), `notify_receiver` and `recipient` are the **person labels** of that app. (2) Without `notify_app`, they are HA notify service names such as `mobile_app_phone`. Never mix the two kinds. Ask whether overconsumption alerts are wanted (`notify_overconsumption`), and also when away.
 - **Which car can use which charger.** Never assume a car only uses its own charger: either Tesla may charge on either Easee or wall connector. The app links cars and chargers from their states; ask so you can explain what will happen.
@@ -144,7 +144,7 @@ Saved values: for heater and car entries, a key in the YAML replaces the saved v
 Read the user's block before changing anything, and report:
 - `climate:` entries: deprecated (WARNING), they still work. Suggest moving each to a ClimateCommander app listed under `climate_commander:`, one at a time and only with a yes. `climate:` manages only hvac mode `heat`; a climate used for `cool`, `fan_only`, `dry`, `auto` or `heat_cool` must be a CC app.
 - Water heaters, dryers and other on/off switches stay in `heater_switches`. Never move them to ClimateCommander.
-- A heater entry without `power:` (ask for the watts).
+- A heater entry without `power:` (find the watts from the power sensor history, else ask).
 - `windowsensors` on a `heater_switches` entry: ignored, WARNING. Remove it (window handling belongs to `climate:` or the CC app).
 - `automate` that is not `true`/`false` or an entity id (WARNING, and automation is on).
 - A heater `vacation` that is not an entity id string. A saved `false`/`null` is no longer repaired to the main switch: set `vacation:` on the entry if the heater should follow it.
@@ -196,7 +196,7 @@ Read the user's block before changing anything, and report:
 |---|---|
 | `Configuration error in '<key>': ...` (ERROR) | Wrong type for a top-level key. The app does not start. |
 | `electricalPriceApp '<name>' was not found ...` (ERROR) | Wrong name, the price app failed, or no `dependencies` on it. |
-| `Set 'power' (the heater's rated watts) for: ...` | Entries without `power:`. Ask the user for the watts. |
+| `Set 'power' (the heater's rated watts) for: ...` | Entries without `power:`. Find the watts from the sensor history (`tools/ha_peak_power.py`), else ask the user. |
 | `'climate:' heaters in ElectricalManagement are deprecated ...` | Old `climate:` list. Works; suggest CC apps. |
 | `<climate> is in hvac mode '<mode>' ...` | `climate:` entry not in `heat`. Use a CC app. |
 | `<switch>: windowsensors is ignored for switches.` | Remove `windowsensors` from the switch. |
@@ -214,6 +214,6 @@ Read the user's block before changing anything, and report:
 ## Rules for the assistant
 
 - One `apps.yaml` edit at a time. Back it up first, show the block, explain in one or two sentences what it will do, and get a yes.
-- Entity ids only from the HA index. Never invent ids, app names or watts.
+- Entity ids only from the HA index. Never invent ids or app names. Watts come from the sensor history or the user, never from a guess.
 - Do not edit the JSON file unless the user asks; stop AppDaemon's app first if they do (it is written on shutdown).
 - No commit or push unless asked. No personal entity ids, names or addresses in the docs; use placeholders like `climate.living_room`.
