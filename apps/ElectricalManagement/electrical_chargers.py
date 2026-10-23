@@ -42,6 +42,9 @@ class Charger:
         self.checkCharging_handler = None
         self.doNotStartMe:bool = False
         self._recheck_findCarConnectedToCharger_handler = None
+        self._link_check_handler = None
+        self._link_cycle_start = None
+        self._link_check_attempts:int = 0
         self.reason_for_no_current_handler = None
         self.session_start_charge:float = 0.0
 
@@ -81,24 +84,14 @@ class Charger:
         """ A check to see if a car is connected to the charger """
 
         if self.getChargingState() in ('Disconnected', 'Complete', 'NoPower'):
+            self._cancel_link_check()
             return False
 
-        for car in self._cars:
-            if not car._polling_of_data() or not car.isConnected():
-                continue
-
-            car_state = car.getCarChargerState()
-            if car.connected_charger is None or car_state == 'NoPower':
-                if (
-                    self._link_evidence_ok(car_state)
-                    and self.compareChargingState(car_status = car_state)
-                ):
-                    Registry.set_link(car, self)
-                    self.kWhRemaining()
-                    self.connected_vehicle.findNewChargeTime()
-                    self._register_battery_soc_for_calculation()
-                    self.ADapi.log(f"Connected {car.carName} to {self.charger}") ###
-                    return True
+        if self._link_needs_fresh_data():
+            if self._find_car_with_fresh_data():
+                return True
+        elif self._find_and_link():
+            return True
 
         if self.connected_vehicle is None:
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
@@ -112,6 +105,150 @@ class Charger:
             a None state (no reading) is never evidence. Easee tightens it to 'NoPower' only. """
 
         return car_state is not None
+
+    # ---- linking: candidates and fresh data ------------------------------------------- #
+    # Seconds between checks while waiting for the cars to report again after a wake-up,
+    # the number of checks before the cached data is used as it is, and the minutes before a new
+    # wake-up round may start for the same charger.
+    LINK_CHECK_SECONDS = 30
+    LINK_CHECK_MAX = 8
+    LINK_CYCLE_COOLDOWN_MINUTES = 10
+
+    def _link_needs_fresh_data(self) -> bool:
+        """ True when a car may only be linked on data that is newer than the cable event, because
+            more than one car could be the one that is connected. Chargers with a single possible
+            car (the onboard chargers) never need it. Easee overrides this. """
+
+        return False
+
+    def _link_candidates(self, fresh_since = None) -> tuple:
+        """ Cars that match the state of this charger, as (candidates, unverified).
+            With fresh_since, a matching car whose data is older than that is returned as
+            unverified instead of as a candidate. """
+
+        candidates:list = []
+        unverified:list = []
+        for car in self._cars:
+            if not car._polling_of_data() or not car.isConnected():
+                continue
+
+            car_state = car.getCarChargerState()
+            if car.connected_charger is None or car_state == 'NoPower':
+                if (
+                    self._link_evidence_ok(car_state)
+                    and self.compareChargingState(car_status = car_state)
+                ):
+                    if fresh_since is not None and not car.data_updated_since(fresh_since):
+                        unverified.append(car)
+                    else:
+                        candidates.append(car)
+        return candidates, unverified
+
+    def _link_car(self, car:Car) -> None:
+        self._cancel_link_check()
+        Registry.set_link(car, self)
+        self.kWhRemaining()
+        self.connected_vehicle.findNewChargeTime()
+        self._register_battery_soc_for_calculation()
+        self.ADapi.log(f"Connected {car.carName} to {self.charger}") ###
+
+    def _find_and_link(self, fresh_since = None, accept_unverified:bool = False) -> bool:
+        """ Links the car that matches this charger. With more than one match nothing is linked:
+            the first car in the list used to win, which linked a sleeping car with old data. """
+
+        candidates, unverified = self._link_candidates(fresh_since = fresh_since)
+        if accept_unverified:
+            candidates += unverified
+            unverified = []
+        if len(candidates) == 1 and not unverified:
+            self._link_car(candidates[0])
+            return True
+        if candidates or unverified:
+            self.ADapi.log(
+                f"{self.charger}: not linking, matching cars {[c.carName for c in candidates]}, "
+                f"waiting for fresh data from {[c.carName for c in unverified]} ###"
+            )
+        return False
+
+    def _link_contenders(self) -> list:
+        """ Cars that may be the one connected to this charger: at home, polled, not a guest, not
+            already charging and not linked to another external charger. """
+
+        contenders:list = []
+        for car in self._cars:
+            if getattr(car, 'is_guest', False) or not car._polling_of_data():
+                continue
+            if car.getLocation() != 'home':
+                continue
+            if car.connected_charger not in (None, self, car.onboard_charger):
+                continue
+            if car.getCarChargerState() == 'Charging':
+                continue
+            contenders.append(car)
+        return contenders
+
+    def _find_car_with_fresh_data(self) -> bool:
+        """ More than one car can be the one on this charger, and a car that sleeps reports
+            'NoPower' from old data. The cars that are not charging are woken and their data
+            is refreshed once per LINK_CYCLE_COOLDOWN_MINUTES. A car is linked only when it is the
+            only one that still matches on data newer than that. Waiting for the data takes at
+            most LINK_CHECK_MAX * LINK_CHECK_SECONDS, then the cached data is used. """
+
+        if len([c for c in self._cars if not getattr(c, 'is_guest', False)]) < 2:
+            return self._find_and_link()
+
+        now = self.ADapi.datetime(aware = True)
+        if (
+            self._link_cycle_start is None
+            or (now - self._link_cycle_start).total_seconds() > self.LINK_CYCLE_COOLDOWN_MINUTES * 60
+        ):
+            self._link_cycle_start = now
+            self._link_check_attempts = 0
+            contenders = self._link_contenders()
+            self.ADapi.log(
+                f"{self.charger}: refreshing {[(c.carName, c.getCarChargerState()) for c in contenders]} "
+                f"to find the car on the charger (status {self.getChargingState()}) ###"
+            )
+            for car in contenders:
+                car.refresh_for_link()
+
+        waiting = [
+            c for c in self._link_contenders()
+            if not c.data_updated_since(self._link_cycle_start)
+        ]
+        if waiting and self._link_check_attempts < self.LINK_CHECK_MAX:
+            if not self._link_check_running():
+                self._link_check_handler = self.ADapi.run_in(self._link_check, self.LINK_CHECK_SECONDS)
+            return False
+
+        return self._find_and_link(
+            fresh_since = self._link_cycle_start,
+            accept_unverified = self._link_check_attempts >= self.LINK_CHECK_MAX
+        )
+
+    def _link_check_running(self) -> bool:
+        return (
+            self._link_check_handler is not None
+            and self.ADapi.timer_running(self._link_check_handler)
+        )
+
+    def _cancel_link_check(self) -> None:
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._link_check_handler, name = self.charger):
+            self._link_check_handler = None
+        self._link_cycle_start = None
+
+    def _link_check(self, kwargs) -> None:
+        """ Waits for the woken cars to report again, asks the ones that have not, then tries to link. """
+
+        self._link_check_handler = None
+        self._link_check_attempts += 1
+        if self._link_cycle_start is None or self.connected_vehicle is not None:
+            return
+        for car in self._link_contenders():
+            if not car.data_updated_since(self._link_cycle_start):
+                self.ADapi.log(f"{self.charger}: {car.carName} has not reported since {self._link_cycle_start:%H:%M:%S} ({self._link_check_attempts}) ###")
+                car.forceAPIupdate()
+        self.findCarConnectedToCharger()
 
     def _recheck_findCarConnectedToCharger(self, kwargs) -> None:
         self.findCarConnectedToCharger()
@@ -820,6 +957,12 @@ class Easee(Charger):
 
         return car_state == 'NoPower'
 
+    def _link_needs_fresh_data(self) -> bool:
+        """ Two Teslas can both report 'NoPower' (one from old data while it sleeps), so a car is
+            linked to the Easee in 'awaiting_start' only on data newer than the cable event. """
+
+        return self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'awaiting_start'
+
     def compareChargingState(self, car_status:str) -> bool:
         """ Returns True if car and charger match charging state. """
 
@@ -930,6 +1073,7 @@ class Easee(Charger):
                     #    namespace = self.namespace,
                     #)
         elif new == 'disconnected':
+            self._cancel_link_check()
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
                 self._check_if_still_disconnected_handler = None
             self._check_if_still_disconnected_handler = self.ADapi.run_in(self._check_if_still_disconnected, self._disconnected_check_seconds)

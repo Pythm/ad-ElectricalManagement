@@ -320,6 +320,27 @@ class Car:
             return stale_time < timedelta(minutes = STALE_DATA_MINUTES)
         return True
 
+    def data_updated_since(self, since) -> bool:
+        """ True if the car data was updated at or after `since` (aware datetime). Without a
+            data_last_update_time sensor, or when its value can not be parsed, there is nothing to
+            wait for, so it counts as updated. """
+        if self.car_data.data_last_update_time:
+            try:
+                last_update = self.ADapi.convert_utc(self.ADapi.get_state(self.car_data.data_last_update_time,
+                    namespace = self.namespace)
+                )
+                return last_update >= since
+            except (ValueError, TypeError) as ve:
+                self.ADapi.log(
+                    f"{self.carName} could not read {self.car_data.data_last_update_time}: {ve}.",
+                    level = 'DEBUG'
+                )
+        return True
+
+    def refresh_for_link(self) -> None:
+        """ Asks the car for new data before it is linked to or ruled out for a charger. """
+        self.forceAPIupdate()
+
     def dontStopMeNow(self) -> bool:
         """ Returns true if charger should not or can not be stopped.
         """
@@ -611,6 +632,27 @@ class Tesla_car(Car):
         else:
             self.ADapi.log(f"State of car is {state} not equal to charger: {charger.getChargingState()} after grace period. Need to unlink") ###
             Registry.unlink(self)
+
+    def refresh_for_link(self) -> None:
+        """ Wakes a sleeping car that is not charging (unless wake_when_stale is false) and
+            presses force data update, so the charger link rests on data from now. """
+        if not self._polling_of_data():
+            return
+        charging_state = self.ADapi.get_state(self.car_data.charger_sensor,
+            namespace = self.namespace,
+            attribute = 'charging_state'
+        )
+        asleep = self.asleep()
+        woken = False
+        if charging_state != 'Charging' and asleep and self.wake_when_stale:
+            self.ADapi.call_service('tesla_custom/api',
+                namespace = self.namespace,
+                command = 'WAKE_UP',
+                parameters = { 'path_vars': {'vehicle_id': self.vehicle_id}, 'wake_if_asleep' : True}
+            )
+            woken = True
+        self.ADapi.log(f"{self.carName}: refresh for link, state {charging_state}, asleep {asleep}, wake sent {woken} ###")
+        self.forceAPIupdate()
 
     def wakeMeUp(self) -> None:
         """ Function to wake up connected cars.

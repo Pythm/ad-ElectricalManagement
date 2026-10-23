@@ -162,6 +162,7 @@ Read the user's block before changing anything, and report:
 - A charge stopped in the Tesla app during planned charge time is started again within a minute.
 - The 60 s start loop (also the wake-up for Teslas) has no `unavailable` filter on purpose: the repeated command wakes the car.
 - `unlink_grace_minutes` (Tesla default 12) before a Tesla is unlinked from an external charger.
+- With two or more cars, a car is linked to the Easee (`awaiting_start`) only on data newer than the cable event: sleeping cars that are not charging are woken (`wake_when_stale: false` stops the WAKE_UP) and force-updated, checked every 30 s for up to 4 min, one round per 10 min. Two cars both reporting `NoPower` on fresh data means no link (Tesla API control through the car's own link still works). Do not link on cached data again: a sleeping Tesla's stale `NoPower` linked the wrong car for 4 hours.
 - The 00:03 price refresh does not recalculate heater save/spend periods (they were found at about 13:00).
 - `wake_when_stale: false` turns off the WAKE_UP for data older than 12 min; the data update press is still sent.
 - Table mode: overconsumption and an open window use the LOWEST of the save and vacation temperature.
