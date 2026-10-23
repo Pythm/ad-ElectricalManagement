@@ -3,6 +3,8 @@
 
 > 🤖 **Set up with an AI assistant:** the [LLM guide](https://github.com/Pythm/Pythm_AppdaemonApps/blob/master/LLM_GUIDE.md) helps an AI assistant find your own entity ids in Home Assistant and write the configuration.
 
+> 🤖 **Notes for the assistant:** [LLM.md](LLM.md) has the config schema, the questions to ask and the config check for this app.
+
 The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
 - Automating charging times for electric vehicles (EVs), so they charge when electricity rates are lower.
