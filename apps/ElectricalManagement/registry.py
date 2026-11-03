@@ -4,51 +4,41 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 class Registry:
-    """ Process-wide lookup of Car and Charger instances by id.
+    """ Lookup of the Car and Charger instances of one ElectricalUsage app, by id.
 
-        The dicts are class attributes, so they survive an AppDaemon app reload. ElectricalUsage
-        therefore calls :meth:`clear` at the top of ``initialize`` so stale objects from the previous
-        run are never returned.
+        ElectricalUsage.initialize creates a new Registry, so a reload starts empty and a second
+        app instance has its own. Cars, chargers and guests reach it through their Scheduler
+        (``charging_scheduler.registry``). The link methods below only touch the car and charger
+        they are given, so they stay class methods.
     """
-    _cars: Dict[str, "Car"] = {}
-    _chargers: Dict[str, "Charger"] = {}
 
+    def __init__(self) -> None:
+        self._cars: Dict[str, "Car"] = {}
+        self._chargers: Dict[str, "Charger"] = {}
 
-    @classmethod
-    def register_car(cls, car: "Car") -> None:
-        """Store a Car instance in the global registry."""
-        cls._cars[car.vehicle_id] = car
+    def register_car(self, car: "Car") -> None:
+        """Store a Car instance in this registry."""
+        self._cars[car.vehicle_id] = car
 
-    @classmethod
-    def register_charger(cls, charger: "Charger") -> None:
-        """Store a Charger instance in the global registry."""
-        cls._chargers[charger.charger_id] = charger
+    def register_charger(self, charger: "Charger") -> None:
+        """Store a Charger instance in this registry."""
+        self._chargers[charger.charger_id] = charger
 
-    @classmethod
-    def unregister_car(cls, vehicle_id: str) -> Optional["Car"]:
+    def unregister_car(self, vehicle_id: str) -> Optional["Car"]:
         """Remove and return the Car with the given id, or ``None`` if not registered."""
-        return cls._cars.pop(vehicle_id, None)
+        return self._cars.pop(vehicle_id, None)
 
-    @classmethod
-    def unregister_charger(cls, charger_id: str) -> Optional["Charger"]:
+    def unregister_charger(self, charger_id: str) -> Optional["Charger"]:
         """Remove and return the Charger with the given id, or ``None`` if not registered."""
-        return cls._chargers.pop(charger_id, None)
+        return self._chargers.pop(charger_id, None)
 
-    @classmethod
-    def clear(cls) -> None:
-        """Forget every registered car and charger (used on app (re)initialisation)."""
-        cls._cars.clear()
-        cls._chargers.clear()
-
-    @classmethod
-    def get_car(cls, vehicle_id: str) -> Optional["Car"]:
+    def get_car(self, vehicle_id: str) -> Optional["Car"]:
         """Return the Car instance for the given ID, or ``None``."""
-        return cls._cars.get(vehicle_id)
+        return self._cars.get(vehicle_id)
 
-    @classmethod
-    def get_charger(cls, charger_id: str) -> Optional["Charger"]:
+    def get_charger(self, charger_id: str) -> Optional["Charger"]:
         """Return the Charger instance for the given ID, or ``None``."""
-        return cls._chargers.get(charger_id)
+        return self._chargers.get(charger_id)
 
     @classmethod
     def set_onboard_link(cls, car: "Car", charger: "Charger") -> None:

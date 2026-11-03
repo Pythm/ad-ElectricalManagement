@@ -16,7 +16,7 @@ One app per home (`module: electricalManagement`, `class: ElectricalUsage`). It 
 - **Cars and chargers:** plans charging in the cheapest hours from ElectricalPriceCalc and starts, stops and sets the amps of Tesla (Tesla custom integration), Easee, Audi (untested on a real car) and generic cars.
 - **Hourly kWh cap:** keeps the hour under `max_kwh_goal`. It lowers charger amps first, then reduces heaters and switches, and with `options: [pause_charging]` it stops charging.
 - **Heaters and switches:** save periods before a price drop and spend periods before a rise. `climate_commander:` entries get a power state that the ClimateCommander app turns into a setpoint. Deprecated `climate:` entries get a setpoint from this app. `heater_switches:` are switched on and off.
-- **Fire alarm:** `MODE_CHANGE` with mode `fire` stops charging and turns off heaters and switches.
+- **Fire alarm:** `MODE_CHANGE` with mode `fire` stops charging and turns off heaters and switches. A car that is not home gets no command.
 - **Learning:** idle consumption, the top 3 hours, battery size and heater consumption after save periods are stored in a JSON file (`json_path`, default `<config_dir>/persistent/electricity/electricalmanagement.json`; it is a file path, not a folder).
 
 Needs [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) (required) and [ad-Weather](https://github.com/Pythm/ad-Weather) (`WEATHER_CHANGE` gives the outdoor temperature; without it the last stored value is used, 10 at first start).
@@ -59,8 +59,8 @@ The top-level keys are validated by `ElectricalManagementConfig` in `pydantic_mo
 | `notify_app` | str | none | App with `send_notification(...)`, normally `notify_mobiles`. Without it: HA `notify/<receiver>` services. |
 | `notify_receiver` | str or list | `[]` | Person labels (with `notify_app`) or notify service names (without). |
 | `home_name` | str | `home` | Label in notifications only. The car location is always compared with the zone `home`. |
-| `json_path` | str | see above | Full path of the JSON file. |
-| `power_consumption` | entity | none | House power in W. Without it AND the next key: no kWh cap, the queue is checked every 10 min. |
+| `json_path` | str | see above | Full path of the JSON file. Missing folders are created. A second instance of the app needs its own file. |
+| `power_consumption` | entity | none | House power in W. Without this key or the next key: no kWh cap, the queue is checked every 10 min. Both are needed for the cap. |
 | `accumulated_consumption_current_hour` | entity | none | kWh this hour, resets to 0 every hour. |
 | `power_production`, `accumulated_production_current_hour` | entity | none | Solar (untested with real data). |
 | `max_kwh_goal` | float | 15 | Hourly cap in kWh. The cap in use is stored in the JSON and rises by 5 when the average of the top 3 hours exceeds it. |
@@ -68,7 +68,7 @@ The top-level keys are validated by `ElectricalManagementConfig` in `pydantic_mo
 | `options` | list | `[]` | `notify_overconsumption`, `notify_overconsumption_also_when_away`, `pause_charging`. Others: WARNING. |
 | `automate` | bool or entity | `true` | Default `automate` for every heater entry. |
 | `vacation` | entity | `input_boolean.vacation` if it exists | Main vacation switch. `away_state` is an older name; if both are set, `away_state` wins. |
-| `infotext` | entity | none | `input_text` that shows the planned charge time. |
+| `infotext` | entity | none | `input_text` that shows the plan: `Car A, Car B 01:00-04:00; Car C waiting for prices; Charge below 0.8: Car D`, or `No planned charging` with no car in the queue. Cut with `…` at the helper's `max` (a new helper holds 100, tell the user to raise it to 255 with several cars). Notifications to `notify_receiver` do not need it. |
 | `startBeforePrice`, `stopAtPriceIncrease` | float | 0.01, 0.3 | Charging window margins. |
 | `tesla`, `audi`, `cars`, `easee`, `climate`, `climate_commander`, `heater_switches` | list of dicts | `[]` | See below. |
 
@@ -76,12 +76,12 @@ The top-level keys are validated by `ElectricalManagementConfig` in `pydantic_mo
 
 - `tesla`: `car` (alias `charger`) is the name in the Tesla entity ids. Without it the name is taken from `charger_sensor`. Entities are found as `<domain>.<car><suffix>`, and a key in the entry overrides that: `charger_sensor` (binary_sensor `_charger`), `charge_limit` (number `_charge_limit`), `battery_sensor` (`_battery`), `asleep_sensor`, `online_sensor` (its `id` attribute is the vehicle id), `location_tracker`, `destination_location_tracker`, `arrival_time`, `software_update`, `force_data_update`, `polling_switch`, `data_last_update_time`. The charger part: `charger_switch` (switch `_charger`), `charging_amps` (number `_charging_amps`), `charger_power`, `session_energy` (`_energy_added`). Also `wake_when_stale` (true) and `unlink_grace_minutes` (12, 0 = unlink at once).
 - `audi` (untested, say so): `car` or `plug_state` (binary_sensor `_plug_state`), `charging_state` (sensor), `charging_power` (kW, alias of `charger_power`), `charge_limit` (number `_global_charge_target`), `battery_sensor` (`_state_of_charge`), `location_tracker` (`_position`, its `vin` attribute is the id), `data_last_update_time`, `device_id` (HA device id; without it a WARNING and the VIN is used), `verify_minutes` (20), `max_command_retries` (2), `charge_power_kW`.
-- `cars` (generic): `carName` is required (WARNING and skipped without it), the same sensor keys as Tesla (found as `<domain>.<carName><suffix>`), plus `maxChargerAmpere` (32), `volts` (220), `phases` (1), `min_ampere` (6), `idle_current`, `guest`. Without `location_tracker` the car always counts as home.
+- `cars` (generic): `carName` is required (WARNING and skipped without it), the same sensor keys as Tesla (found as `<domain>.<carName><suffix>`), plus `maxChargerAmpere` (32), `volts` (220), `phases` (1), `min_ampere` (6), `idle_current`, `guest`. `guest` here has no disconnect timer as on the Easee, so that session ends only when the switch is turned off. Without `location_tracker` the car always counts as home.
 - Every car: `battery_size` (100, learned; a configured value replaces the learned one at every start), `pref_charge_limit` (90), `charge_below_price` (0 = off, else charge whenever the price is below it), `priority` (3; 1 and 2 finish charging after the price rises), `finishByHour` (7, an integer or an `input_number`), `charge_now` and `charge_only_on_solar` (false or an `input_boolean`), `namespace`. `departure` is read but not implemented: do not add it.
 
 ### `easee`
 
-`charger` (the name in `sensor.<charger>_status`; without it, derived from `charger_status`). `status` or `charger_status` is the status sensor (= `charger_sensor`), `current` = `charging_amps`. Found automatically if not given: `_status`, `_reason_for_no_current`, `_current`, `_power`, `_energy_added`, `_voltage`, `_max_charger_limit`, `_idle_current` (keys `reason_for_no_current`, `charger_power`, `session_energy`, `voltage`, `max_charger_limit`, `idle_current`). Optional `guest` (`input_boolean`), `guest_remove_after_minutes` (12), `namespace`. `guest` is read only the first time the charger is saved in the JSON (see the owner question in the report).
+`charger` (the name in `sensor.<charger>_status`; without it, derived from `charger_status`). `status` or `charger_status` is the status sensor (= `charger_sensor`), `current` = `charging_amps`. Found automatically if not given: `_status`, `_reason_for_no_current`, `_current`, `_power`, `_energy_added`, `_voltage`, `_max_charger_limit`, `_idle_current` (keys `reason_for_no_current`, `charger_power`, `session_energy`, `voltage`, `max_charger_limit`, `idle_current`). Optional `guest` (`input_boolean`), `guest_remove_after_minutes` (12), `namespace`. `guest` is read only the first time the charger is saved in the JSON (see Saved values below).
 
 ### Heater entries (`climate_commander`, `heater_switches`, deprecated `climate`)
 
@@ -105,7 +105,9 @@ Identity: `climate_commander` needs `app` (the CC app name; `climate`, alias `he
 
 `climate` only (deprecated, do not write in new configs): `indoor_sensor_temp`, `target_indoor_input`, `target_indoor_temp` (23), `target_heater_input`, `target_heater_temp` (23), `window_temp`, `window_offset` (-3), `save_temp_offset`, `save_temp`, `vacation_temp`, `rain_level` (3), `anemometer_speed` (40), `getting_cold` (18), `windowsensors`, `daytime_savings`, `temperatures`. ClimateCommander accepts the same keys.
 
-Saved values: for heater and car entries, a key in the YAML replaces the saved value at the next start, but removing a key keeps the saved value (also `vacation`, and `vacation_keep_off` once set through `options`). To turn something off, set it explicitly (for example `notify_when_finished: false`). Top-level defaults (`automate`, `vacation`, `notify_receiver` as `recipient`) are copied into a heater entry only when it is first saved. A later change at the top level does not reach it unless the entry sets the key itself.
+Saved values: for heater and car entries, a key in the YAML replaces the saved value at the next start, but removing a key keeps the saved value (also `vacation`, and `vacation_keep_off` once set through `options`). To turn something off, set it explicitly (for example `notify_when_finished: false`). Top-level defaults (`automate`, `vacation`, `notify_receiver` as `recipient`) are copied into a heater entry only when it is first saved. A later change at the top level does not reach it unless the entry sets the key itself. A value of the wrong type for a saved key is ignored with a WARNING, and the saved value stays.
+
+Tesla and Easee chargers: `guest`, `min_ampere`, `maxChargerAmpere`, `volts` and `phases` are read only when the charger is first saved, and a later YAML value has no effect. This is on purpose (the Tesla integration can report wrong values) and fits identical chargers. To change one, the user stops the app and deletes that charger's entry under `charger` in the JSON (follow the rule on editing the JSON at the end of this file).
 
 ## Which entities fit each key
 
@@ -161,8 +163,12 @@ Read the user's block before changing anything, and report:
 - Easee `disconnected` is reported as `awaiting_start` while a car is linked. Cars report wrong data when asleep, and the owner avoids waking them.
 - A charge stopped in the Tesla app during planned charge time is started again within a minute.
 - The 60 s start loop (also the wake-up for Teslas) has no `unavailable` filter on purpose: the repeated command wakes the car.
-- `unlink_grace_minutes` (Tesla default 12) before a Tesla is unlinked from an external charger.
+- `unlink_grace_minutes` (Tesla default 12) before a Tesla is unlinked from an external charger. Easee `ready_to_charge` counts as equal to a car reporting `Stopped` or `NoPower`, so no grace timer starts then; a new link still needs `awaiting_start` and `NoPower`.
+- A car that is not home gets no start, stop, ampere, charge limit or wake-up command, also during a fire alarm: it may be fast charging somewhere else. A Tesla's or Audi's own charger is the car, so this covers it; the Easee can always be stopped. During a fire alarm a location that is `unavailable` or `unknown` counts as not home for the stop (WARNING).
+- During a fire alarm each charger is checked on its own state, not the linked car's. The Easee is also paused in `ready_to_charge`, because that is how it starts charging.
 - With two or more cars, a car is linked to the Easee (`awaiting_start`) only on data newer than the cable event: sleeping cars that are not charging are woken (`wake_when_stale: false` stops the WAKE_UP) and force-updated, checked every 30 s for up to 4 min, one round per 10 min. Two cars both reporting `NoPower` on fresh data means no link (Tesla API control through the car's own link still works). Do not link on cached data again: a sleeping Tesla's stale `NoPower` linked the wrong car for 4 hours.
+- Between 06:00 and 15:00 without tomorrow's prices (the price app gives no window then), a car that already has a window keeps it, a car that is charging and not finished is not stopped for the missing window, and a car plugged in during that time gets its window when the prices arrive. Between 09:00 and 14:00 a low price is charging time until then.
+- A notification about the charge plan goes out only for a new or changed plan. A car that finishes, `waiting for prices` and `No planned charging` only update `infotext`.
 - The 00:03 price refresh does not recalculate heater save/spend periods (they were found at about 13:00).
 - `wake_when_stale: false` turns off the WAKE_UP for data older than 12 min; the data update press is still sent.
 - Table mode: overconsumption and an open window use the LOWEST of the save and vacation temperature.
@@ -209,6 +215,10 @@ Read the user's block before changing anything, and report:
 | `Avg consumption during one hour is now ... New max kWh ...` | `max_kwh_goal` too low for the home, or `buffer` too small. |
 | `<car>: no 'id' attribute on <online_sensor> ...` (ERROR) | Tesla integration not loaded, or a wrong `online_sensor`. Reload after it runs. |
 | `Easee <charger> still ready_to_charge after ...` | Car asleep or stopped in the car app. |
+| `<charger> reports charging during a fire alarm, but the car is not home. No stop sent.` (WARNING) | The car is charging somewhere else, or its location is `unavailable` / `unknown`. |
+| `notify_app '<name>' was not found ...` (ERROR) | Wrong name, the notify app failed, or no `dependencies` on it. |
+| `<charger>: no 'id' attribute on <sensor> ...` (ERROR) | Easee integration not loaded, or a wrong status sensor. Reload after it runs. |
+| `Skipping tesla / audi / easee entry ...` (WARNING) | The entry has no name and no sensor to take the name from. |
 | `Could not automatically find <key>: ...` (INFO) | Entity not found by name. Add the key with the id from the index. |
 | `Persistence file ... was moved to ... corrupt ...` (ERROR) | Unreadable JSON. The app starts with empty learned data. |
 

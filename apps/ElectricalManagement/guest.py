@@ -16,7 +16,7 @@ from typing import Optional
 from electrical_cars import Car
 from pydantic_models import CarData
 from registry import Registry
-from utils import cancel_timer_handler
+from utils import cancel_timer_handler, cancel_listen_handler
 
 DEFAULT_GUEST_KWH = 5.0
 # Minutes the Easee must stay 'disconnected' before the guest session is ended (config
@@ -77,6 +77,9 @@ class GuestManager:
     def switch_changed(self, entity, attribute, old, new, kwargs) -> None:
         """ listen_state callback for the guest input_boolean. """
 
+        if new not in ('on', 'off'):
+            # Unavailable helper: the session goes on and kWhRemaining() must not overwrite the guest's kWh.
+            return
         self.switch_is_on = new == 'on'
         self.charger.guestCharging = self.switch_is_on
 
@@ -105,7 +108,7 @@ class GuestManager:
             self.ADapi.log(f"{self.charger.charger}: guest {self.guest.carName} already exists ({reason}). Nothing to do. ###", level = 'DEBUG')
             return self.guest
 
-        stale = Registry.get_car(self.guest_id)
+        stale = self.charging_scheduler.registry.get_car(self.guest_id)
         if stale is not None:
             # Can only happen if a previous manager lost track of its car. Clean it out first so
             # the Registry and self.cars never hold two objects for the same id.
@@ -131,6 +134,7 @@ class GuestManager:
         self.manager.add_car(guest)
         # 1:1 link: a car that was linked to this charger is detached cleanly by set_link.
         Registry.set_link(guest, self.charger)
+        self.charger._listen_for_car_max_ampere()
         self.ADapi.log(f"{self.charger.charger}: guest {guest.carName} created and linked ({reason}). ###", level = 'DEBUG')
 
         if notify:
@@ -282,6 +286,8 @@ class GuestManager:
 
         # 5. Unlink (only clears the charger side if it still points at the guest).
         Registry.unlink(guest)
+        cancel_listen_handler(ADapi = self.ADapi, handler = charger.reason_for_no_current_handler, name = "reason for no current")
+        charger.reason_for_no_current_handler = None
 
         # 6. Switch off. Not resent when HA already reports off (owner switched it off).
         self.charger.guestCharging = False

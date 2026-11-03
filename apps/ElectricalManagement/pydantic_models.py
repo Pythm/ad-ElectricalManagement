@@ -246,6 +246,7 @@ class ChargingQueueItem(BaseModel):
     price: float | None = None
     informedStart: datetime | None = None
     informedStop: datetime | None = None
+    informedBelow: float | None = None
 
     def to_dict(self) -> dict:
         return self.model_dump(
@@ -323,6 +324,7 @@ def dump_persistence(path: str, data: PersistenceData) -> None:
     """Write the PersistenceData back to JSON atomically (tmp file + os.replace)."""
     file_path = _json_path(path)
     tmp_path = file_path.with_name(file_path.name + '.tmp')
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(tmp_path, 'w') as f:
         f.write(data.model_dump_json(exclude_none=True, by_alias=True, indent=4))
     os.replace(tmp_path, file_path)

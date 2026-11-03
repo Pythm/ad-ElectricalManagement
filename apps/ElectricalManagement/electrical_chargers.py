@@ -3,8 +3,8 @@ from __future__ import annotations
 import math
 from typing import Iterable, Optional
 
-from electrical_cars import Car, UNAVAIL
-from utils import cancel_timer_handler, cancel_listen_handler
+from electrical_cars import Car
+from utils import UNAVAIL, cancel_timer_handler, cancel_listen_handler, to_float_or_none
 
 from registry import Registry
 from guest import GuestManager, DEFAULT_GUEST_REMOVE_AFTER_MINUTES
@@ -14,6 +14,9 @@ EASEE_READY_RESENDS_AT_60S = 10
 EASEE_READY_BACKOFF_SECONDS = 600
 # Easee: minutes a zero `_current` sample must hold while 'charging' before ampereCharging is set to 0.
 EASEE_ZERO_CURRENT_MINUTES = 3
+# Easee: minimum ampere when locked to 3 phase, and the minimum to go back to when it no longer is.
+EASEE_MIN_AMPERE_3_PHASE = 11
+EASEE_MIN_AMPERE_DEFAULT = 6
 
 class Charger:
 
@@ -48,7 +51,7 @@ class Charger:
         self.reason_for_no_current_handler = None
         self.session_start_charge:float = 0.0
 
-        Registry.register_charger(self)
+        self.charging_scheduler.registry.register_charger(self)
 
         # Switch to allow guest to charge: the GuestManager owns the guest car, the switch listener
         # and the create / tear-down sequence (see guest.py).
@@ -93,10 +96,19 @@ class Charger:
         elif self._find_and_link():
             return True
 
-        if self.connected_vehicle is None:
+        if self.connected_vehicle is None and not self._own_car_linked_elsewhere():
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
                 self._recheck_findCarConnectedToCharger_handler = self.ADapi.run_in(self._recheck_findCarConnectedToCharger, 120)
         return False
+
+    def _own_car_linked_elsewhere(self) -> bool:
+        """ True for a car's own charger while that car is linked to another charger: there is no car
+            to look for until that link ends (Car._unlink_and_try_onboard). """
+
+        return any(
+            car.onboard_charger is self and car.connected_charger not in (None, self)
+            for car in self._cars
+        )
 
     def _link_evidence_ok(self, car_state) -> bool:
         """ Whether a car state is evidence enough to link the car to this charger in
@@ -146,6 +158,8 @@ class Charger:
 
     def _link_car(self, car:Car) -> None:
         self._cancel_link_check()
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
+            self._recheck_findCarConnectedToCharger_handler = None
         Registry.set_link(car, self)
         self.kWhRemaining()
         self.connected_vehicle.findNewChargeTime()
@@ -197,18 +211,19 @@ class Charger:
             return self._find_and_link()
 
         now = self.ADapi.datetime(aware = True)
+        contenders = self._link_contenders()
         if (
             self._link_cycle_start is None
             or (now - self._link_cycle_start).total_seconds() > self.LINK_CYCLE_COOLDOWN_MINUTES * 60
         ):
             self._link_cycle_start = now
             self._link_check_attempts = 0
-            contenders = self._link_contenders()
             for car in contenders:
+                self.ADapi.log(f"{self.charger}: refreshing {car.carName} for link, asleep {car.asleep()}, linked to {getattr(car.connected_charger, 'charger', None)}") ###
                 car.refresh_for_link()
 
         waiting = [
-            c for c in self._link_contenders()
+            c for c in contenders
             if not c.data_updated_since(self._link_cycle_start)
         ]
         if waiting and self._link_check_attempts < self.LINK_CHECK_MAX:
@@ -246,7 +261,9 @@ class Charger:
         self.findCarConnectedToCharger()
 
     def _recheck_findCarConnectedToCharger(self, kwargs) -> None:
-        self.findCarConnectedToCharger()
+        self.ADapi.log(f"{self.charger}: recheck, linked {getattr(self.connected_vehicle, 'carName', None)}, status {self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) if self.charger_data.charger_sensor else None}, cycle start {self._link_cycle_start}") ###
+        if self.connected_vehicle is None:
+            self.findCarConnectedToCharger()
 
     def kWhRemaining(self) -> float:
         """ Calculates kWh remaining to charge from car battery sensor/size and charge limit.
@@ -264,16 +281,19 @@ class Charger:
                 return kWhRemain
 
             if self.charger_data.session_energy:
+                session = to_float_or_none(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace))
+                if session is None:
+                    # Unavailable session sensor: keep the current estimate.
+                    return self.connected_vehicle.car_data.kWh_remain_to_charge
+
                 if self.guestCharging:
-                    kWh_remain = self.connected_vehicle.car_data.kWh_remain_to_charge - (float(self.ADapi.get_state(self.charger_data.session_energy, namespace = self.namespace)))
+                    kWh_remain = self.connected_vehicle.car_data.kWh_remain_to_charge - session
                     if kWh_remain > 2:
                         return kWh_remain
                     else:
                         return 10
 
-                self.connected_vehicle.car_data.kWh_remain_to_charge = self.connected_vehicle.car_data.max_kWh_charged - float(self.ADapi.get_state(self.charger_data.session_energy,
-                    namespace = self.namespace)
-                )
+                self.connected_vehicle.car_data.kWh_remain_to_charge = self.connected_vehicle.car_data.max_kWh_charged - session
                 return self.connected_vehicle.car_data.kWh_remain_to_charge
         
         return -1
@@ -383,7 +403,8 @@ class Charger:
                 if connected_charger is not onboard_charger:
                     onboard_charger.setChargingAmps(charging_amp_set = onboard_charger.getmaxChargingAmps())
 
-        self._apply_charging_amps(charging_amp_set)
+        if not self._car_is_away():
+            self._apply_charging_amps(charging_amp_set)
         return charging_amp_set
 
     def _apply_charging_amps(self, amps:int) -> None:
@@ -413,11 +434,12 @@ class Charger:
         ):
             if self.getChargingState() != 'NoPower':
                 # Listen for changes made from other connected chargers
-                self.noPowerDetected_handler = self.ADapi.listen_state(self.noPowerDetected, self.charger_data.charger_sensor,
-                    namespace = self.namespace,
-                    attribute = 'charging_state',
-                    new = 'NoPower'
-                )
+                if self.charger_data.charger_sensor is not None:
+                    self.noPowerDetected_handler = self.ADapi.listen_state(self.noPowerDetected, self.charger_data.charger_sensor,
+                        namespace = self.namespace,
+                        attribute = 'charging_state',
+                        new = 'NoPower'
+                    )
 
                 self.connected_vehicle.findNewChargeTime()
 
@@ -435,6 +457,10 @@ class Charger:
 
     def ChargingStarted(self, entity, attribute, old, new, kwargs) -> None:
         """ Charger started charging. Check if controlling car and if chargetime has been set up """
+
+        if self.doNotStartMe:
+            self.stopCharging(force_stop = True)
+            return
 
         if self.connected_vehicle is None:
             if not self.findCarConnectedToCharger():
@@ -469,6 +495,47 @@ class Charger:
     # Child classes that must send the stop command even when the charger does not report
     # 'Charging' or 'Starting' (Tesla, Easee, Audi) set this to True.
     SEND_STOP_WHEN_NOT_CHARGING:bool = False
+    # Own states in which a fire alarm stops this charger. Easee adds 'ready_to_charge'.
+    FIRE_STOP_STATES:tuple = ('Charging', 'Starting')
+
+    def _car_is_home(self) -> bool:
+        """ The commands of a car's own charger (Tesla, Audi, generic) go to the car itself. A car that
+            is not home may be fast charging somewhere else and never gets a stop. Easee overrides this. """
+
+        return self._cars[0].getLocation() == 'home'
+
+    def _car_is_away(self) -> bool:
+        """ Same reason as _car_is_home, for start, ampere and the repeats of a stop. An unavailable
+            location does not count as away here, so the start loop is not filtered on it. """
+
+        return self._cars[0].isAway()
+
+    def stop_on_fire(self) -> None:
+        """ Fire alarm: nothing may start from now on, and the charger is stopped when its OWN state
+            says it is charging. The linked car does not decide: there may be none, and its cloud
+            data can be many minutes late. """
+
+        self.doNotStartMe = True
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
+            self.checkCharging_handler = None
+        if self.getChargingState() not in self.FIRE_STOP_STATES:
+            return
+        if not self._car_is_home():
+            self.ADapi.log(f"{self.charger} reports charging during a fire alarm, but the car is not home. No stop sent.", level = 'WARNING')
+            return
+        self.stopCharging(force_stop = True)
+
+    def _stop_is_blocked(self, force_stop:bool) -> bool:
+        """ True when a stop must not be sent. During a fire force_stop only leaves the rule that a car
+            that is not home gets no command: the charger's own state decides, not the car's. """
+
+        if not self._car_is_home():
+            return True
+        if force_stop and self.doNotStartMe:
+            return False
+        if self.connected_vehicle is not None:
+            return not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop)
+        return False
 
     def startCharging(self) -> None:
         """ Starts charger. Does the bookkeeping and sends the command with _send_start_command.
@@ -477,7 +544,7 @@ class Charger:
 
         if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
             self.checkCharging_handler = None
-        if self.doNotStartMe:
+        if self.doNotStartMe or self._car_is_away():
             return
         self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
 
@@ -488,9 +555,8 @@ class Charger:
         """ Stops charger. Does the bookkeeping and sends the command with _send_stop_command.
             Child classes override _send_stop_command, not this method. """
 
-        if self.connected_vehicle is not None:
-            if not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop):
-                return
+        if self._stop_is_blocked(force_stop = force_stop):
+            return
 
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         is_charging = self.getChargingState() in ('Charging', 'Starting')
@@ -519,6 +585,8 @@ class Charger:
         """ Repeats the start command every 60 seconds until charging is reported.
             The repeat also wakes up cars that sleep and update slowly. """
 
+        if self.doNotStartMe or self._car_is_away():
+            return
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         state = self.getChargingState()
         # Deliberately no UNAVAIL filter here: the repeated command is also what wakes a sleeping car
@@ -528,11 +596,15 @@ class Charger:
             self._send_start_command()
 
     def _check_that_charging_stopped(self, kwargs) -> None:
-        """ Repeats the stop command every 60 seconds while the charger reports 'Charging'. """
+        """ Repeats the stop command every 60 seconds while the charger reports 'Charging'.
+            During a fire it does so with or without a linked car, also for a car that must not be
+            stopped otherwise. """
 
-        if self.connected_vehicle is not None:
+        if self.connected_vehicle is not None or self.doNotStartMe:
             cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
-            if self.connected_vehicle.dontStopMeNow():
+            if self._car_is_away():
+                return
+            if not self.doNotStartMe and self.connected_vehicle.dontStopMeNow():
                 return
             if self.getChargingState() == 'Charging':
                 self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_stopped, 60)
@@ -603,9 +675,10 @@ class Charger:
                 if self.getChargingState() in ('Complete', 'Disconnected'):
                     self.connected_vehicle._handleChargeCompletion()
                     if self.charger_data.session_energy and self.connected_vehicle.pct_start_charge < 90:
-                        session = float(self.ADapi.get_state(self.charger_data.session_energy, namespace=self.namespace))
-                        self._updateMaxkWhCharged(session)
-                        self._calculateBatterySize(session)
+                        session = to_float_or_none(self.ADapi.get_state(self.charger_data.session_energy, namespace=self.namespace))
+                        if session is not None:
+                            self._updateMaxkWhCharged(session)
+                            self._calculateBatterySize(session)
 
                     self.connected_vehicle.pct_start_charge = 100
                     self.session_start_charge = 0
@@ -649,6 +722,8 @@ class Charger:
     def notify_charge_now_or_kWhRemain(self, carName):
         """ Sends notification to ask to charge car Now or input kWh remaining """
 
+        if self.notify_app is None:
+            return
         data = {
             'tag' : carName,
             'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {carName} Now' },
@@ -665,28 +740,9 @@ class Charger:
                     data = data
                 )
 
-    # ---- guest: thin delegates to the GuestManager (guest.py) ---------------------------- #
-
-    def guestChargingListen(self, entity, attribute, old, new, kwargs) -> None:
-        """ Guest switch change. The GuestManager registers its own listener; this stays for
-            callers that fire the switch change directly. """
-
-        if self.guest_manager is not None:
-            self.guest_manager.switch_changed(entity, attribute, old, new, kwargs)
-
-    def _addGuestCar(self):
-        """ Creates the guest car (idempotent). """
-
-        if self.guest_manager is not None:
-            self.guest_manager.begin_guest(reason = 'guest car requested', notify = False)
-
-    def setGuestKWh(self, kWh:float) -> None:
-        """ Sets kWh to charge for the guest car and remembers it for the next guest. """
-
-        if self.guest_manager is None:
-            self.ADapi.log(f"{self.charger}: kWh {kWh} received for a guest car but the charger has no guest switch. Ignored.", level = 'INFO')
-            return
-        self.guest_manager.set_kWh(kWh)
+    def _listen_for_car_max_ampere(self) -> None:
+        """ Learns the max ampere a car without an onboard charger accepts. Easee overrides this. """
+        pass
 
 class Tesla_charger(Charger):
     """ Tesla
@@ -702,10 +758,12 @@ class Tesla_charger(Charger):
         recipients,
     ):
 
-        charger_id = api.ADapi.get_state(Car.car_data.online_sensor,
-            namespace = Car.namespace,
-            attribute = 'id'
-        )
+        charger_id = None
+        if Car.car_data.online_sensor is not None:
+            charger_id = api.ADapi.get_state(Car.car_data.online_sensor,
+                namespace = Car.namespace,
+                attribute = 'id'
+            )
         if charger_id is None:
             # Same fallback as Tesla_car.vehicle_id so car and onboard charger stay paired and two
             # Teslas never collide on None in the Registry.
@@ -732,24 +790,27 @@ class Tesla_charger(Charger):
 
         Registry.set_onboard_link(Car, self)
 
-        self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
-            namespace = self.namespace,
-            new = 'on',
-            duration = 10
-        )
-        self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_switch,
-            namespace = self.namespace,
-            new = 'off'
-        )
-        self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_sensor,
-            namespace = self.namespace
-        )
+        if self.charger_data.charger_switch is not None:
+            self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
+                namespace = self.namespace,
+                new = 'on',
+                duration = 10
+            )
+            self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_switch,
+                namespace = self.namespace,
+                new = 'off'
+            )
+        if self.charger_data.charger_sensor is not None:
+            self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_sensor,
+                namespace = self.namespace
+            )
 
-        self.ADapi.listen_state(self.MaxAmpereChanged, self.charger_data.charging_amps,
-            namespace = self.namespace,
-            attribute = 'max',
-            duration = 30
-        )
+        if self.charger_data.charging_amps is not None:
+            self.ADapi.listen_state(self.MaxAmpereChanged, self.charger_data.charging_amps,
+                namespace = self.namespace,
+                attribute = 'max',
+                duration = 30
+            )
         """ End initialization Tesla Charger Class """
 
     def getChargingState(self) -> str:
@@ -774,12 +835,15 @@ class Tesla_charger(Charger):
             )
             return None
         # Set as connected charger if restarted after cable connected.
-        connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
+        # _cars[0] is the car itself: never None, unlike connected_vehicle after an unlink. A car on an
+        # external charger stays there; the grace logic in Tesla_car decides when that link ends.
+        car = self._cars[0]
         if (
             state == 'Stopped' and
-            connected_charger is None
+            car.connected_charger is None
         ):
-            Registry.set_link(self._cars[0], self)
+            self.ADapi.log(f"{self.charger}: linking {car.carName} on Stopped, car link {car.connected_charger}, charger link {getattr(self.connected_vehicle, 'carName', None)}, state {state}") ###
+            Registry.set_link(car, self)
 
         return state
 
@@ -801,21 +865,22 @@ class Tesla_charger(Charger):
             chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
                 namespace = self.namespace))
             )
-            connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
-            if float(new) > chargingAmpere:
-                if (
-                    connected_charger is not self and
-                    connected_charger is not None
-                ):
-                    self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
-
         except (ValueError, TypeError):
-            pass
-        else:
-            # maxChargerAmpere is an int: storing the raw attribute string made the next
-            # 'int > str' comparison in setChargingAmps raise TypeError.
-            if new_max > self.charger_data.maxChargerAmpere:
-                self.charger_data.maxChargerAmpere = new_max
+            return
+
+        # maxChargerAmpere is an int: storing the raw attribute string made the next
+        # 'int > str' comparison in setChargingAmps raise TypeError.
+        # Stored before the ampere is set, so the car follows the new max and not the old one.
+        if new_max > self.charger_data.maxChargerAmpere:
+            self.charger_data.maxChargerAmpere = new_max
+
+        connected_charger = self._cars[0].connected_charger
+        if float(new) > chargingAmpere:
+            if (
+                connected_charger is not self and
+                connected_charger is not None
+            ):
+                self.setChargingAmps(charging_amp_set = self.getmaxChargingAmps())
 
     SEND_STOP_WHEN_NOT_CHARGING = True
 
@@ -844,7 +909,8 @@ class Tesla_charger(Charger):
                 command = 'STOP_CHARGE',
                 parameters = { 'path_vars': {'vehicle_id': self.charger_id}, 'wake_if_asleep': True}
             )
-            await self.connected_vehicle._force_API_update()
+            if self.connected_vehicle is not None:
+                await self.connected_vehicle._force_API_update()
         except Exception as e:
             self.ADapi.log(f"{self.charger} Could not Stop Charging: {e}", level = 'WARNING')
 
@@ -902,12 +968,23 @@ class Easee(Charger):
         guest_remove_after_minutes:int = DEFAULT_GUEST_REMOVE_AFTER_MINUTES,
     ):
 
-        charger_id:str = api.ADapi.get_state(charger_data.charger_sensor,
-            namespace = namespace,
-            attribute = 'id'
-        )
+        charger_id = None
+        if charger_data.charger_sensor is not None:
+            charger_id = api.ADapi.get_state(charger_data.charger_sensor,
+                namespace = namespace,
+                attribute = 'id'
+            )
+        if charger_id is None:
+            api.ADapi.log(
+                f"{charger}: no 'id' attribute on {charger_data.charger_sensor}. Using '{charger}' as charger id. "
+                "Easee commands will fail until the app is reloaded with the integration running.",
+                level = 'ERROR'
+            )
+            charger_id = charger
 
         self._cars:list = cars
+        # Status values already warned about (getChargingState).
+        self._warned_statuses:set = set()
         # Seconds the Easee must report 'disconnected' before _check_if_still_disconnected acts
         # (guest session ended, or a Tesla relinked to its onboard charger). Config only, not persisted.
         self._disconnected_check_seconds:int = max(1, int(guest_remove_after_minutes)) * 60
@@ -923,9 +1000,7 @@ class Easee(Charger):
             recipients = recipients,
         )
 
-        # Minumum ampere if locked to 3 phase
-        if self.charger_data.phases == 3:
-            self.charger_data.min_ampere = 11
+        self._set_min_ampere_from_phases()
 
         self._check_if_still_disconnected_handler = None
 
@@ -937,18 +1012,40 @@ class Easee(Charger):
         self._zero_current_samples:int = 0
         self._zero_current_handler = None
 
-        self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
+        if self.charger_data.charger_sensor is not None:
+            self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
 
         """ End initialization Easee Charger Class """
+
+    FIRE_STOP_STATES = ('Charging', 'Starting', 'ready_to_charge')
+
+    def _car_is_home(self) -> bool:
+        """ The Easee is a charger at home: its commands never reach a car somewhere else. """
+
+        return True
+
+    def _car_is_away(self) -> bool:
+        return False
 
     def _link_evidence_ok(self, car_state) -> bool:
         """ The Easee links a car only on the evidence that was reachable before an unlinked car
             could report its own state: the car says 'NoPower' (cable in, EVSE gives nothing) and
-            compareChargingState confirms the Easee is 'awaiting_start'. 'Charging' / 'Stopped' /
-            'Complete' from a Tesla are not evidence for the Easee: two Teslas on cloud data up to
-            11 min late could otherwise be linked to the wrong charger. """
+            the Easee is 'awaiting_start', the only status that needs fresh data before a link.
+            'Charging' / 'Stopped' / 'Complete' from a Tesla are not evidence for the Easee: two
+            Teslas on cloud data up to 11 min late could otherwise be linked to the wrong charger. """
 
-        return car_state == 'NoPower'
+        return (
+            car_state == 'NoPower'
+            and self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'awaiting_start'
+        )
+
+    def _set_min_ampere_from_phases(self) -> None:
+        """ Minimum ampere if locked to 3 phase, and back to the default when it no longer is. """
+
+        if self.charger_data.phases == 3:
+            self.charger_data.min_ampere = EASEE_MIN_AMPERE_3_PHASE
+        elif self.charger_data.min_ampere == EASEE_MIN_AMPERE_3_PHASE:
+            self.charger_data.min_ampere = EASEE_MIN_AMPERE_DEFAULT
 
     def _link_needs_fresh_data(self) -> bool:
         """ Two Teslas can both report 'NoPower' (one from old data while it sleeps), so a car is
@@ -966,6 +1063,10 @@ class Easee(Charger):
             return car_status == 'Complete'
         elif charger_status == 'awaiting_start':
             return car_status == 'NoPower'
+        elif charger_status == 'ready_to_charge':
+            # The Easee offers power and the car does not draw yet: stopped in the car app, or a car
+            # that reports late. Not a reason to unlink. Linking still needs 'NoPower' (_link_evidence_ok).
+            return car_status in ('Stopped', 'NoPower')
         elif charger_status == 'disconnected':
             return car_status == 'Disconnected'
 
@@ -987,7 +1088,8 @@ class Easee(Charger):
             if self.connected_vehicle is not None:
                 return 'awaiting_start'
             return 'Disconnected'
-        elif not status == 'ready_to_charge':
+        elif not status == 'ready_to_charge' and status not in self._warned_statuses:
+            self._warned_statuses.add(status)
             self.ADapi.log(f"Status: {status} for {self.charger} is not defined", level = 'WARNING')
         return status
 
@@ -998,6 +1100,11 @@ class Easee(Charger):
         if new != 'ready_to_charge':
             # C7: the state changed (or charging started): the ready_to_charge resend counter starts over.
             self._ready_resend_count = 0
+
+        if self.doNotStartMe and new in ('charging', 'ready_to_charge'):
+            # Fire alarm: a command sent just before the alarm, or the Easee itself, started it.
+            self.stopCharging(force_stop = True)
+            return
 
         if old == 'disconnected':
             if self.guest_manager is not None and self.guest_manager.is_guest(self.connected_vehicle):
@@ -1026,6 +1133,7 @@ class Easee(Charger):
 
                 if (
                     self.charging_scheduler.isChargingTime(vehicle_id = self.connected_vehicle.vehicle_id)
+                    or self.charging_scheduler.isWaitingForPrices(vehicle_id = self.connected_vehicle.vehicle_id)
                     or self.idle_current # Preheating
                 ):
                     return
@@ -1084,6 +1192,12 @@ class Easee(Charger):
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
                 if self.connected_vehicle is not guest:
+                    car = self.connected_vehicle
+                    self.ADapi.log(f"{self.charger}: disconnected {minutes} min, {car.carName} state {car.getCarChargerState()}, queued {car.vehicle_id in [item.vehicle_id for item in self.charging_scheduler.chargingQueue]}") ###
+                    # Stopped / Charging: the car was moved to its own charger and keeps its plan.
+                    if car.getCarChargerState() not in ('Stopped', 'Charging'):
+                        car._handleChargeCompletion()
+                        self.charging_scheduler.removeFromCharging(car.vehicle_id)
                     Registry.relink_to_onboard(self)
 
             if guest is not None:
@@ -1111,6 +1225,7 @@ class Easee(Charger):
         if (
             new == 'limited_by_car'
             and self.connected_vehicle is not None
+            and self.connected_vehicle.onboard_charger is None
         ):
             try:
                 chargingAmpere = math.ceil(float(self.ADapi.get_state(self.charger_data.charging_amps,
@@ -1140,9 +1255,7 @@ class Easee(Charger):
         )
         except (ValueError, TypeError):
             self.charger_data.phases = 1
-        # Minimum ampere if locked to 3 phase (same rule as in __init__, applied when learned later).
-        if self.charger_data.phases == 3:
-            self.charger_data.min_ampere = 11
+        self._set_min_ampere_from_phases()
 
     def _apply_charging_amps(self, amps:int) -> None:
         if (
@@ -1160,16 +1273,21 @@ class Easee(Charger):
             if (
                 self.connected_vehicle is not None
                 and self.connected_vehicle.onboard_charger is None
-                and self.charger_data.reason_for_no_current is not None
             ):
-                # Learn the max ampere the car accepts for cars without an onboard charger (guests).
-                cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current")
-                self.reason_for_no_current_handler = self.ADapi.listen_state(self.reasonChange,
-                    self.charger_data.reason_for_no_current,
-                    namespace = self.namespace
-                )
+                self._listen_for_car_max_ampere()
             return True
         return False
+
+    def _listen_for_car_max_ampere(self) -> None:
+        """ Learn the max ampere the car accepts for cars without an onboard charger (guests). """
+
+        if self.charger_data.reason_for_no_current is None:
+            return
+        cancel_listen_handler(ADapi = self.ADapi, handler = self.reason_for_no_current_handler, name = "reason for no current")
+        self.reason_for_no_current_handler = self.ADapi.listen_state(self.reasonChange,
+            self.charger_data.reason_for_no_current,
+            namespace = self.namespace
+        )
 
     SEND_STOP_WHEN_NOT_CHARGING = True
 
@@ -1204,6 +1322,8 @@ class Easee(Charger):
             woken from here. The counter resets when the status changes (statusChange) or when this
             check sees any other state. """
 
+        if self.doNotStartMe:
+            return
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
         state = self.getChargingState()
         if state != 'ready_to_charge':
@@ -1349,18 +1469,20 @@ class Onboard_charger(Charger):
         self.noPowerDetected_handler = None
         Registry.set_onboard_link(Car, self)
 
-        self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
-            namespace = self.namespace,
-            new = 'on',
-            duration = 10
-        )
-        self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_switch,
-            namespace = self.namespace,
-            new = 'off'
-        )
-        self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_sensor,
-            namespace = self.namespace
-        )
+        if self.charger_data.charger_switch is not None:
+            self.ADapi.listen_state(self.ChargingStarted, self.charger_data.charger_switch,
+                namespace = self.namespace,
+                new = 'on',
+                duration = 10
+            )
+            self.ADapi.listen_state(self.ChargingStopped, self.charger_data.charger_switch,
+                namespace = self.namespace,
+                new = 'off'
+            )
+        if self.charger_data.charger_sensor is not None:
+            self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_sensor,
+                namespace = self.namespace
+            )
 
 # --------------------------------------------------------------------------- #
 # Audi Connect charging_state normalisation. ONE table for the whole app.
@@ -1589,17 +1711,21 @@ class Audi_charger(Charger):
         """ Sends start_charger once and verifies after `verify_minutes`. A start that is still being
             verified is not sent again (the queue runner calls this every minute). """
 
-        if self.doNotStartMe:
+        if self.doNotStartMe or self._car_is_away():
             return
         if self._command_pending('start'):
             self.ADapi.log(f"{self.charger} start already sent, waiting for the car to report", level = 'DEBUG')
             return
         self._begin_command('start')
 
+    def stop_on_fire(self) -> None:
+        if self._command_intent == 'start':
+            self._clear_intent()
+        super().stop_on_fire()
+
     def stopCharging(self, force_stop:bool = False) -> None:
-        if self.connected_vehicle is not None:
-            if not self.connected_vehicle.isConnected() or (self.connected_vehicle.dontStopMeNow() and not force_stop):
-                return
+        if self._stop_is_blocked(force_stop = force_stop):
+            return
         if self._command_pending('stop'):
             return
         self._begin_command('stop')
@@ -1622,6 +1748,10 @@ class Audi_charger(Charger):
         self.checkCharging_handler = None
         intent = self._command_intent
         if intent is None:
+            return
+        # A stop keeps being verified and resent during a fire alarm, a start does not.
+        if self._car_is_away() or (intent == 'start' and self.doNotStartMe):
+            self._clear_intent()
             return
         raw = self._raw_charging_state()
         state = self.getChargingState()

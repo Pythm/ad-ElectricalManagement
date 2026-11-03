@@ -15,6 +15,12 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Seque
 if TYPE_CHECKING:  # pragma: no cover
     from pydantic_models import TempConsumption
 
+UNAVAIL = ('unavailable', 'unknown')
+
+# Without tomorrow's prices, ElectricalPriceCalc only returns a price between these times: (None, None, price).
+# Same values as EARLY_RETURN_WINDOW in electricalPriceCalc.py. That app is a separate repository, so change both.
+NO_TOMORROW_PRICES_WINDOW = ("06:00:00", "15:00:00")
+
 
 @dataclass(order=True)
 class WattSlot:

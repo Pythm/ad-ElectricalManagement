@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import bisect
-from datetime import timedelta
 
 from typing import Dict, Tuple
 
 from pydantic_models import TempConsumption
 from utils import (
+    UNAVAIL,
     cancel_timer_handler,
     cancel_listen_handler,
     floor_even,
     price_now_or_inf,
     to_float_or_none,
 )
-
-UNAVAIL = ('unavailable', 'unknown')
 
 class Heater:
     """ Heater
@@ -76,7 +74,6 @@ class Heater:
         self.isOverconsumption:bool = False   # set by the main app only (overconsumption reduce / restore)
         self.window_save:bool = False         # set while a window is open; independent of isOverconsumption
         self.increase_now:bool = False
-        self.last_reduced_state = self.ADapi.datetime(aware = True) - timedelta(minutes=20)
         # True after the finished-appliance logic (On_off_switch.turn_off_appliance) turned the switch off.
         # Checked by heater_setNewValues so the slot runner does not turn it on again before turn_back_on.
         self.turned_off_by_finish:bool = False
@@ -86,7 +83,6 @@ class Heater:
         # Handlers
         self._consumption_stops_register_usage_handler = None
         self.checkConsumption_handler = None
-        self.off_retry_handler = None
         self.off_retry_count = 3
         # Vacation: oneshot listener that turns the switch off once consumption has dropped.
         self._turn_off_after_consumption_handler = None
@@ -1258,7 +1254,7 @@ class ClimateCommanderHeater(Heater):
         self.cc_climate = cc_climate
         self._pushed_state = None
         self._pushed_at = None
-        self._device_id = None
+        self._device = None
         self._missing_logged = False
         super().__init__(
             api = api,
@@ -1293,8 +1289,7 @@ class ClimateCommanderHeater(Heater):
             return 'spend'
         return 'normal'
 
-    def _push(self, state:str) -> None:
-        device = self.device()
+    def _push(self, state:str, device) -> None:
         if device is None:
             if not self._missing_logged:
                 self._missing_logged = True
@@ -1304,21 +1299,23 @@ class ClimateCommanderHeater(Heater):
         device.set_power_state(state, valid_minutes = self.STATE_VALID_MINUTES, source = 'ElectricalManagement')
         self._pushed_state = state
         self._pushed_at = self.ADapi.datetime(aware = True)
-        self._device_id = id(device)
+        self._device = device
 
     def _keepalive(self, **kwargs) -> None:
         """ Re-sends the state when the ClimateCommander app was reloaded or the last push is old. """
 
+        if self.fire_off:
+            return
         device = self.device()
         if device is None:
             return
         now = self.ADapi.datetime(aware = True)
         if (
-            id(device) != self._device_id
+            device is not self._device
             or self._pushed_at is None
             or (now - self._pushed_at).total_seconds() > self.PUSH_REFRESH_SECONDS
         ):
-            self.heater_setNewValues()
+            self._send_state(device)
 
     def heater_getNewPrices(self, kwargs) -> None:
         super().heater_getNewPrices(0)
@@ -1338,11 +1335,13 @@ class ClimateCommanderHeater(Heater):
 
         if self.fire_off:
             return
+        self._send_state(self.device())
+
+    def _send_state(self, device) -> None:
         state = self._wanted_state()
         if state != 'reduce':
-            device = self.device()
             self.isSaveState = state == 'save' or (device is not None and device.in_daytime_saving())
-        self._push(state)
+        self._push(state, device)
 
     def is_on(self) -> bool:
         state = self.ADapi.get_state(self.heater, namespace = self.namespace)
