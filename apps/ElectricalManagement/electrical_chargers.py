@@ -150,7 +150,6 @@ class Charger:
         self.kWhRemaining()
         self.connected_vehicle.findNewChargeTime()
         self._register_battery_soc_for_calculation()
-        self.ADapi.log(f"Connected {car.carName} to {self.charger}") ###
 
     def _find_and_link(self, fresh_since = None, accept_unverified:bool = False) -> bool:
         """ Links the car that matches this charger. With more than one match nothing is linked:
@@ -205,10 +204,6 @@ class Charger:
             self._link_cycle_start = now
             self._link_check_attempts = 0
             contenders = self._link_contenders()
-            self.ADapi.log(
-                f"{self.charger}: refreshing {[(c.carName, c.getCarChargerState()) for c in contenders]} "
-                f"to find the car on the charger (status {self.getChargingState()}) ###"
-            )
             for car in contenders:
                 car.refresh_for_link()
 
@@ -529,7 +524,6 @@ class Charger:
         # Deliberately no UNAVAIL filter here: the repeated command is also what wakes a sleeping car
         # whose integration reports 'unavailable'/'unknown'.
         if not state in ('Charging', 'Complete', 'Disconnected'):
-            self.ADapi.log(f"{self.charger}: resending start command, charger state is {state}") ###
             self.checkCharging_handler = self.ADapi.run_in(self._check_that_charging_started, 60)
             self._send_start_command()
 
@@ -785,7 +779,6 @@ class Tesla_charger(Charger):
             state == 'Stopped' and
             connected_charger is None
         ):
-            self.ADapi.log(f"{self.charger}: relinking {self._cars[0].carName} to its onboard charger on Stopped") ###
             Registry.set_link(self._cars[0], self)
 
         return state
@@ -1066,12 +1059,7 @@ class Easee(Charger):
         elif new == 'completed':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
-                if self._guest_car is not None:
-                    self.ADapi.log(f"{self._guest_car.carName} connected to {self.charger} is complete. Check it disconnects properly") ###
-                    #self.ADapi.call_service('input_boolean/turn_off',
-                    #    entity_id = self.charger_data.guest,
-                    #    namespace = self.namespace,
-                    #)
+                # A completed guest session is ended when the charger disconnects (_check_if_still_disconnected).
         elif new == 'disconnected':
             self._cancel_link_check()
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
@@ -1092,10 +1080,6 @@ class Easee(Charger):
         self._check_if_still_disconnected_handler = None
         guest = self._guest_car
         minutes = self._disconnected_check_seconds // 60
-        if guest is not None:
-            self.ADapi.log(f"{guest.carName} connected to {self.charger} when disconnected.") ###
-        else:
-            self.ADapi.log(f"No guest car connected to {self.charger} when disconnected.") ###
         if self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'disconnected':
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
@@ -1103,7 +1087,6 @@ class Easee(Charger):
                     Registry.relink_to_onboard(self)
 
             if guest is not None:
-                self.ADapi.log(f"{guest.carName} disconnects.") ###
                 self.guest_manager.end_guest(reason = f"{self.charger} disconnected for {minutes} minutes")
         elif self.connected_vehicle is not None: # Check if new car is connected.
             if self.connected_vehicle.getCarChargerState() == 'Disconnected':

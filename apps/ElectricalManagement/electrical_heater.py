@@ -1184,9 +1184,17 @@ class On_off_switch(Heater):
         ):
             self.turn_off_appliance()
 
+        name = self.ADapi.get_state(self.heater, namespace = self.namespace, attribute = 'friendly_name') or str(self.heater)
+        # Custom texts from `notify_title` / `notify_message`; {name} = friendly name, {heater} = entity id.
+        texts = {
+            'message': self.heater_data.notify_message or "Consumption finished",
+            'title': self.heater_data.notify_title or f"{self.heater}",
+        }
+        for key, text in texts.items():
+            texts[key] = str(text).replace('{name}', str(name)).replace('{heater}', str(self.heater))
         self.notify_app.send_notification(
-            message = f"Consumption finished",
-            message_title = f"{self.heater}",
+            message = texts['message'],
+            message_title = texts['title'],
             message_recipient = self.heater_data.recipient,
             also_if_not_home = True,
             data = data

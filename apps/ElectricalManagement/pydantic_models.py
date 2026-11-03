@@ -151,6 +151,8 @@ class HeaterBlock(BaseModel):
     turn_off_after: time | None = None
     turn_off_before: time | None = None
     notify_when_finished: bool = False
+    notify_title: Optional[str] = None      # None: the switch entity id
+    notify_message: Optional[str] = None    # None: 'Consumption finished'
     start_threshold: float = 100
     stop_threshold: float = 15
     start_duration: int = 30

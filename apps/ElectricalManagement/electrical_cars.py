@@ -576,10 +576,7 @@ class Tesla_car(Car):
             return
         if self.connected_charger is None:
             self._cancel_unlink_grace()
-            self.ADapi.log(f"Car charging state for {self.carName} changed to {new} without connected charger") ###
             return
-
-        self.ADapi.log(f"Car charging state for {self.carName}: {old} -> {new}. Linked to {getattr(self.connected_charger, 'charger', None)} which reports {self.connected_charger.getChargingState()}") ###
 
         if new == 'Starting':
             new = 'Charging'
@@ -651,7 +648,6 @@ class Tesla_car(Car):
                 parameters = { 'path_vars': {'vehicle_id': self.vehicle_id}, 'wake_if_asleep' : True}
             )
             woken = True
-        self.ADapi.log(f"{self.carName}: refresh for link, state {charging_state}, asleep {asleep}, wake sent {woken} ###")
         self.forceAPIupdate()
 
     def wakeMeUp(self) -> None:

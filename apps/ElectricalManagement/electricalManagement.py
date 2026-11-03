@@ -185,7 +185,7 @@ HEATER_COMMON_KEYS: Tuple[str, ...] = (
     'consumptionSensor', 'validConsumptionSensor', 'kWhconsumptionSensor',
     'max_continuous_hours', 'on_for_minimum', 'pricedrop',
     'pricedifference_increase', 'vacation', 'automate', 'recipient',
-    'notify_when_finished', 'turn_off_after', 'turn_off_before',
+    'notify_when_finished', 'notify_title', 'notify_message', 'turn_off_after', 'turn_off_before',
     'start_threshold', 'stop_threshold', 'start_duration', 'stop_duration', 'turn_back_on_after'
 )
 
@@ -1285,6 +1285,8 @@ class ElectricalUsage(ad.ADBase):
                     'turn_off_after':                 switch_cfg.get('turn_off_after', '22:00:00'),
                     'turn_off_before':                switch_cfg.get('turn_off_before', '07:00:00'),
                     'notify_when_finished':           switch_cfg.get('notify_when_finished', False),
+                    'notify_title':                   switch_cfg.get('notify_title'),
+                    'notify_message':                 switch_cfg.get('notify_message'),
                     'start_threshold':                switch_cfg.get('start_threshold', 100),
                     'stop_threshold':                 switch_cfg.get('stop_threshold', 15),
                     'start_duration':                 switch_cfg.get('start_duration', 30),

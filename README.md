@@ -743,6 +743,8 @@ A switch with a power sensor can also tell you when the appliance has finished, 
       consumptionSensor: sensor.dryer_electric_consumption_w
       kWhconsumptionSensor: sensor.dryer_electric_consumption_kWh
       notify_when_finished: true
+      notify_title: 'Dryer'                          # optional
+      notify_message: '{name} is finished'           # optional
       turn_off_after: '22:00:00'
       turn_off_before: '07:00:00'
 ```
@@ -754,6 +756,7 @@ The appliance counts as running when the power has been above `start_threshold` 
 | Key | Default | Description |
 |---|---|---|
 | `notify_when_finished` | `false` | Turns the function on. |
+| `notify_title` / `notify_message` | switch entity id / `Consumption finished` | Own notification text. `{name}` is replaced with the friendly name of the switch and `{heater}` with its entity id. An empty string (`''`) goes back to the default. |
 | `turn_off_after` / `turn_off_before` | `22:00:00` / `07:00:00` | Window for the automatic turn-off. Both are needed for the turn-off; the notification works without them. |
 | `start_threshold` / `stop_threshold` | `100` / `15` | Watts. |
 | `start_duration` / `stop_duration` | `30` / `30` | Seconds the power must stay above / below the threshold. Raise `stop_duration` for appliances with long low-power phases. |

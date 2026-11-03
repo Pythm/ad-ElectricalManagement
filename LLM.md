@@ -101,7 +101,7 @@ Identity: `climate_commander` needs `app` (the CC app name; `climate`, alias `he
 | `options` | `[]` | `print_save_hours`; `vacation_keep_off` (only `climate` and `heater_switches`; for CC set it in the CC app). |
 | `namespace` | `main_namespace` | |
 
-`heater_switches` only: `notify_when_finished` (false), `turn_off_after` / `turn_off_before` (`'22:00:00'` / `'07:00:00'`, quote them), `start_threshold` / `stop_threshold` (100 / 15 W), `start_duration` / `stop_duration` (30 / 30 s), `turn_back_on_after` (60 s: a power cycle; 0: stays off until someone turns it on). On vacation a switch is on mainly in the cheapest 2 h of the day (off all the time with `vacation_keep_off`).
+`heater_switches` only: `notify_when_finished` (false), `notify_title` / `notify_message` (own text; `{name}` = friendly name, `{heater}` = entity id; defaults: entity id / `Consumption finished`; ask which language and wording the user wants), `turn_off_after` / `turn_off_before` (`'22:00:00'` / `'07:00:00'`, quote them), `start_threshold` / `stop_threshold` (100 / 15 W), `start_duration` / `stop_duration` (30 / 30 s), `turn_back_on_after` (60 s: a power cycle; 0: stays off until someone turns it on). On vacation a switch is on mainly in the cheapest 2 h of the day (off all the time with `vacation_keep_off`).
 
 `climate` only (deprecated, do not write in new configs): `indoor_sensor_temp`, `target_indoor_input`, `target_indoor_temp` (23), `target_heater_input`, `target_heater_temp` (23), `window_temp`, `window_offset` (-3), `save_temp_offset`, `save_temp`, `vacation_temp`, `rain_level` (3), `anemometer_speed` (40), `getting_cold` (18), `windowsensors`, `daytime_savings`, `temperatures`. ClimateCommander accepts the same keys.
 
