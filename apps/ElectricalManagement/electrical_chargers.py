@@ -17,6 +17,9 @@ EASEE_ZERO_CURRENT_MINUTES = 3
 # Easee: minimum ampere when locked to 3 phase, and the minimum to go back to when it no longer is.
 EASEE_MIN_AMPERE_3_PHASE = 11
 EASEE_MIN_AMPERE_DEFAULT = 6
+# Easee: pause commands sent per episode of charging with no linked car, and the seconds before each is verified.
+EASEE_UNLINKED_PAUSE_TRIES = 5
+EASEE_UNLINKED_PAUSE_SECONDS = 60
 
 class Charger:
 
@@ -744,6 +747,14 @@ class Charger:
         """ Learns the max ampere a car without an onboard charger accepts. Easee overrides this. """
         pass
 
+    def car_unlinked(self, pause_sent:bool = False) -> None:
+        """ A car's link to this charger has ended. Easee overrides this: it can charge with no car linked. """
+        pass
+
+    def check_unlinked(self) -> None:
+        """ Runs every minute from the core. Easee overrides this. """
+        pass
+
 class Tesla_charger(Charger):
     """ Tesla
         Child class of Charger. Uses Tesla custom integration. https://github.com/alandtse/tesla Easiest installation is via HACS. """
@@ -1011,6 +1022,9 @@ class Easee(Charger):
         # one minute apart. Reset on any non-zero sample. Handle for the one-minute re-sample timer.
         self._zero_current_samples:int = 0
         self._zero_current_handler = None
+        # Pause commands sent in this episode of charging with no linked car, and the handle of the check after them.
+        self._unlinked_pauses:int = 0
+        self._unlinked_pause_handler = None
 
         if self.charger_data.charger_sensor is not None:
             self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
@@ -1118,6 +1132,7 @@ class Easee(Charger):
                         self.kWhRemaining() # Update kWh remaining to charge
                         self.connected_vehicle.findNewChargeTime()
                         return
+                self._ensure_not_charging_unlinked()
             return
 
         elif (
@@ -1146,7 +1161,10 @@ class Easee(Charger):
         ):
             if self.connected_vehicle is None:
                 if not self.findCarConnectedToCharger():
-                    self.stopCharging()
+                    if new == 'charging':
+                        self._ensure_not_charging_unlinked()
+                    else:
+                        self.stopCharging()
                     return
             if self.connected_vehicle is not None:
                 if not self.connected_vehicle.charging_scheduled_with_updated_data():
@@ -1320,11 +1338,15 @@ class Easee(Charger):
             that, so after EASEE_READY_RESENDS_AT_60S resends the loop backs off to one resume every
             EASEE_READY_BACKOFF_SECONDS and says so ONCE (WARNING + notification). The car is never
             woken from here. The counter resets when the status changes (statusChange) or when this
-            check sees any other state. """
+            check sees any other state. With no linked car nothing is resumed and the loop ends. """
 
         if self.doNotStartMe:
             return
         cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger)
+        if self.connected_vehicle is None:
+            self.checkCharging_handler = None
+            self.ADapi.log(f"{self.charger}: resume loop ended, no car linked ###")
+            return
         state = self.getChargingState()
         if state != 'ready_to_charge':
             self._ready_resend_count = 0
@@ -1352,6 +1374,9 @@ class Easee(Charger):
             f"car ({car}) may be asleep or stopped in the car app. Resume is now sent every "
             f"{EASEE_READY_BACKOFF_SECONDS // 60} minutes."
         )
+        self._warn_and_notify(message)
+
+    def _warn_and_notify(self, message:str) -> None:
         self.ADapi.log(message, level = 'WARNING')
         try:
             self.notify_app.send_notification(
@@ -1363,6 +1388,87 @@ class Easee(Charger):
             )
         except Exception as e:
             self.ADapi.log(f"{self.charger} could not send notification: {e}", level = 'DEBUG')
+
+    # ---- charging with no linked car ------------------------------------------------------ #
+
+    def _raw_status(self):
+        if self.charger_data.charger_sensor is None:
+            return None
+        return self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace)
+
+    def check_unlinked(self) -> None:
+        """ Runs every minute: no status event follows an unlink or a restart. With a cable in and no
+            link the Easee keeps looking for its car (a wake-up round still comes at most once per
+            LINK_CYCLE_COOLDOWN_MINUTES, for cars at home only). """
+
+        status = self._raw_status()
+        if self.connected_vehicle is None and status in ('awaiting_start', 'ready_to_charge'):
+            self.ADapi.log(f"{self.charger}: no car linked, status {status}, looking for the car ###", level = 'DEBUG')
+            self.findCarConnectedToCharger()
+        self._ensure_not_charging_unlinked()
+
+    def car_unlinked(self, pause_sent:bool = False) -> None:
+        """ The resume loop belonged to the car that left. pause_sent: the caller has just paused, and
+            the status follows some seconds later, so this only verifies that pause in a minute. """
+
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
+            self.checkCharging_handler = None
+        if not pause_sent:
+            self._ensure_not_charging_unlinked()
+        elif self.connected_vehicle is None and self._raw_status() == 'charging':
+            self._arm_unlinked_pause_check()
+
+    def _ensure_not_charging_unlinked(self) -> None:
+        """ The Easee must not charge with no car linked. A car that can be linked is linked instead:
+            on 'charging' _link_evidence_ok allows none, so a car on the cable is normally found after
+            the pause, in 'awaiting_start' when it reports 'NoPower'. A running guest session is allowed
+            to charge, and an unavailable status is no reason to pause. During a fire stop_on_fire
+            repeats the stop. The pause is verified and sent at most EASEE_UNLINKED_PAUSE_TRIES times. """
+
+        status = self._raw_status()
+        if self.doNotStartMe or status is None or status in UNAVAIL:
+            return
+        if status != 'charging' or self.connected_vehicle is not None or self._guest_car is not None:
+            self._end_unlinked_episode(status)
+            return
+        if self._unlinked_pause_handler is not None and self.ADapi.timer_running(self._unlinked_pause_handler):
+            return
+        if self.findCarConnectedToCharger() or self.connected_vehicle is not None:
+            self.ADapi.log(f"{self.charger}: charging with no link, found {getattr(self.connected_vehicle, 'carName', None)} instead of pausing ###")
+            self._end_unlinked_episode(status)
+            return
+
+        if self._unlinked_pauses >= EASEE_UNLINKED_PAUSE_TRIES:
+            if self._unlinked_pauses == EASEE_UNLINKED_PAUSE_TRIES:
+                self._unlinked_pauses += 1
+                self.ADapi.log(f"{self.charger}: still charging with no link after {EASEE_UNLINKED_PAUSE_TRIES} pause commands. Giving up ###")
+            return
+
+        self._unlinked_pauses += 1
+        if self._unlinked_pauses == 1:
+            self._warn_and_notify(
+                f"Easee {self.charger} is charging with no car linked. Pausing it. "
+                "The car is linked when it reports NoPower; use the guest switch for a car the app does not know."
+            )
+        self.ADapi.log(f"{self.charger}: pause because no car is linked, try {self._unlinked_pauses}/{EASEE_UNLINKED_PAUSE_TRIES} ###")
+        self._arm_unlinked_pause_check()
+        self._send_stop_command()
+
+    def _arm_unlinked_pause_check(self) -> None:
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._unlinked_pause_handler, name = self.charger):
+            self._unlinked_pause_handler = None
+        self._unlinked_pause_handler = self.ADapi.run_in(self._unlinked_pause_check, EASEE_UNLINKED_PAUSE_SECONDS)
+
+    def _unlinked_pause_check(self, kwargs) -> None:
+        self._unlinked_pause_handler = None
+        self._ensure_not_charging_unlinked()
+
+    def _end_unlinked_episode(self, status) -> None:
+        if cancel_timer_handler(ADapi = self.ADapi, handler = self._unlinked_pause_handler, name = self.charger):
+            self._unlinked_pause_handler = None
+        if self._unlinked_pauses > 0:
+            self.ADapi.log(f"{self.charger}: charging with no link ended after {self._unlinked_pauses} pause commands, status {status}, linked {getattr(self.connected_vehicle, 'carName', None)} ###")
+            self._unlinked_pauses = 0
 
     # ---- C9: hold ampereCharging over momentary zero `_current` samples ------------------ #
 

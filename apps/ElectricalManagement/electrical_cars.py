@@ -661,9 +661,11 @@ class Tesla_car(Car):
         """ Unlinks the car. The onboard charger does not look for its car while the car is linked to
             an external charger, so it is asked to look now. """
         was_external = self.connected_charger is not self.onboard_charger
-        Registry.unlink(self)
+        charger = Registry.unlink(self)
         if was_external and self.onboard_charger is not None:
             self.onboard_charger.findCarConnectedToCharger()
+        if charger is not None:
+            charger.car_unlinked()
 
     def refresh_for_link(self) -> None:
         """ Wakes a sleeping car that is not charging (unless wake_when_stale is false) and

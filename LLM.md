@@ -176,6 +176,7 @@ Read the user's block before changing anything, and report:
 - Fire `false-alarm` turns on only what this app turned off. Heaters and switches stay off until `false-alarm`.
 - A window must be open 120 s before the heater is lowered; closing acts at once. A window open at startup acts at once.
 - Easee in `ready_to_charge`: 10 resume commands one minute apart, then one every 10 minutes with one WARNING and notification.
+- An Easee reporting `charging` with no car linked is paused within a minute (one WARNING and notification, at most 5 pause commands one minute apart). A car is not linked on `charging`, only on `NoPower` in `awaiting_start`, so a car already charging is paused first and then linked. A guest session counts as a linked car, and `unavailable` never pauses. Charging from outside the app with no linked car is not supported, and there is no option for it: the guest switch is the way to charge an unknown car.
 - Heaters are never reduced before minute 3 of the hour. Priority 1 and 2 cars keep charging after the price rises.
 - The stored cap rises by 5 kWh when the top 3 hours exceed it, and it (with the top hours) goes back to `max_kwh_goal` on the 1st of each month.
 - `climate:` setpoints changed by hand are overwritten at the next run.
@@ -215,6 +216,7 @@ Read the user's block before changing anything, and report:
 | `Avg consumption during one hour is now ... New max kWh ...` | `max_kwh_goal` too low for the home, or `buffer` too small. |
 | `<car>: no 'id' attribute on <online_sensor> ...` (ERROR) | Tesla integration not loaded, or a wrong `online_sensor`. Reload after it runs. |
 | `Easee <charger> still ready_to_charge after ...` | Car asleep or stopped in the car app. |
+| `Easee <charger> is charging with no car linked. Pausing it. ...` (WARNING) | The car link ended while charging, a restart with no saved link, or a car the app does not know (use the guest switch). |
 | `<charger> reports charging during a fire alarm, but the car is not home. No stop sent.` (WARNING) | The car is charging somewhere else, or its location is `unavailable` / `unknown`. |
 | `notify_app '<name>' was not found ...` (ERROR) | Wrong name, the notify app failed, or no `dependencies` on it. |
 | `<charger>: no 'id' attribute on <sensor> ...` (ERROR) | Easee integration not loaded, or a wrong status sensor. Reload after it runs. |

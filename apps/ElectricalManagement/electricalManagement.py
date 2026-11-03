@@ -1377,6 +1377,11 @@ class ElectricalUsage(ad.ADBase):
                 self.available_Wh = NO_SENSOR_AVAILABLE_WH # Set a trick fixed value since sensors are missing.
                 runtime = get_next_runtime_aware(startTime = now, offset_seconds = 0, delta_in_seconds = QUEUE_RUNNER_INTERVAL)
                 self.ADapi.run_every(self.checkChargingQueue, runtime, QUEUE_RUNNER_INTERVAL)
+                # Without the sensors there is no per-minute runner, and an Easee is checked every minute.
+                if any(isinstance(charger, Easee) for charger in self.all_chargers()):
+                    runtime = get_next_runtime_aware(startTime = now, offset_seconds = USAGE_RUNNER_OFFSET_SECONDS,
+                                                     delta_in_seconds = USAGE_RUNNER_INTERVAL)
+                    self.ADapi.run_every(self._check_unlinked_chargers, runtime, USAGE_RUNNER_INTERVAL)
 
             self.ADapi.run_daily(self.dump_persistence_file, "14:30:00")
             # 00:03 is intentional: the prices valid from 00:00 are yesterday's "tomorrow" prices and
@@ -1569,9 +1574,21 @@ class ElectricalUsage(ad.ADBase):
                                         check_if_charging_time = True,
                                         available_Wh = self.available_Wh)
 
+    def _check_unlinked_chargers(self, kwargs = None) -> None:
+        """ Every minute: chargers that can charge with no car linked check for that. """
+
+        for charger in self.all_chargers():
+            # One charger that fails must not stop the other chargers or the kWh check.
+            try:
+                charger.check_unlinked()
+            except Exception as e:
+                self.ADapi.log(f"{charger.charger} could not check for a missing car link: {e}", level = 'ERROR')
+
     def checkElectricalUsage(self, kwargs) -> None:
         """ Calculate and ajust consumption to stay within kWh limit.
             Start and stops charging when time to charge """
+
+        self._check_unlinked_chargers()
 
         now = self.ADapi.datetime(aware = True)
         minute = now.minute

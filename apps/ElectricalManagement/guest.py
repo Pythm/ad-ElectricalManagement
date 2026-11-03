@@ -288,6 +288,8 @@ class GuestManager:
         Registry.unlink(guest)
         cancel_listen_handler(ADapi = self.ADapi, handler = charger.reason_for_no_current_handler, name = "reason for no current")
         charger.reason_for_no_current_handler = None
+        if guest_is_vehicle:
+            charger.car_unlinked(pause_sent = True)
 
         # 6. Switch off. Not resent when HA already reports off (owner switched it off).
         self.charger.guestCharging = False
