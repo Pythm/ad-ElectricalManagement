@@ -1446,9 +1446,10 @@ class Easee(Charger):
 
         self._unlinked_pauses += 1
         if self._unlinked_pauses == 1:
-            self._warn_and_notify(
+            self.ADapi.log(
                 f"Easee {self.charger} is charging with no car linked. Pausing it. "
-                "The car is linked when it reports NoPower; use the guest switch for a car the app does not know."
+                "The car is linked when it reports NoPower; use the guest switch for a car the app does not know. ###",
+                level = 'WARNING'
             )
         self.ADapi.log(f"{self.charger}: pause because no car is linked, try {self._unlinked_pauses}/{EASEE_UNLINKED_PAUSE_TRIES} ###")
         self._arm_unlinked_pause_check()

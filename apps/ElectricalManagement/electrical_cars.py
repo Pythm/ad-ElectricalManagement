@@ -201,7 +201,7 @@ class Car:
                     voltPhase = self.connected_charger.charger_data.voltPhase,
                     finish_by_hour = self.finish_by_hour,
                     priority = self.car_data.priority,
-                    name = self.carName,
+                    name = self._queue_name(),
                     charge_below = self.car_data.charge_below_price,
                 )
                 self.charging_scheduler.schedule_info_update()
@@ -220,6 +220,14 @@ class Car:
                                 self.stopChargingCar()
                         case _ if start - timedelta(minutes=12) > now:
                             self.stopChargingCar()
+
+    def _queue_name(self) -> str:
+        """ The name in the charge plan text: 'Car', or 'Car (charger)' when charging on an external charger. """
+
+        charger = self.connected_charger
+        if charger is not None and charger is not self.onboard_charger:
+            return f"{self.carName} ({charger.charger})"
+        return self.carName
 
     def removeFromQueue(self) -> None:
         """ Removes car from chargequeue
