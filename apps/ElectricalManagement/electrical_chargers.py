@@ -757,7 +757,7 @@ class Charger:
 
 class Tesla_charger(Charger):
     """ Tesla
-        Child class of Charger. Uses Tesla custom integration. https://github.com/alandtse/tesla Easiest installation is via HACS. """
+        Child class of Charger. Uses Tesla custom integration. https://github.com/alandtse/tesla """
 
     def __init__(self, api,
         Car,
@@ -965,8 +965,7 @@ class Tesla_charger(Charger):
 
 class Easee(Charger):
     """ Easee
-        Child class of Charger. Uses Easee EV charger component for Home Assistant. https://github.com/nordicopen/easee_hass 
-        Easiest installation is via HACS. """
+        Child class of Charger. Uses Easee EV charger component for Home Assistant. https://github.com/nordicopen/easee_hass """
 
     def __init__(self, api,
         cars: Iterable[Car],
@@ -1639,7 +1638,6 @@ def normalise_audi_charging_state(raw, plug_on: bool, previous: Optional[str]) -
 class Audi_charger(Charger):
     """ Audi Connect
         Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha.
-        Easiest installation is via HACS.
 
         NEVER RAN ON A REAL CAR. What is unverified is marked in comments. Differences from the Tesla:
         * the integration polls every 15 minutes, so there is no 60 s resend loop. One command, ONE verify

@@ -203,8 +203,8 @@ You'll need to clone and configure:
 
 You only need the following optional components if they are configured in your setup. Currently supported directly in app:
 
-- Tesla Custom Integration: [HACS Tesla integration](https://github.com/alandtse/tesla)
-- Easee EV charger component for Home Assistant: [HACS Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
+- Tesla Custom Integration: [Tesla integration](https://github.com/alandtse/tesla)
+- Easee EV charger component for Home Assistant: [Easee EV Charger integration](https://github.com/nordicopen/easee_hass)
 
 ---
 
