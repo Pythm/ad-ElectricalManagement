@@ -222,7 +222,7 @@ class Charger:
             self._link_cycle_start = now
             self._link_check_attempts = 0
             for car in contenders:
-                self.ADapi.log(f"{self.charger}: refreshing {car.carName} for link, asleep {car.asleep()}, linked to {getattr(car.connected_charger, 'charger', None)}") ###
+                self.ADapi.log(f"{self.charger}: refreshing {car.carName} for link, asleep {car.asleep()}, car's own link: {getattr(car.connected_charger, 'charger', None)}") ###
                 car.refresh_for_link()
 
         waiting = [
@@ -675,7 +675,15 @@ class Charger:
         if self.connected_vehicle is not None:
             connected_charger = getattr(self.connected_vehicle, "connected_charger", None)
             if connected_charger is self:
-                if self.getChargingState() in ('Complete', 'Disconnected'):
+                state = self.getChargingState()
+                if state == 'Complete' and self.connected_vehicle.reports_unfinished_charge():
+                    # The charger is done, but the car's own data still says Charging / Stopped / NoPower.
+                    # A Tesla reports up to ~11 min late, and removing it from the queue now makes the next
+                    # re-plan (the hourly check) queue it again from the old battery value and notify again.
+                    # The car decides: its Complete finishes the session (Car.car_charging_state_changed).
+                    # A car with no state of its own reads the charger, so it is never held back here.
+                    self.connected_vehicle._completion_deferred = True
+                elif state in ('Complete', 'Disconnected'):
                     self.connected_vehicle._handleChargeCompletion()
                     if self.charger_data.session_energy and self.connected_vehicle.pct_start_charge < 90:
                         session = to_float_or_none(self.ADapi.get_state(self.charger_data.session_energy, namespace=self.namespace))
@@ -1139,6 +1147,7 @@ class Easee(Charger):
             and old == 'completed'
         ):
             if self.connected_vehicle is not None:
+                self.connected_vehicle._completion_deferred = False   # a new session: the held-back completion is void
                 if (
                     self.kWhRemaining() > 2
                     and not self.connected_vehicle.charging_scheduled_with_updated_data()

@@ -49,6 +49,7 @@ class Car:
         self.wake_when_stale:bool = bool(wake_when_stale)
         self.unlink_grace_minutes:float = max(0.0, float(unlink_grace_minutes or 0))
         self._unlink_grace_handler = None
+        self._completion_deferred = False   # charger completed while the car still reported an unfinished charge
 
         self.vehicle_id = vehicle_id
         self.carName = carName
@@ -234,7 +235,16 @@ class Car:
         """
         self.charging_scheduler.removeFromQueue(vehicle_id = self.vehicle_id)
 
+    def reports_unfinished_charge(self) -> bool:
+        """ True when the car's own reading exists and is neither Complete nor Disconnected. A car without
+            its own reading returns the charger's state here (getCarChargerState), so it is never True
+            for a charger that says Complete. """
+
+        state = self.getCarChargerState()
+        return state is not None and state not in UNAVAIL and state not in ('Complete', 'Disconnected')
+
     def _handleChargeCompletion(self):
+        self._completion_deferred = False
         self.turnOff_Charge_now()
         self.removeFromQueue()
         self.car_data.kWh_remain_to_charge = -1
@@ -614,6 +624,11 @@ class Tesla_car(Car):
 
         if new == 'Starting':
             new = 'Charging'
+        if new == 'Complete' and self._completion_deferred:
+            # The charger completed earlier and was held back until the car agreed (_CleanUpWhenChargingStopped).
+            self._completion_deferred = False
+            if self.connected_charger.getChargingState() == 'Complete':
+                self.connected_charger._CleanUpWhenChargingStopped()
         if self.connected_charger.compareChargingState(
             car_status = new
         ):
