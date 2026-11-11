@@ -204,3 +204,4 @@ Thumbs.db
 apps/.vscode/
 # Claude scratch output
 .claude/audit_out/
+README_audi.md

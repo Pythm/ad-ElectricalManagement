@@ -134,28 +134,40 @@ CHARGER_SPECS: List[Tuple[str, str, str]] = [
     ('session_energy',           'sensor',        '_energy_added'),
 ]
 
-# Audi Connect (https://github.com/audiconnect/audi_connect_ha, checked against version 2.5.2). WORK IN
-# PROGRESS, never ran on a real car. Entity ids are UNVERIFIED: they are the HA slugs of the entity names
-# in the integration's platform files (binary_sensor.py "Plug state", number.py "Current location charge
-# target", sensor.py "State of charge", "Last Update", "Charging state", "Charging power"); the file that
-# builds the entity ids (audi_entity.py) was not checked. Every one of them can be overridden in the
-# audi entry of the configuration with the same key.
+# Audi Connect (https://github.com/audiconnect/audi_connect_ha, checked against the 2.5.2 source). WORK IN
+# PROGRESS, never ran on a real car. Entity ids: every audiconnect entity has `has_entity_name = True`
+# (audi_entity.py:121) on a device named after the vehicle title, the nickname or model short name
+# (audi_entity.py:164, audi_models.py:876-882), so Home Assistant builds `<domain>.<title slug>_<entity
+# name slug>`. `car` in the audi entry is that title slug; the suffixes below are the slugs of the entity
+# names in the platform files. Every one of them can be overridden in the audi entry with the same key.
 AUDI_SPECS: List[Tuple[str, str, str]] = [
-    ('charger_sensor',           'binary_sensor', '_plug_state'),              # plug is a binary_sensor, not a sensor
+    ('charger_sensor',           'binary_sensor', '_plug_state'),              # "Plug state", binary_sensor.py:31-37. on =
+                                                                               # plugConnectionState not invalid/disconnected
+                                                                               # (audi_connect_account.py:2248-2252)
     ('charge_limit',             'number',        '_current_location_charge_target'),
-                                                                               # the profile target where the car is parked:
-                                                                               # the one that stops the charge. "Global charge
-                                                                               # target" does not (audiconnect README, #722).
-    ('battery_sensor',           'sensor',        '_state_of_charge'),         # device_class battery, direct SOC
-    ('location_tracker',         'device_tracker','_position'),                # device_tracker.py not checked
-    ('data_last_update_time',    'sensor',        '_last_update'),
+                                                                               # "Current location charge target", number.py:55-71,
+                                                                               # 20-100 step 5 (number.py:26-28): the profile target
+                                                                               # where the car is parked, the one that stops the
+                                                                               # charge. "Global charge target" does not (audiconnect
+                                                                               # README, #722).
+    ('battery_sensor',           'sensor',        '_state_of_charge'),         # "State of charge", %, sensor.py:337-343
+    ('location_tracker',         'device_tracker','_position'),                # "Position", device_tracker.py:45; attribute 'vin'
+                                                                               # (device_tracker.py:93). Only created when the car
+                                                                               # reports a position (device_tracker.py:29-36).
+    ('data_last_update_time',    'sensor',        '_last_update'),             # "Last Update", timestamp = newest carCapturedTimestamp
+                                                                               # (sensor.py:106-112, audi_connect_account.py:916-939)
 ]
 
 AUDI_CHARGER_SPECS: List[Tuple[str, str, str]] = [
-    ('charger_sensor',           'sensor',        '_charging_state'),          # raw text state, normalised in Audi_charger
-    ('charger_switch',           'binary_sensor', '_plug_state'),              # read-only plug sensor
-    ('charger_power',            'sensor',        '_charging_power'),          # kW
+    ('charger_sensor',           'sensor',        '_charging_state'),          # "Charging state", raw text (sensor.py:233-238),
+                                                                               # normalised in Audi_charger
+    ('charger_switch',           'binary_sensor', '_plug_state'),              # read-only plug sensor (same entity as above)
+    ('charger_power',            'sensor',        '_charging_power'),          # "Charging power", kW (sensor.py:315-322)
 ]
+
+# Optional charge mode sensor: "Charging mode" (sensor.py:239-243), the mode of the charge in progress.
+# Found as sensor.<car>_charging_mode; config key `charge_mode`. Logged only (timer mode), see Audi_charger.
+AUDI_CHARGE_MODE_SUFFIX: Tuple[str, str] = ('sensor', '_charging_mode')
 
 # audi entry keys that only configure the Audi_charger (not persisted).
 AUDI_CHARGER_ARGS: Tuple[str, ...] = ('device_id', 'verify_minutes', 'max_command_retries', 'charge_power_kW')
@@ -838,6 +850,12 @@ class ElectricalUsage(ad.ADBase):
                                               common_keys = COMMON_CHARGER_KEYS)
 
             charger_args = {k: cfg[k] for k in AUDI_CHARGER_ARGS if cfg.get(k) is not None}
+            # Optional, not persisted: the "Charging mode" sensor (config key `charge_mode`), logged only.
+            charge_mode_sensor = cfg.get('charge_mode')
+            if charge_mode_sensor is None:
+                candidate = f"{AUDI_CHARGE_MODE_SUFFIX[0]}.{carName}{AUDI_CHARGE_MODE_SUFFIX[1]}"
+                if self.ADapi.entity_exists(candidate, namespace = namespace):
+                    charge_mode_sensor = candidate
             audi_charger = Audi_charger(
                 api = self,
                 Car = audi_car,
@@ -848,6 +866,7 @@ class ElectricalUsage(ad.ADBase):
                 charging_scheduler = self.charging_scheduler,
                 notify_app = self.notify_app,
                 recipients = self.recipients,
+                charge_mode_sensor = charge_mode_sensor,
                 **charger_args
             )
             self.chargers[audi_charger.charger_id] = audi_charger

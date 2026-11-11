@@ -1801,32 +1801,63 @@ class Onboard_charger(Charger):
 # --------------------------------------------------------------------------- #
 # Audi Connect charging_state normalisation. ONE table for the whole app.
 #
-# UNVERIFIED: audiconnect 2.5.2 copies the car's raw `charging.chargingStatus.value.chargingState`
-# into the "Charging state" sensor (audi_models.py) without listing the possible values, and the
-# file that turns it into the sensor value (audi_connect_account.py) was not checked. The values
-# below follow the VW-group/Cariad API names used by other integrations. Comparison is
-# case-insensitive. A value that is not in the table is
-# reported ONCE with a WARNING and treated as "no transition" (previous state kept), so a
-# wrong guess here never sends a command, it only logs.
+# What the integration does (audiconnect 2.5.2 source): the "Charging state" sensor is the car's raw
+# `charging.chargingStatus.value.chargingState` text, copied unchanged (audi_models.py:222-227,
+# audi_connect_account.py:1875-1884, sensor.py:233-238; no options and no translations in strings.json).
+# An empty value makes the sensor `unavailable` (audi_entity.py:141-148). The source does NOT list the
+# possible values.
+#
+# Where the strings come from (THIRD-PARTY evidence, weaker than the source; see
+# .claude/audit_out/audiconnect/CHARGING_STATE_EVIDENCE.md): the VW-group (Cariad) cloud API that the
+# Audi uses, as read by VW ID / Skoda / Seat-Cupra projects. The one Audi-specific example is
+# 'notReadyForCharging' (myaudi-api README). None of them is confirmed on a real Audi through this app.
+#
+# Comparison is case-insensitive. A value that is not in the table is reported ONCE with a WARNING and
+# treated as "no transition" (previous state kept), so a wrong guess here never sends a command.
 # --------------------------------------------------------------------------- #
 AUDI_STATE_EXACT: dict[str, str] = {
-    'charging':          'Charging',
-    'readyforcharging':  'Stopped',
-    'conservation':      'Complete',
-    'error':             'Stopped',    # + WARNING once
+    # third-party: a charge is running.
+    'charging':                                       'Charging',
+    # third-party: cable in, the car would charge (target not reached), nothing is charging now.
+    'readyforcharging':                               'Stopped',
+    # third-party: the target state of charge is reached, in its three spellings.
+    'chargepurposereached':                           'Complete',
+    'chargepurposereachedandnotconservationcharging': 'Complete',
+    'chargepurposereachedandconservation':            'Complete',
+    # third-party: target reached and the car tops the battery up by itself in short bursts. For the
+    # app the charge is done: nothing to start or stop, not counted as charging. INFO once.
+    'conservation':                                   'Complete',
+    # third-party: the car reports a charging error. Not charging, cable presumably in: 'Stopped'.
+    # WARNING once. The app takes no action on the error itself; a start sent to the car in this
+    # state is capped by the verify loop and ends in the "sent 3 times" notification.
+    'error':                                          'Stopped',
 }
-AUDI_STATE_PREFIX: tuple[tuple[str, str], ...] = (
-    ('chargepurposereached', 'Complete'),   # chargePurposeReached_conservation / _notConservationCharging ...
-)
+# third-party: the car does not report a charging state at all. No transition, WARNING once.
+AUDI_STATE_NO_TRANSITION: tuple[str, ...] = ('unsupported',)
+# third-party, also the Audi-specific example: the car can not charge now. Cable out ->
+# 'Disconnected'; cable in -> 'NoPower' (the EVSE gives no power: the state that links a car to an
+# Easee). With the plug sensor unavailable the two can not be told apart: no transition.
 AUDI_STATE_PLUG_DEPENDENT: tuple[str, ...] = ('notreadyforcharging',)
+# Unlisted spellings of "target reached" (older third-party data has 'chargePurposeReached_conservation').
+AUDI_STATE_PREFIX: tuple[tuple[str, str], ...] = (
+    ('chargepurposereached', 'Complete'),
+)
+# Values that are mapped AND logged once: (level, message).
+AUDI_STATE_NOTES: dict[str, tuple[str, str]] = {
+    'conservation': ('INFO', "charging_state is 'conservation' (target reached, the car tops the battery up itself). Treated as Complete."),
+    'error':        ('WARNING', "charging_state is 'error' (the car reports a charging error). Treated as Stopped; the app takes no action on the error."),
+    'unsupported':  ('WARNING', "charging_state is 'unsupported' (the car does not report a charging state). Keeping the previous state."),
+}
 
 
-def normalise_audi_charging_state(raw, plug_on: bool, previous: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def normalise_audi_charging_state(raw, plug_on: Optional[bool], previous: Optional[str]) -> tuple[Optional[str], Optional[tuple[str, str]]]:
     """ Maps a raw audiconnect charging_state to the app's states.
 
-        Returns (state, warning). `state` is one of 'Charging' / 'Stopped' / 'Complete' /
-        'Disconnected' / 'NoPower' or `previous` when the raw value is unavailable/unknown/None or
-        not in the table (no transition). `warning` is a message the caller should log once. """
+        `plug_on`: True / False for the plug binary_sensor 'on' / 'off', None when it is unavailable.
+        Returns (state, note). `state` is one of 'Charging' / 'Stopped' / 'Complete' / 'Disconnected' /
+        'NoPower', or `previous` when the raw value is unavailable/unknown/None, 'unsupported', not in the
+        table, or 'notReadyForCharging' with the plug unavailable (no transition). `note` is None or a
+        (level, message) the caller logs once. """
 
     if raw is None:
         return previous, None
@@ -1834,34 +1865,47 @@ def normalise_audi_charging_state(raw, plug_on: bool, previous: Optional[str]) -
     if key in UNAVAIL or key == '':
         return previous, None
     if key in AUDI_STATE_PLUG_DEPENDENT:
-        # Car reports it can not charge: cable out -> Disconnected, cable in -> the EVSE gives no power.
+        if plug_on is None:
+            return previous, None
         return ('NoPower' if plug_on else 'Disconnected'), None
+    if key in AUDI_STATE_NO_TRANSITION:
+        return previous, AUDI_STATE_NOTES.get(key)
     if key in AUDI_STATE_EXACT:
-        warning = f"charging_state is '{raw}' (car reports a charging error). Treated as Stopped." if key == 'error' else None
-        return AUDI_STATE_EXACT[key], warning
+        return AUDI_STATE_EXACT[key], AUDI_STATE_NOTES.get(key)
     for prefix, state in AUDI_STATE_PREFIX:
         if key.startswith(prefix):
             return state, None
-    return previous, f"Unknown charging_state '{raw}'. Add it to AUDI_STATE_EXACT in electrical_chargers.py. Keeping state '{previous}'."
+    return previous, ('WARNING', f"Unknown charging_state '{raw}'. Add it to AUDI_STATE_EXACT in electrical_chargers.py. Keeping state '{previous}'.")
 
 
 class Audi_charger(Charger):
     """ Audi Connect
         Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha.
 
-        WORK IN PROGRESS, NEVER RAN ON A REAL CAR. What is unverified is marked in comments. Differences
-        from the Tesla:
-        * the integration polls the cloud every `scan_interval` minutes (minimum and default 15), so there
-          is no 60 s resend loop. One command, ONE verify timer of `verify_minutes`, at most
-          `max_command_retries` resends, then WARNING + notification.
+        WORK IN PROGRESS, NEVER RAN ON A REAL CAR. Checked against the audiconnect 2.5.2 source (entity
+        names, plug semantics, services, refresh behaviour); the charging-state strings are third-party
+        evidence only (see normalise_audi_charging_state). Differences from the Tesla:
+        * the integration polls the cloud every `scan_interval` minutes (minimum and default 15,
+          const.py:31-32), so there is no 60 s resend loop. One command, ONE verify timer of
+          `verify_minutes`, at most `max_command_retries` resends, then WARNING + notification. After a
+          charger command the integration itself refreshes the cloud data `update_sleep` (5 s) later
+          (audi_connect_account.py:648-650 -> audi_account.py:337-347), so a state change can show up
+          within seconds when the car has already reported to the cloud, otherwise at the next poll.
         * start/stop go through the `audiconnect/execute_vehicle_action` service (actions `start_charger` /
-          `stop_charger`, target `device_id` only: the service schema has no `vin`). It can block for ~15 s
-          while the integration confirms the command; it is called with `callback=` so the app thread
-          does not wait. Without `device_id` no command is sent (WARNING at startup).
+          `stop_charger`, audi_account.py:239-244; target `device_id` only: the schema at
+          audi_account.py:75-81 has no `vin`). It can block for ~15 s while the integration confirms the
+          command; it is called with `callback=` so the app thread does not wait. Without `device_id` no
+          command is sent (WARNING at startup). A wrong `device_id` is logged by the integration in the
+          Home Assistant log ("No VIN found for device ...", __init__.py:162), not here.
         * the audiconnect README says neither start nor stop could be shown to work on a live car (a stop
           was confirmed and the charge went on); the verify cap above is what keeps that harmless.
         * no ampere control: the Audi charges at whatever the EVSE gives. `charge_power_kW` (optional)
-          gives the scheduler a realistic power estimate. """
+          gives the scheduler a realistic power estimate.
+        * `charge_mode_sensor` (optional, `sensor.<car>_charging_mode`, "Charging mode" in sensor.py:239-243):
+          the mode of the charge in progress. 'timer' means the car charges only in its own timer windows,
+          so a start from the app may not take: one INFO each time the car goes into timer mode, nothing
+          else. The value strings are not in the integration source; 'timer' is the word its
+          set_charge_mode service uses (audi_account.py:124). """
 
     SEND_STOP_WHEN_NOT_CHARGING = True
     AUDI_ACTION_SERVICE = 'audiconnect/execute_vehicle_action'
@@ -1879,6 +1923,7 @@ class Audi_charger(Charger):
         verify_minutes:float = 20,
         max_command_retries:int = 2,
         charge_power_kW:Optional[float] = None,
+        charge_mode_sensor:Optional[str] = None,
     ):
 
         self._cars:list = [Car]
@@ -1900,6 +1945,7 @@ class Audi_charger(Charger):
         self.verify_minutes:float = verify_minutes
         self.max_command_retries:int = max_command_retries
         self.charge_power_kW:Optional[float] = charge_power_kW
+        self.charge_mode_sensor:Optional[str] = charge_mode_sensor
 
         # Command intent: 'start' / 'stop' / None. Set when a command is sent, cleared when the
         # state sensor confirms it or when the retries are used up.
@@ -1908,6 +1954,7 @@ class Audi_charger(Charger):
         self._last_state:Optional[str] = None
         self._warned_states:set = set()
         self._stop_warned:bool = False
+        self._timer_mode_logged:bool = False
 
         self.ADapi.log(
             f"{self.charger}: Audi support is work in progress and untested on a real car. The audiconnect README "
@@ -1928,8 +1975,9 @@ class Audi_charger(Charger):
             f"{self.charger}: Audi entities: plug {car_data.charger_sensor}, charging state {self.charger_data.charger_sensor}, "
             f"charge target {car_data.charge_limit}, state of charge {car_data.battery_sensor}, "
             f"location {car_data.location_tracker}, last update {car_data.data_last_update_time}, "
-            f"charging power {self.charger_data.charger_power}. Now: plug '{plug_now}', charging state "
-            f"'{self._raw_charging_state()}' (charging state strings are unverified, see AUDI_STATE_EXACT).",
+            f"charging power {self.charger_data.charger_power}, charge mode {self.charge_mode_sensor}. "
+            f"Now: plug '{plug_now}', charging state '{self._raw_charging_state()}' (the charging state strings "
+            "are third-party evidence, not confirmed on a real Audi: see AUDI_STATE_EXACT).",
             level = 'INFO'
         )
 
@@ -1953,28 +2001,64 @@ class Audi_charger(Charger):
 
         Registry.set_onboard_link(Car, self)
 
-        # charger_sensor is the text sensor `sensor.<car>_charging_state` (UNVERIFIED entity id, derived
-        # from the "Charging state" entity name in audiconnect/sensor.py). ChargingStarted/Stopped fire on
-        # the NORMALISED state, not on 'on'/'off'.
+        # charger_sensor is the text sensor `sensor.<car>_charging_state` ("Charging state", sensor.py:233-238;
+        # the id is the device name + entity name, audi_entity.py:121 has_entity_name with the vehicle title
+        # as device name, audi_entity.py:164). ChargingStarted/Stopped fire on the NORMALISED state, not on
+        # 'on'/'off'.
         if self.charger_data.charger_sensor is not None:
             self.ADapi.listen_state(self._charging_state_changed, self.charger_data.charger_sensor,
                 namespace = self.namespace
             )
-        # charger_switch is the plug binary_sensor `binary_sensor.<car>_plug_state` (UNVERIFIED entity id,
-        # "Plug state" in audiconnect/binary_sensor.py). It is read-only; it only tells if the cable is in.
+        # charger_switch is the plug binary_sensor `binary_sensor.<car>_plug_state` ("Plug state",
+        # binary_sensor.py:31-37). Read-only. 'on' when the car's plugConnectionState is not 'invalid' or
+        # 'disconnected' (audi_connect_account.py:2248-2252), `unavailable` when the car did not report it.
         if self.charger_data.charger_switch is not None:
             self.ADapi.listen_state(self.Charger_ChargeCableConnected, self.charger_data.charger_switch,
                 namespace = self.namespace
             )
+        # Timer charge mode: log once each time the car goes into it.
+        if self.charge_mode_sensor is not None:
+            self.ADapi.listen_state(self._charge_mode_changed, self.charge_mode_sensor,
+                namespace = self.namespace
+            )
+            self._check_charge_mode(self.ADapi.get_state(self.charge_mode_sensor, namespace = self.namespace))
 
         """ End initialization Audi Charger Class """
 
     # ---- state -------------------------------------------------------------------------- #
 
-    def _plug_connected(self) -> bool:
+    def _plug_connected(self) -> Optional[bool]:
+        """ The plug binary_sensor: True for 'on', False for 'off' or no sensor, None for any other reading
+            (unavailable/unknown: audiconnect marks the entity unavailable when the car did not report
+            plugStatus, audi_entity.py:141-148). """
+
         if self.charger_data.charger_switch is None:
             return False
-        return self.ADapi.get_state(self.charger_data.charger_switch, namespace = self.namespace) == 'on'
+        plug = self.ADapi.get_state(self.charger_data.charger_switch, namespace = self.namespace)
+        if plug == 'on':
+            return True
+        if plug == 'off':
+            return False
+        return None
+
+    def _charge_mode_changed(self, entity, attribute, old, new, kwargs) -> None:
+        self._check_charge_mode(new)
+
+    def _check_charge_mode(self, raw) -> None:
+        """ One INFO when the car goes into timer charge mode (value 'timer', case-insensitive), none while it
+            stays there, and a new one after it has been in another mode. No action: the plan runs as usual,
+            a start that does not take ends in the "sent 3 times" notification. """
+
+        in_timer_mode = raw is not None and str(raw).strip().lower() == 'timer'
+        if in_timer_mode and not self._timer_mode_logged:
+            self.ADapi.log(
+                f"{self.charger}: charge mode is 'timer' ({self.charge_mode_sensor}): the car charges only in its "
+                "own timer windows, so a start from the app may not take. Set the car to manual charging "
+                "(audiconnect set_charge_mode) if the app should control it.",
+                level = 'INFO'
+            )
+        if raw is not None and str(raw).strip().lower() not in UNAVAIL:
+            self._timer_mode_logged = in_timer_mode
 
     def _raw_charging_state(self):
         if self.charger_data.charger_sensor is None:
@@ -1987,10 +2071,11 @@ class Audi_charger(Charger):
             unavailable/unknown/None and unknown strings return the previous state (no transition). """
 
         raw = self._raw_charging_state()
-        state, warning = normalise_audi_charging_state(raw, self._plug_connected(), self._last_state)
-        if warning is not None and warning not in self._warned_states:
-            self._warned_states.add(warning)
-            self.ADapi.log(f"{self.charger}: {warning}", level = 'WARNING')
+        state, note = normalise_audi_charging_state(raw, self._plug_connected(), self._last_state)
+        if note is not None and note[1] not in self._warned_states:
+            # Once per message (per app start): an unknown string, 'error', 'unsupported' (WARNING), 'conservation' (INFO).
+            self._warned_states.add(note[1])
+            self.ADapi.log(f"{self.charger}: {note[1]}", level = note[0])
         if state != self._last_state:
             self.ADapi.log(f"{self.charger} charging_state '{raw}' -> {state}", level = 'DEBUG')
             self._last_state = state
@@ -2185,9 +2270,9 @@ class Audi_charger(Charger):
         return int(self.charger_data.ampereCharging)
 
     def getChargingPowerW(self) -> float:
-        """ Draw from the `charging_power` sensor (kW, UNVERIFIED entity id `sensor.<car>_charging_power`)
-            when it reads above 0, else the ampere * voltPhase estimate. The sensor only changes at a cloud
-            poll (every 15 min by default), so it can be up to that old. """
+        """ Draw from the `charging_power` sensor (`sensor.<car>_charging_power`, "Charging power" in kW,
+            sensor.py:315-322) when it reads above 0, else the ampere * voltPhase estimate. The sensor only
+            changes at a cloud poll (every 15 min by default), so it can be up to that old. """
 
         if self.charger_data.charger_power is not None:
             power_kW = self.getChargerPower()

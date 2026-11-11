@@ -842,7 +842,10 @@ class Audi_car(Car):
     """ Audi Connect (audiconnect) car. WORK IN PROGRESS, never ran on a real car.
         Same as a car under `cars:` (the plug binary_sensor has no 'charging_state' attribute) except that a
         new charge limit is rounded to what the integration accepts. The app never wakes or refreshes an Audi:
-        audiconnect's refresh_vehicle_data counts against a daily API limit (forceAPIupdate stays a no-op). """
+        audiconnect's refresh_vehicle_data counts against a daily API limit (its README, "Refresh Vehicle
+        Data"), so forceAPIupdate and wakeMeUp stay the no-ops of Car. The location is the "Position"
+        device_tracker (home / not_home / a zone, `unavailable` when the car sent no position); without that
+        entity the car counts as home (Car.getLocation). """
 
     def changeChargeLimit(self, chargeLimit:int = 100) -> None:
         limit = to_float_or_none(chargeLimit)
