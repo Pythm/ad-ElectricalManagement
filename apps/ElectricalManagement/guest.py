@@ -240,9 +240,10 @@ class GuestManager:
         if self.guest is None:
             self.ADapi.log(f"Charge now received for {self.charger.charger} but there is no guest car. Ignored.", level = 'INFO')
             return False
-        self.guest.charge_now = True
+        start_now = self.guest.request_charge_now()
         if self.charger.connected_vehicle is self.guest:
-            self.charger.startCharging()
+            if start_now:
+                self.charger.startCharging()
         else:
             self.ADapi.log(f"Charge now for guest on {self.charger.charger}: guest is not linked to the charger, not starting.", level = 'INFO')
         return True

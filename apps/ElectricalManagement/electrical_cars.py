@@ -149,6 +149,21 @@ class Car:
         ):
             self.findNewChargeTime()
 
+    def request_charge_now(self) -> bool:
+        """ 'Charge now' answered on a notification. Turns the car's charge_now helper on in HA when it has one
+            (the helper listener then starts the charging), so HA and the app agree. Returns True when the caller
+            must start the charging itself: the car has no helper, or the helper was already on. """
+
+        self.charge_now = True
+        if self.charge_now_HA_switch is None:
+            return True
+        already_on = self.ADapi.get_state(self.charge_now_HA_switch, namespace = self.namespace) == 'on'
+        self.ADapi.call_service('input_boolean/turn_on',
+            entity_id = self.charge_now_HA_switch,
+            namespace = self.namespace,
+        )
+        return already_on
+
     def turnOff_Charge_now(self) -> None:
         """ Turns smart charging on again. """
         if self.charge_now_HA_switch is not None:

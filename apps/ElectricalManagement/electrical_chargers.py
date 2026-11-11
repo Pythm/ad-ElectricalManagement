@@ -1225,8 +1225,8 @@ class Easee(Charger):
             return False
 
         if kind == 'chargeNow':
-            car.charge_now = True
-            self.startCharging()
+            if car.request_charge_now():
+                self.startCharging()
             return True
 
         if car.need_from_sensors():

@@ -464,7 +464,7 @@ The kWh answer is used only while the car stays linked to that Easee, and it doe
 Create Home Assistant helpers to manage charging:
 
 1. **Default Finish Time**: Charging is completed by default at 7:00 AM. To set a different hour for the charging to be finished, use an `input_number` sensor configured with `finishByHour`. This can also be configured with an integer directly in configuration if you do not intend to change it.
-2. **Charge Now**: To bypass smart charging and charge immediately, configure `charge_now` as an `input_boolean`. The app turns the helper off after charging is completed or when the charger is disconnected.
+2. **Charge Now**: To bypass smart charging and charge immediately, configure `charge_now` as an `input_boolean`. Answering "Charge now" on a car's connect notification (a guest, or a `cars:` car linked to an Easee) also turns the helper on. The app turns the helper off after charging is completed or when the charger is disconnected.
 3. **Charging on Solar Power**: If you generate electricity, you can choose to charge only during surplus production. Define another `input_boolean` and configure it with the `charge_only_on_solar` option.
 
 #### Priority Settings for Cars
