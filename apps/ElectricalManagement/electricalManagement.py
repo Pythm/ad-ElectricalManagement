@@ -23,6 +23,7 @@ from pydantic_models import (
     dump_persistence,
     ChargerData,
     CarData,
+    CarOptions,
     HeaterBlock,
     TempConsumption,
     WattSlot,
@@ -43,12 +44,12 @@ from utils import (
 )
 from registry import Registry
 from scheduler import Scheduler
-from electrical_cars import Car, Tesla_car, STALE_DATA_MINUTES
+from electrical_cars import Car, Tesla_car, Audi_car, STALE_DATA_MINUTES
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
 from electrical_heater import Heater, Climate, On_off_switch, ClimateCommanderHeater
 from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
-__version__ = "1.0.6"
+__version__ = "1.0.5"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -133,17 +134,18 @@ CHARGER_SPECS: List[Tuple[str, str, str]] = [
     ('session_energy',           'sensor',        '_energy_added'),
 ]
 
-# Audi Connect (https://github.com/audiconnect/audi_connect_ha). Entity ids are UNVERIFIED on a real
-# car: they are the HA slugs of the entity names in the integration's platform files
-# (binary_sensor.py "Plug state", number.py "Global charge target", sensor.py "State of charge",
-# "Last Update", "Charging state", "Charging power"). Every one of them can be overridden in the
+# Audi Connect (https://github.com/audiconnect/audi_connect_ha, checked against version 2.5.2). WORK IN
+# PROGRESS, never ran on a real car. Entity ids are UNVERIFIED: they are the HA slugs of the entity names
+# in the integration's platform files (binary_sensor.py "Plug state", number.py "Current location charge
+# target", sensor.py "State of charge", "Last Update", "Charging state", "Charging power"); the file that
+# builds the entity ids (audi_entity.py) was not checked. Every one of them can be overridden in the
 # audi entry of the configuration with the same key.
 AUDI_SPECS: List[Tuple[str, str, str]] = [
     ('charger_sensor',           'binary_sensor', '_plug_state'),              # plug is a binary_sensor, not a sensor
-    ('charge_limit',             'number',        '_global_charge_target'),    # writable; the read-only sensor
-                                                                               # _target_state_of_charge can not be set.
-                                                                               # number.<car>_current_location_charge_target
-                                                                               # may be the one that stops the charge.
+    ('charge_limit',             'number',        '_current_location_charge_target'),
+                                                                               # the profile target where the car is parked:
+                                                                               # the one that stops the charge. "Global charge
+                                                                               # target" does not (audiconnect README, #722).
     ('battery_sensor',           'sensor',        '_state_of_charge'),         # device_class battery, direct SOC
     ('location_tracker',         'device_tracker','_position'),                # device_tracker.py not checked
     ('data_last_update_time',    'sensor',        '_last_update'),
@@ -297,6 +299,25 @@ def set_validated(ADapi, block, key: str, value) -> bool:
         return False
     setattr(block, key, value)
     return True
+
+
+def car_option(ADapi, cfg: dict, car_name: str, key: str, default):
+    """ One config-only car key (`wake_when_stale`, `unlink_grace_minutes`), checked against CarOptions.
+        A missing or empty key gives the default. A value that is not valid gives an ERROR naming the
+        key, and the default is used: bool() read the string "false" as true, and float() of a
+        non-number stopped the app at startup. """
+    value = cfg.get(key)
+    if value is None:
+        return default
+    try:
+        return getattr(CarOptions.model_validate({key: value}), key)
+    except ValidationError as e:
+        ADapi.log(
+            f"{car_name}: '{key}: {value}' in the configuration is not valid ({e.errors()[0]['msg']}). "
+            f"Using the default {default}.",
+            level = 'ERROR'
+        )
+        return default
 
 
 class ElectricalUsage(ad.ADBase):
@@ -691,8 +712,8 @@ class ElectricalUsage(ad.ADBase):
                 carName = carName,
                 car_data = self._persistence.car[carName],
                 charging_scheduler = self.charging_scheduler,
-                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
-                unlink_grace_minutes = cfg.get('unlink_grace_minutes', STALE_DATA_MINUTES),
+                wake_when_stale = car_option(self.ADapi, cfg, carName, 'wake_when_stale', True), # config only, see Car docstring
+                unlink_grace_minutes = car_option(self.ADapi, cfg, carName, 'unlink_grace_minutes', STALE_DATA_MINUTES),
             )
             self.cars[tesla_car.vehicle_id] = tesla_car
             if tesla_car.vehicle_id == carName:
@@ -768,14 +789,14 @@ class ElectricalUsage(ad.ADBase):
                 vehicle_id = carName
                 self._vehicle_id_missing = location_tracker is not None or self._vehicle_id_missing
 
-            audi_car = Car(
+            audi_car = Audi_car(
                 api = self.ADapi,
                 namespace = namespace,
                 carName = carName,
                 vehicle_id = vehicle_id,
                 car_data = self._persistence.car[carName],
                 charging_scheduler = self.charging_scheduler,
-                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
+                wake_when_stale = car_option(self.ADapi, cfg, carName, 'wake_when_stale', True), # config only, see Car docstring
             )
             self.cars[audi_car.vehicle_id] = audi_car
 
@@ -850,7 +871,7 @@ class ElectricalUsage(ad.ADBase):
                 vehicle_id = cfg['carName'],
                 car_data = self._persistence.car[cfg['carName']],
                 charging_scheduler = self.charging_scheduler,
-                wake_when_stale = cfg.get('wake_when_stale', True), # config only, see Car docstring
+                wake_when_stale = car_option(self.ADapi, cfg, cfg['carName'], 'wake_when_stale', True), # config only, see Car docstring
             )
             self.cars[cfg['carName']] = car
 
@@ -2768,8 +2789,8 @@ class ElectricalUsage(ad.ADBase):
             for charger in self.all_chargers():
                 # One charger that fails must not keep the other chargers and the heaters on.
                 try:
-                    self.ADapi.log(f"Fire: {charger.charger} state {charger.getChargingState()}, start loop {charger.checkCharging_handler is not None and self.ADapi.timer_running(charger.checkCharging_handler)}, linked {getattr(charger.connected_vehicle, 'carName', None)} state {charger.connected_vehicle.getCarChargerState() if charger.connected_vehicle is not None else None}") ###
                     charger.stop_on_fire()
+                    self.ADapi.log(f"Fire: {charger.charger} state {charger.getChargingState()}, start loop {charger.checkCharging_handler is not None and self.ADapi.timer_running(charger.checkCharging_handler)}, linked {getattr(charger.connected_vehicle, 'carName', None)} state {charger.connected_vehicle.getCarChargerState() if charger.connected_vehicle is not None else None}") ###
                 except Exception as e:
                     charger.doNotStartMe = True
                     self.ADapi.log(f"{charger.charger} could not be stopped for the fire alarm: {e}", level = 'ERROR')

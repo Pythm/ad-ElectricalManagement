@@ -15,15 +15,15 @@ The purpose of this Appdaemon app is to help reduce your electricity bill by:
 
 ## 🚨 Breaking Changes
 
-### **v1.0.6** – behaviour changes (nothing to do in the default case)
+### **v1.0.5** – behaviour changes (action needed: add `power:` to every heater)
 
-No configuration changes are needed. Things that behave differently:
+The only configuration change needed is `power:` on the heaters (see below). Things that behave differently:
 
 - **Charging reduction when over the kWh goal** now uses the correct amount: previously a reduction request made the chargers drop straight to their minimum amps, now they are lowered by the amps actually needed.
 - **Charging queue priority** is now actually applied to the queue order.
 - **The per-minute check runs at second 5** (not second 0) and charger reduction is skipped in minute 0 if the accumulated consumption sensor has not reset yet.
 - **Stale accumulated sensor**: `reload_config_entry` is called at most every 15 minutes.
-- **Heater power is set with `power` (watts) and no longer learned.** Add `power:` with the rated watts to every `climate`, `heater_switches` and `climate_commander` entry. **Action needed:** a WARNING at startup lists the heaters without it. Without `power` the stored value is kept (or 300 W for a climate, 1000 W for a switch when nothing is stored). Why: learning only ever went up, and until 1.0.6 it stored the sum of several heaters running at the same time, so stored values can be far too high (a 2 kW water heater stored as 6.7 kW). The value is used for the charge plan after save periods, the total heater power, solar overproduction, and as consumption for heaters without a consumption sensor.
+- **Heater power is set with `power` (watts) and no longer learned.** Add `power:` with the rated watts to every `climate`, `heater_switches` and `climate_commander` entry. **Action needed:** a WARNING at startup lists the heaters without it. Without `power` the stored value is kept (or 300 W for a climate, 1000 W for a switch when nothing is stored). Why: learning only ever went up, and until 1.0.5 it stored the sum of several heaters running at the same time, so stored values can be far too high (a 2 kW water heater stored as 6.7 kW). The value is used for the charge plan after save periods, the total heater power, solar overproduction, and as consumption for heaters without a consumption sensor.
 - **Json storage** is written atomically, also after learning idle consumption and high usage, and an unreadable file is renamed to `*.corrupt-<time>.json` and the app starts fresh instead of failing to start.
 - **Price app not ready**: if ElectricalPriceCalc has no prices yet at startup the app uses 1 hour slots and retries (for `pricearea`, the price fetch runs in the background). If `electricalPriceApp` cannot be found the app logs an error and stops.
 - **Config is validated**: unknown keys are ignored, but invalid values are logged at ERROR and the app does not start. `options` is optional; `notify_receiver` can be a single name or a list.
@@ -35,6 +35,8 @@ No configuration changes are needed. Things that behave differently:
   - Easee in `ready_to_charge`: the first 10 `resume` commands are sent every minute as before, then every 10 minutes with one warning and one notification.
   - Easee current sensor reading 0 while charging no longer lowers the stored amps for the first 3 minutes.
   - `WAKE_UP` is sent to a sleeping Tesla when its data is older than 12 minutes (it used to be sent only when the data was fresh). Set `wake_when_stale: false` on a car to turn this off.
+  - **`wake_when_stale` and `unlink_grace_minutes` are checked**: `wake_when_stale: "false"` (a string) used to be read as true, and an `unlink_grace_minutes` that is not a number stopped the app at startup. Now `true`/`false`, `yes`/`no`, `on`/`off` and `1`/`0` are read as booleans and a number in quotes as a number. Any other value is logged at ERROR with the key, and the default is used (`wake_when_stale` true, `unlink_grace_minutes` 12). A key with no value (`wake_when_stale:`) also gives the default; it used to give false / 0.
+  - **A car under `cars:` can be linked to an Easee.** Such a car has no charging state of its own, so it never reports `NoPower` and was never linked: the Easee paused every session. Now it is linked when the Easee is `awaiting_start`, the car is home, its plug sensor (`charger_sensor`) is `on` and it is not charging on its own charger, on data newer than the cable event as for a Tesla, and only when it is the one car that matches. With two such cars plugged in, nothing is linked (the Easee is paused as before). A Tesla that reports `NoPower` still wins: the plug sensor counts only when no car matches on `NoPower`. A car under `cars:` without `charger_sensor` can not be linked; use the guest switch, and the warning of the paused Easee names that car. When the Easee has been disconnected for `guest_remove_after_minutes`, the plug sensor of such a car also decides whether it was moved to its own charger (`on`, it keeps its plan) or unplugged (`off`).
   - **Unlink grace for Tesla (new optional `unlink_grace_minutes`, default 12 for Tesla cars, 0 = old behaviour)**: when a Tesla linked to an external charger (Easee) reports a state that differs from the charger, the link is no longer dropped at once. The app waits `unlink_grace_minutes`, then reads the car again and unlinks only if it still differs (a missing/`unavailable` value keeps the link). Cloud data from a sleeping Tesla is often old or wrong, and the Easee is the real sensor; real unplugs are still caught by the Easee's own `disconnected` handling. 12 matches the 11 minute default fetch interval of the Tesla integration; raise it if you slow the integration down. **Nothing to do** unless you want another value: `unlink_grace_minutes: 0` on a car restores immediate unlinking.
   - **Which car is on the Easee is checked on fresh data (two or more cars)**: when the Easee goes to `awaiting_start`, the cars that are home and not charging are asked for new data (a sleeping Tesla is woken with `WAKE_UP`, unless `wake_when_stale: false`, and the force data update button is pressed). A car is linked only when it is the only one that still reports `NoPower` on data newer than that moment. The app checks every 30 seconds for up to 4 minutes, then uses the cached data. With two cars that both still report `NoPower` nothing is linked (before, the first car in the list won). A new round of wake-ups starts at most every 10 minutes per charger. With one car nothing changes.
   - **A finished charger no longer removes a car that still reports charging**: when the Easee says `completed` but the car's own data (a Tesla can be up to ~11 minutes late) still says Charging, Stopped or NoPower, the car stays in the charge queue until the car itself reports Complete. This stops the hourly re-plan from queuing the car again from its old battery value and sending a second "Charge below" notification. A car without a state of its own, or one that already says Complete or Disconnected, is handled as before.
@@ -42,17 +44,17 @@ No configuration changes are needed. Things that behave differently:
   - **Fire alarm (`MODE_CHANGE` `fire`)**: every charger is now checked on its own state, with or without a linked car, and also when the car's cloud data is late, the car has `charge_now` on or it reports the cable out. An Easee that is charging or `ready_to_charge` is paused and a home car charging on its own charger is stopped. The stop is repeated every minute while charging goes on. Start commands that are running end at once, and a charger that starts after the alarm is stopped again.
   - **A car that is not home gets no commands**: no start, stop, ampere or charge limit commands and no wake-up, also during a fire alarm (it may be fast charging somewhere else). An Easee can always be stopped. If the location of a car is `unavailable` or `unknown`, it gets no stop and no wake-up (one WARNING during a fire alarm); the start loop still runs, because it also wakes the car.
   - **A Tesla no longer jumps from the Easee to its own charger** when it reports `Stopped`. A linked car stays linked until the `unlink_grace_minutes` check or the Easee disconnect check ends the link. The car then goes to its own charger if it is plugged in there.
-  - **Easee `ready_to_charge` matches a car that reports `Stopped` or `NoPower`**, so a Tesla stopped in the car app on a live Easee stays linked. A new link to the Easee still needs `awaiting_start` and a car that reports `NoPower`.
+  - **Easee `ready_to_charge` matches a car that reports `Stopped` or `NoPower`**, so a Tesla stopped in the car app on a live Easee stays linked. A new link to the Easee still needs `awaiting_start` and a car that reports `NoPower` (a car under `cars:`: its plug sensor, see above).
   - **A car on its own charger that reports `NoPower` keeps that link** while the app checks whether it is on a free Easee. It is moved only when the check finds it.
   - **An Easee no longer keeps charging with no car linked**: this is checked every minute and at each status change. An `unavailable` status does not count, and a guest session is a linked car. The Easee is paused, with one warning in the log (no notification, temporary debug line); the pause is checked every minute and sent at most 5 times. The car is linked as usual once it reports `NoPower` in `awaiting_start`, which normally happens after the pause, and then charges by its plan. With a cable in and no car linked, the app looks for the car every minute (wake-ups stay at one round per 10 minutes, for cars at home). Charging an Easee from outside the app with no car linked is not supported: it is paused too. There is no option to turn this off. Use the guest switch for a car the app does not know.
   - **Unplugged from the Easee before the planned start**: after `guest_remove_after_minutes` the car is removed from the charge queue (the charge plan used to stay until its planned start). A car that already reports `Stopped` or `Charging` was moved to its own charger and keeps its plan.
   - **Battery level unreadable while the cable is in**: the last level read since the cable was connected is used. Before, the app assumed 10%, which planned almost a full charge.
   - **Unreadable `data_last_update_time`** no longer counts as fresh data for the link check; the wait still ends after 4 minutes.
   - **An unreadable sensor no longer stops the app or the per-minute check**: session energy, `finishByHour` and charge limit helpers that are `unavailable` keep the last value, and a missing or `unavailable` `software_update` means no update is running. Listeners are no longer set on keys that are not configured.
-  - **Wrong or missing names are logged**: a `notify_app` that is not found gives an ERROR, an Easee without an `id` attribute gives an ERROR and uses the charger name as id, and a `tesla`, `audi` or `easee` entry without a name is skipped with a WARNING.
+  - **Wrong or missing names are logged**: a `notify_app` that is not found gives an ERROR, an Easee without an `id` attribute gives an ERROR and uses the charger name as id, and a `tesla` or `easee` entry without a name is skipped with a WARNING.
   - **Easee minimum ampere** goes back from 11 to 6 when the charger is no longer locked to 3 phases.
   - **Guest cars** now learn the highest ampere they accept from the Easee (`limited_by_car`), for that session only. An `unavailable` guest switch no longer ends the guest's kWh estimate.
-- **`low_price_max_continuous_hours` works again** (climate/heaters only, optional). The README has described it for a long time, but the setting was read and never used: spend hours always used the 3 lowest hours of the day. It now replaces that fixed 3. **Nothing to do in the default case**: without the key the behaviour is as before (3). If you already have the key in your YAML, its value is used from now on, so a value other than 3 changes the number of spend hours. Needs [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) 0.1.8 or later; without the key an older ElectricalPriceCalc still works.
+- **`low_price_max_continuous_hours` works again** (climate/heaters only, optional). The README has described it for a long time, but the setting was read and never used: spend hours always used the 3 lowest hours of the day. It now replaces that fixed 3. **Nothing to do in the default case**: without the key the behaviour is as before (3). If you already have the key in your YAML, its value is used from now on, so a value other than 3 changes the number of spend hours. Needs [ElectricalPriceCalc](https://github.com/Pythm/ElectricalPriceCalc) 0.1.8 or later; without the key an older ElectricalPriceCalc still works. With the key and an older ElectricalPriceCalc, one WARNING per app asks you to update ElectricalPriceCalc to 0.1.8, and the spend hours use its default of 3 until then (before, the heater's price run failed with a TypeError every time).
 - **Guest car on the Easee** is handled by one class (`guest.py`): the guest id is now stable (`guest_<charger id>`), a guest switch that is already on when AppDaemon restarts recreates the guest, the teardown (queue, solar list, links, timers, Easee pause, switch off) runs once and in a fixed order, and guest sessions no longer raise `max_kWh_charged`. A warning and notification is sent if the guest switch is turned on while a Tesla is linked to the Easee. New optional `guest_remove_after_minutes` (default 12) sets how long the Easee may stay disconnected before the guest is removed.
 - **New: `climate_commander`** (optional). Climates can now be controlled by [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) 1.4.0 or later: ElectricalManagement decides save / spend / overconsumption from prices and consumption, ClimateCommander turns that into a setpoint (heaters with an outdoor-temperature table, and HVAC with a fixed indoor temperature, also in cool mode). See [Climates controlled by ClimateCommander](#-climates-controlled-by-climatecommander-climate_commander). **Nothing to do** if you keep `climate:`.
 - **`climate:` is deprecated** (a WARNING is logged at startup). It still works unchanged. Move the climate to a ClimateCommander app when convenient; the learned consumption data is kept because it is stored under the entity id.
@@ -65,6 +67,7 @@ No configuration changes are needed. Things that behave differently:
   - **Window temperature correction is capped at 3 degrees**, the same cap as the indoor-sensor correction, and the cap applies to the sum of the two. Example: target 23, `window_offset` -3, window sensor 35: the setpoint goes 3 down (to 20). Before, it went 15 down and ended at the vacation / minimum floor.
   - **An offline window temperature sensor** no longer lowers the setpoint: it is treated as exactly at the threshold (`target_indoor_temp + window_offset`). Before, it was compared against the heater target, which lowered the setpoint by the difference between the heater target and the indoor target.
   - **Setpoint only sent when it changes**: the new target is rounded to 0.5 before it is compared with the heater's setpoint. A target of 22.3 with the heater at 22.5 is no longer re-sent every 15 minutes. A setpoint changed by hand is still overwritten at the next run, as before.
+  - **Rounding is half up, and the floors come after it**: 22.25 is sent as 22.5 and 22.75 as 23.0 (Python's `round` gave 22.0 and 23.0). The vacation temperature and the climate's `min_temp` are applied after the rounding and sent as they are: a vacation temperature of 13.2 is sent as 13.2, not 13.0.
   - **Spend periods apply at once**: when the price run (13:01, 00:05) finds a spend period that already covers now, the +1 is sent right away instead of at the next 15 minute run.
   - **Fallback temperature when nothing is configured**: a climate without `save_temp`, `save_temp_offset`, `vacation_temp` or `save` / `vacation` in `temperatures` now uses the climate's own `min_temp` attribute (5 if the entity has none) where it used a fixed 10. The same fallback is used when the heater's setpoint cannot be read during an overconsumption reduce.
   - **Vacation end** sends `hvac_mode: heat` only to a climate that this app turned off (`vacation_keep_off` or the fire alarm). A climate you turned off by hand before leaving stays off. After an AppDaemon restart during vacation, an `off` climate with `vacation_keep_off` counts as turned off by the app.
@@ -88,7 +91,6 @@ No configuration changes are needed. Things that behave differently:
 - **Several instances work side by side**: each app has its own list of cars and chargers. Before, the second instance wiped the list of the first. Give each instance its own `json_path`, since they otherwise share one file.
 - **`charge_below_price` with several cars**: a heater save period now gives way when any car is below its price. Before, only the first such car in the queue was looked at.
 - **Smaller fixes**: `json_path` in a folder that does not exist yet is created. A switch starts with the stored outdoor temperature, as climates do, instead of 10. Scattered `unavailable` readings of `accumulated_consumption_current_hour` no longer add up to a reload; it takes more than 15 in a row. Idle consumption above the hourly cap, or a stored heater consumption above the total `power`, no longer gives a wrong charge time estimate.
-- **Audi (still untested on a real car)**: the plug sensor is a `binary_sensor`, charging states are normalised (`charging`, `readyForCharging`, `chargePurposeReached`, `notReadyForCharging` ...), and the start/stop service uses the new optional `device_id` (falls back to `vin` with a warning). The start command is no longer repeated every 60 seconds: it is verified after `verify_minutes` (default 20) and retried at most `max_command_retries` (default 2) times, then a warning/notification. Optional `charge_power_kW` sets the assumed charging power. The Tesla start/wake loop is unchanged.
 
 ---
 
@@ -189,7 +191,7 @@ The app can also continuously monitors your energy consumption and adjusts accor
 > [!NOTE]  
 > Max usage limit `max_kwh_goal` is developed according to the calculation that Norwegian Energy providers base their grid tariffs on. We pay extra for the average of the 3 highest peak loads in steps of 5-10 kWh, 10-15 kWh, etc. This should be adaptable to other tariffs with some modifications.
 
-If you have solar or other electricity production, add a production sensor and an accumulated production sensor. The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production.
+If you have solar or other electricity production, add a production sensor `power_production` (W) and an accumulated production sensor `accumulated_production_current_hour` (kWh this hour). The app will try to charge any cars with surplus production. If all cars have reached their preferred charge limit, it will try to spend extra on heating. The calculations also support one consumption sensor with negative numbers for production.
 
 > [!NOTE]  
 > I do not have solar panels installed and this feature is only tested with manual input of test data. Please consider this untested and report any unexpected behavior.
@@ -260,6 +262,8 @@ Set a main `vacation` switch to lower temperature when away. This can be configu
 ```yaml
   vacation: input_boolean.vacation
 ```
+
+Without `vacation`, `input_boolean.vacation` is used if it exists. `away_state` is an older name for the same key; if both are set, `away_state` wins.
 
 ---
 
@@ -428,7 +432,20 @@ The Easee integration automatically detects wall charger information if its sens
       max_charger_limit: sensor.nameOfCharger_maks_grense_for_lader
       session_energy: sensor.nameOfCharger_energi_ladesesjon
       idle_current: switch.nameOfCharger_ventestrom
+      guest: input_boolean.easee_guest  # optional
+      guest_remove_after_minutes: 12  # optional; minutes disconnected before a guest / queued car is removed
 ```
+
+`status` is accepted instead of `charger_status` for the status sensor (if both are given, `status` is used), and `current` is the same as `charging_amps`. `guest_remove_after_minutes` must be a whole number of minutes, 1 or more; any other value gives a WARNING and 12 is used. After that many minutes in `disconnected`, a guest session ends, and a linked car that has not moved to its own charger is removed from the charge queue and goes back to its own charger. `guest` is read only the first time the charger is saved (see [Saved charger values do not change](#saved-charger-values-do-not-change)).
+
+#### Which car is on the Easee
+
+The Easee does not know which car is plugged in, so the app links a car to it when the Easee is `awaiting_start` (cable in, no power given yet):
+
+- **Tesla**: the car reports `NoPower`.
+- **A car under `cars:`**: such a car has no charging state of its own, so its plug sensor `charger_sensor` is used. It must read `on`, the car must be home and not charging on its own charger (`charger_switch` on), and it must not be linked to another Easee.
+
+With two or more cars the decision waits for data newer than the cable event (up to 4 minutes, see the v1.0.5 notes). A car is linked only when it is the one car that matches. A Tesla that reports `NoPower` is the stronger evidence: the plug sensor of a car under `cars:` is used only when no car matches on `NoPower`. With two cars that match the same way (two Teslas on `NoPower`, or two cars under `cars:` that are plugged in), nothing is linked, and an Easee that starts charging is paused. A car under `cars:` without `charger_sensor` is never linked; use the guest switch for it.
 
 ---
 
@@ -475,6 +492,8 @@ Input the name of your Tesla using the `car` option. Check logs for any errors a
       finishByHour: input_number.charge_finished
       priority: 3
       charge_now: input_boolean.charge_now
+      wake_when_stale: true  # optional; false: never send WAKE_UP for stale data
+      unlink_grace_minutes: 12  # optional; minutes before a Tesla on an Easee is unlinked on a state mismatch, 0 = at once
 ```
 
 ---
@@ -511,6 +530,8 @@ Please try configure your other cars with the following sensors under `cars`:
 
 In addition to the HA helpers.
 
+`charger_sensor` is the car's plug sensor (`on` when the cable is in). It is also what links the car to an Easee: see [Which car is on the Easee](#which-car-is-on-the-easee). Without it the car can only charge on an Easee through the guest switch.
+
 > [!WARNING]  
 > The default location if no sensor for location is provided, is 'home'. This will stop charging if you are controlling your car and not a wall charger if it is not charge time. Please make sure your location sensor is functioning properly. If your car does not provide a location you can use another tracker, or make sure you have configured a `charge_now` to force charging when not home.
 
@@ -520,7 +541,7 @@ If the sensors does not work for your car, please open an issue.
 
 ## 🌡️ Climates controlled by ClimateCommander (`climate_commander`)
 
-From version 1.0.6, a climate can be configured in [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) (1.4.0 or later) and controlled from here. The work is split:
+From version 1.0.5, a climate can be configured in [ClimateCommander](https://github.com/Pythm/ad-ClimateCommander) (1.4.0 or later) and controlled from here. The work is split:
 
 - **ClimateCommander** owns the climate: setpoint (outdoor-temperature table or fixed indoor temperature), windows, vacation, daytime savings, notifications, screens, HVAC modes (heat/cool/fan_only).
 - **ElectricalManagement** owns the electricity: save and spend periods from prices, reductions when you are over the kWh goal, solar overproduction, and the learned consumption used for the charge plan.
@@ -559,6 +580,9 @@ List the ClimateCommander apps under `climate_commander`, with the energy keys f
 |---|---|---|
 | `app` | (required) | Name of the ClimateCommander app. |
 | `climate` | (optional) | Entity id. Needed only for an older ClimateCommander app with `HVAC:`/`Heaters:` lists. Without it the entry waits (up to 10 minutes) for the app to start. |
+| `heater` | (optional) | Alias of `climate`. If both are given, `climate` is used. |
+| `vacation` | the ClimateCommander device's vacation switch | An entity id here overrides it. When the device has no vacation switch, the saved value is kept (the main `vacation` when the entry is first saved). |
+| `namespace` | `main_namespace` | Only used when the ClimateCommander app is not found and `climate` is given; otherwise the device's own namespace is used. |
 | `power` | stored value, else `300` | Rated watts of the heater. Set it: it is not learned. |
 | `consumptionSensor`, `kWhconsumptionSensor` | found by name | As for `climate:`. |
 | `max_continuous_hours`, `on_for_minimum`, `pricedrop`, `pricedifference_increase` | `2`, `6`, `1`, `1.07` | Save periods, see [Savings Settings](#-savings-settings). |
@@ -567,7 +591,7 @@ List the ClimateCommander apps under `climate_commander`, with the energy keys f
 | `recipient`, `options` | main values | `print_save_hours` logs the save hours. |
 
 Notes:
-- The vacation switch and `daytime_savings` are taken from the ClimateCommander device. Windows, temperatures and notifications are configured only there.
+- The vacation switch (unless `vacation` is set in the entry) and `daytime_savings` are taken from the ClimateCommander device. Windows, temperatures and notifications are configured only there.
 - The state is re-sent at least every 10 minutes. If ElectricalManagement stops, the device goes back to `normal` by itself after 45 minutes.
 - A ClimateCommander app that is reloaded gets its state again within a minute.
 - No `dependencies:` are needed between the apps.
@@ -849,7 +873,7 @@ electricity:
       max_charger_limit: sensor.nameOfCharger_maks_grense_for_lader
       session_energy: sensor.nameOfCharger_energi_ladesesjon
       idle_current: switch.nameOfCharger_ventestrom
-      guest: input_boolean.easeelader_guest_using
+      guest: input_boolean.easee_guest
 
   # Climate
   climate:

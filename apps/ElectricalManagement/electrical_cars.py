@@ -543,6 +543,25 @@ class Car:
             return self.connected_charger.getChargingState()
         return None
 
+    def plug_state_without_own_state(self) -> Optional[bool]:
+        """ The plug sensor (charger_sensor) of a car that has no 'charging_state' of its own (a car
+            under `cars:`): True for 'on', False for 'off'. None when there is no plug sensor, when the
+            car reports a charging state of its own, and for an unavailable, unknown or missing reading. """
+
+        if self.car_data.charger_sensor is None:
+            return None
+        try:
+            own_state = self.ADapi.get_state(self.car_data.charger_sensor,
+                namespace = self.namespace,
+                attribute = 'charging_state'
+            )
+            plug = self.ADapi.get_state(self.car_data.charger_sensor, namespace = self.namespace)
+        except (ValueError, TypeError):
+            return None
+        if own_state is not None or plug not in ('on', 'off'):
+            return None
+        return plug == 'on'
+
     def startChargingCar(self) -> None:
         """ Starts controlling charger.
         """
@@ -765,4 +784,29 @@ class Tesla_car(Car):
             ))
             if energy_at_arrival is not None and energy_at_arrival > 0:
                 self.car_data.kWh_remain_to_charge = self.car_data.pref_charge_limit - energy_at_arrival
-                ### TODO: Verify and add to charge queue based on arrival time
+                # TODO: Verify and add to charge queue based on arrival time
+
+
+# The audiconnect charge targets accept 20-100 % in steps of 5 (audiconnect number.py, _SOC_MIN/_SOC_MAX/_SOC_STEP).
+AUDI_SOC_MIN = 20
+AUDI_SOC_MAX = 100
+AUDI_SOC_STEP = 5
+
+class Audi_car(Car):
+    """ Audi Connect (audiconnect) car. WORK IN PROGRESS, never ran on a real car.
+        Same as a car under `cars:` (the plug binary_sensor has no 'charging_state' attribute) except that a
+        new charge limit is rounded to what the integration accepts. The app never wakes or refreshes an Audi:
+        audiconnect's refresh_vehicle_data counts against a daily API limit (forceAPIupdate stays a no-op). """
+
+    def changeChargeLimit(self, chargeLimit:int = 100) -> None:
+        limit = to_float_or_none(chargeLimit)
+        if limit is None:
+            return
+        rounded = int(min(AUDI_SOC_MAX, max(AUDI_SOC_MIN, AUDI_SOC_STEP * math.floor(limit / AUDI_SOC_STEP + 0.5))))
+        if rounded != limit:
+            self.ADapi.log(
+                f"{self.carName} charge limit {chargeLimit} rounded to {rounded} (audiconnect accepts "
+                f"{AUDI_SOC_MIN}-{AUDI_SOC_MAX} in steps of {AUDI_SOC_STEP}).",
+                level = 'DEBUG'
+            )
+        super().changeChargeLimit(rounded)

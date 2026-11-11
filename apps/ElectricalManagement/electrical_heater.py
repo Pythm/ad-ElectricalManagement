@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import bisect
+import math
+import weakref
 
 from typing import Dict, Tuple
 
@@ -13,6 +15,9 @@ from utils import (
     price_now_or_inf,
     to_float_or_none,
 )
+
+# ADapi of each app instance that has logged the "update ElectricalPriceCalc" warning, so it is logged once per app.
+_warned_no_lowest_hours = weakref.WeakSet()
 
 class Heater:
     """ Heater
@@ -198,6 +203,30 @@ class Heater:
 
         if self.print_save_hours and self.heater_data.time_to_save:
             self.ADapi.log(f"{self.heater} save hours:{self.electricalPriceApp.print_peaks(self.heater_data.time_to_save)}")
+
+    def _find_times_to_spend(self) -> list:
+        """ Spend periods from ElectricalPriceCalc. `lowest_hours` is only sent when
+            low_price_max_continuous_hours is configured. ElectricalPriceCalc older than 0.1.8 does not
+            know it and raises TypeError: then one WARNING per app, and the call is made without it. """
+
+        if self.heater_data.low_price_max_continuous_hours is None:
+            return self.electricalPriceApp.find_times_to_spend(priceincrease = self.heater_data.priceincrease)
+        try:
+            return self.electricalPriceApp.find_times_to_spend(
+                priceincrease = self.heater_data.priceincrease,
+                lowest_hours = self.heater_data.low_price_max_continuous_hours
+            )
+        except TypeError as e:
+            if 'lowest_hours' not in str(e):
+                raise
+            if self.ADapi not in _warned_no_lowest_hours:
+                _warned_no_lowest_hours.add(self.ADapi)
+                self.ADapi.log(
+                    "low_price_max_continuous_hours needs ElectricalPriceCalc 0.1.8 or later. Update ElectricalPriceCalc; "
+                    "until then spend hours use its default (the 3 lowest hours).",
+                    level = 'WARNING'
+                )
+            return self.electricalPriceApp.find_times_to_spend(priceincrease = self.heater_data.priceincrease)
 
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Turns heater on or off based on this hours electricity price. """
@@ -738,14 +767,7 @@ class Climate(Heater):
     def heater_getNewPrices(self, kwargs) -> None:
 
         super().heater_getNewPrices(0)
-        spend_kwargs: dict = {}
-        if self.heater_data.low_price_max_continuous_hours is not None:
-            # Only sent when configured, so an ElectricalPriceCalc without 'lowest_hours' keeps working
-            spend_kwargs['lowest_hours'] = self.heater_data.low_price_max_continuous_hours
-        self.time_to_spend = self.electricalPriceApp.find_times_to_spend(
-            priceincrease = self.heater_data.priceincrease,
-            **spend_kwargs
-        )
+        self.time_to_spend = self._find_times_to_spend()
         # A spend period that already covers now is applied at once, not one runner tick later.
         self.heater_setNewValues()
 
@@ -1040,15 +1062,18 @@ class Climate(Heater):
         ):
             new_temperature += 1
 
-        # Avoid setting lower temp than climate minimum
+        # Setting new temperature. The setpoint is compared with the target rounded half up to 0.5 (the
+        # value that is sent), so an unchanged target is not re-sent every runner tick. round() rounds
+        # half to even (22.25 -> 22.0 but 22.75 -> 23.0).
+        new_temperature = math.floor(new_temperature * 2 + 0.5) / 2
+
+        # Avoid setting lower temp than vacation temp or the climate minimum. After the rounding, so a
+        # floor is sent as it is (a floor of 13.2 is not rounded down to 13.0).
         if new_temperature < vacation_temp:
             new_temperature = vacation_temp
         if new_temperature < self.min_temp:
             new_temperature = self.min_temp
 
-        # Setting new temperature. The setpoint is compared with the target rounded to 0.5 (the value
-        # that is sent), so an unchanged target is not re-sent every runner tick.
-        new_temperature = round(new_temperature * 2, 0) / 2
         try:
             if heater_temp != new_temperature:
                 self.ADapi.call_service('climate/set_temperature',
@@ -1319,13 +1344,7 @@ class ClimateCommanderHeater(Heater):
 
     def heater_getNewPrices(self, kwargs) -> None:
         super().heater_getNewPrices(0)
-        spend_kwargs: dict = {}
-        if self.heater_data.low_price_max_continuous_hours is not None:
-            spend_kwargs['lowest_hours'] = self.heater_data.low_price_max_continuous_hours
-        self.time_to_spend = self.electricalPriceApp.find_times_to_spend(
-            priceincrease = self.heater_data.priceincrease,
-            **spend_kwargs
-        )
+        self.time_to_spend = self._find_times_to_spend()
         self.heater_setNewValues()
         if self.time_to_spend and self.print_save_hours:
             self.ADapi.log(f"{self.heater} Extra heating at: {self.electricalPriceApp.print_peaks(self.time_to_spend)}", level = 'INFO')

@@ -121,6 +121,12 @@ class Charger:
 
         return car_state is not None
 
+    def _plug_link_evidence_ok(self, car) -> bool:
+        """ Whether a car whose plug sensor has no charging state of its own (a car under `cars:`, an Audi)
+            may be linked to this charger on its plug sensor. Only the Easee allows it. """
+
+        return False
+
     # ---- linking: candidates and fresh data ------------------------------------------- #
     # Seconds between checks while waiting for the cars to report again after a wake-up,
     # the number of checks before the cached data is used as it is, and the minutes before a new
@@ -139,24 +145,36 @@ class Charger:
     def _link_candidates(self, fresh_since = None) -> tuple:
         """ Cars that match the state of this charger, as (candidates, unverified).
             With fresh_since, a matching car whose data is older than that is returned as
-            unverified instead of as a candidate. """
+            unverified instead of as a candidate.
+            A car that matches on its plug sensor only (_plug_link_evidence_ok) is returned only when
+            no car matches on its own state: a car that reports 'NoPower' is the stronger evidence,
+            and the links of those cars stay as they were. """
 
         candidates:list = []
         unverified:list = []
+        plug_candidates:list = []
+        plug_unverified:list = []
         for car in self._cars:
             if not car._polling_of_data() or not car.isConnected():
                 continue
 
             car_state = car.getCarChargerState()
-            if car.connected_charger is None or car_state == 'NoPower':
-                if (
-                    self._link_evidence_ok(car_state)
-                    and self.compareChargingState(car_status = car_state)
-                ):
-                    if fresh_since is not None and not car.data_updated_since(fresh_since):
-                        unverified.append(car)
-                    else:
-                        candidates.append(car)
+            if (
+                (car.connected_charger is None or car_state == 'NoPower')
+                and self._link_evidence_ok(car_state)
+                and self.compareChargingState(car_status = car_state)
+            ):
+                found, waiting = candidates, unverified
+            elif self._plug_link_evidence_ok(car):
+                found, waiting = plug_candidates, plug_unverified
+            else:
+                continue
+            if fresh_since is not None and not car.data_updated_since(fresh_since):
+                waiting.append(car)
+            else:
+                found.append(car)
+        if not candidates and not unverified:
+            return plug_candidates, plug_unverified
         return candidates, unverified
 
     def _link_car(self, car:Car) -> None:
@@ -1053,12 +1071,62 @@ class Easee(Charger):
             could report its own state: the car says 'NoPower' (cable in, EVSE gives nothing) and
             the Easee is 'awaiting_start', the only status that needs fresh data before a link.
             'Charging' / 'Stopped' / 'Complete' from a Tesla are not evidence for the Easee: two
-            Teslas on cloud data up to 11 min late could otherwise be linked to the wrong charger. """
+            Teslas on cloud data up to 11 min late could otherwise be linked to the wrong charger.
+            A car under `cars:`, which reports no state of its own, has its own rule: _plug_link_evidence_ok. """
 
         return (
             car_state == 'NoPower'
             and self.ADapi.get_state(self.charger_data.charger_sensor, namespace = self.namespace) == 'awaiting_start'
         )
+
+    @staticmethod
+    def _is_generic_car(car) -> bool:
+        """ A car under `cars:` (its own charger is an Onboard_charger), not a guest. Teslas and Audis
+            are not: they have their own charger classes. """
+
+        return not getattr(car, 'is_guest', False) and isinstance(car.onboard_charger, Onboard_charger)
+
+    @classmethod
+    def _links_on_plug(cls, car) -> bool:
+        """ A car whose plug sensor (`charger_sensor`) has no 'charging_state' attribute: a car under `cars:`,
+            or an Audi (`audi:`, its plug is the audiconnect binary_sensor "Plug state"; its charging state is
+            a separate text sensor that only reads 'NoPower' for strings the app knows, see
+            normalise_audi_charging_state). Not a Tesla, not a guest. """
+
+        if cls._is_generic_car(car):
+            return True
+        return not getattr(car, 'is_guest', False) and isinstance(car.onboard_charger, Audi_charger)
+
+    def _plug_link_evidence_ok(self, car) -> bool:
+        """ A car under `cars:` has no 'charging_state' of its own, so it never reports 'NoPower' and
+            could never be linked; an Audi reports 'NoPower' only for the charging_state strings in the
+            table. Their evidence is: the Easee is 'awaiting_start' (cable in, no power
+            given), the car is home with its plug sensor (`charger_sensor`) reading 'on', it is not
+            charging on its own charger, and it is not linked to another external charger. As for
+            'NoPower', the data must be newer than the cable event (_find_car_with_fresh_data), and
+            the car is linked only when it is the one car that matches (_find_and_link). """
+
+        if not self._links_on_plug(car):
+            return False
+        if car.connected_charger not in (None, car.onboard_charger):
+            return False
+        if self._raw_status() != 'awaiting_start':
+            return False
+        if car.getLocation() != 'home' or car.plug_state_without_own_state() is not True:
+            return False
+        return car.onboard_charger.getChargingState() != 'Charging'
+
+    def _car_state_for_disconnect_check(self, car) -> Optional[str]:
+        """ The car's own state for _check_if_still_disconnected. A car under `cars:` or an Audi linked here
+            reads the Easee's state, so its plug sensor stands in: 'on' is 'Stopped' (plugged in on its own
+            charger), 'off' is 'Disconnected'. Other cars, and such a car without a readable plug
+            sensor, give getCarChargerState as before. """
+
+        if self._links_on_plug(car):
+            plugged = car.plug_state_without_own_state()
+            if plugged is not None:
+                return 'Stopped' if plugged else 'Disconnected'
+        return car.getCarChargerState()
 
     def _set_min_ampere_from_phases(self) -> None:
         """ Minimum ampere if locked to 3 phase, and back to the default when it no longer is. """
@@ -1086,7 +1154,8 @@ class Easee(Charger):
             return car_status == 'NoPower'
         elif charger_status == 'ready_to_charge':
             # The Easee offers power and the car does not draw yet: stopped in the car app, or a car
-            # that reports late. Not a reason to unlink. Linking still needs 'NoPower' (_link_evidence_ok).
+            # that reports late. Not a reason to unlink. Linking still needs 'awaiting_start' (_link_evidence_ok,
+            # _plug_link_evidence_ok).
             return car_status in ('Stopped', 'NoPower')
         elif charger_status == 'disconnected':
             return car_status == 'Disconnected'
@@ -1221,7 +1290,7 @@ class Easee(Charger):
                     car = self.connected_vehicle
                     self.ADapi.log(f"{self.charger}: disconnected {minutes} min, {car.carName} state {car.getCarChargerState()}, queued {car.vehicle_id in [item.vehicle_id for item in self.charging_scheduler.chargingQueue]}") ###
                     # Stopped / Charging: the car was moved to its own charger and keeps its plan.
-                    if car.getCarChargerState() not in ('Stopped', 'Charging'):
+                    if self._car_state_for_disconnect_check(car) not in ('Stopped', 'Charging'):
                         car._handleChargeCompletion()
                         self.charging_scheduler.removeFromCharging(car.vehicle_id)
                     Registry.relink_to_onboard(self)
@@ -1229,7 +1298,7 @@ class Easee(Charger):
             if guest is not None:
                 self.guest_manager.end_guest(reason = f"{self.charger} disconnected for {minutes} minutes")
         elif self.connected_vehicle is not None: # Check if new car is connected.
-            if self.connected_vehicle.getCarChargerState() == 'Disconnected':
+            if self._car_state_for_disconnect_check(self.connected_vehicle) == 'Disconnected':
                 self._CleanUpWhenChargingStopped()
                 Registry.relink_to_onboard(self)
                 self.findCarConnectedToCharger()
@@ -1429,7 +1498,8 @@ class Easee(Charger):
     def _ensure_not_charging_unlinked(self) -> None:
         """ The Easee must not charge with no car linked. A car that can be linked is linked instead:
             on 'charging' _link_evidence_ok allows none, so a car on the cable is normally found after
-            the pause, in 'awaiting_start' when it reports 'NoPower'. A running guest session is allowed
+            the pause, in 'awaiting_start' when it reports 'NoPower' (a car under `cars:` or an Audi: when its
+            plug sensor is on, _plug_link_evidence_ok). A running guest session is allowed
             to charge, and an unavailable status is no reason to pause. During a fire stop_on_fire
             repeats the stop. The pause is verified and sent at most EASEE_UNLINKED_PAUSE_TRIES times. """
 
@@ -1454,9 +1524,19 @@ class Easee(Charger):
 
         self._unlinked_pauses += 1
         if self._unlinked_pauses == 1:
+            no_plug = [
+                car.carName for car in self._cars
+                if self._links_on_plug(car) and car.car_data.charger_sensor is None
+            ]
+            no_plug_text = (
+                f" Cars under 'cars:' or 'audi:' without a plug sensor (charger_sensor) can not be linked: {', '.join(no_plug)}."
+                if no_plug else ""
+            )
             self.ADapi.log(
                 f"Easee {self.charger} is charging with no car linked. Pausing it. "
-                "The car is linked when it reports NoPower; use the guest switch for a car the app does not know. ###",
+                "In awaiting_start a car is linked when it reports NoPower, or, for a car under 'cars:' or 'audi:', "
+                "when its plug sensor is on and no other car matches."
+                f"{no_plug_text} Use the guest switch for a car the app does not know. ###",
                 level = 'WARNING'
             )
         self.ADapi.log(f"{self.charger}: pause because no car is linked, try {self._unlinked_pauses}/{EASEE_UNLINKED_PAUSE_TRIES} ###")
@@ -1602,9 +1682,11 @@ class Onboard_charger(Charger):
 # --------------------------------------------------------------------------- #
 # Audi Connect charging_state normalisation. ONE table for the whole app.
 #
-# UNVERIFIED: the audiconnect vehicle model (the file that produces the charging_state
-# strings) was not available; the values below follow the VW-group/Cariad API names used by
-# other integrations. Comparison is case-insensitive. A value that is not in the table is
+# UNVERIFIED: audiconnect 2.5.2 copies the car's raw `charging.chargingStatus.value.chargingState`
+# into the "Charging state" sensor (audi_models.py) without listing the possible values, and the
+# file that turns it into the sensor value (audi_connect_account.py) was not checked. The values
+# below follow the VW-group/Cariad API names used by other integrations. Comparison is
+# case-insensitive. A value that is not in the table is
 # reported ONCE with a WARNING and treated as "no transition" (previous state kept), so a
 # wrong guess here never sends a command, it only logs.
 # --------------------------------------------------------------------------- #
@@ -1648,12 +1730,17 @@ class Audi_charger(Charger):
     """ Audi Connect
         Child class of Charger. Uses Audi Connect custom integration https://github.com/audiconnect/audi_connect_ha.
 
-        NEVER RAN ON A REAL CAR. What is unverified is marked in comments. Differences from the Tesla:
-        * the integration polls every 15 minutes, so there is no 60 s resend loop. One command, ONE verify
-          timer of `verify_minutes`, at most `max_command_retries` resends, then WARNING + notification.
-        * start/stop go through the `audiconnect/execute_vehicle_action` service which can block for
-          ~15 s while the integration confirms the command; it is called with `callback=` so the app
-          thread does not wait.
+        WORK IN PROGRESS, NEVER RAN ON A REAL CAR. What is unverified is marked in comments. Differences
+        from the Tesla:
+        * the integration polls the cloud every `scan_interval` minutes (minimum and default 15), so there
+          is no 60 s resend loop. One command, ONE verify timer of `verify_minutes`, at most
+          `max_command_retries` resends, then WARNING + notification.
+        * start/stop go through the `audiconnect/execute_vehicle_action` service (actions `start_charger` /
+          `stop_charger`, target `device_id` only: the service schema has no `vin`). It can block for ~15 s
+          while the integration confirms the command; it is called with `callback=` so the app thread
+          does not wait. Without `device_id` no command is sent (WARNING at startup).
+        * the audiconnect README says neither start nor stop could be shown to work on a live car (a stop
+          was confirmed and the charge went on); the verify cap above is what keeps that harmless.
         * no ampere control: the Audi charges at whatever the EVSE gives. `charge_power_kW` (optional)
           gives the scheduler a realistic power estimate. """
 
@@ -1688,8 +1775,8 @@ class Audi_charger(Charger):
             recipients = recipients,
         )
 
-        # Config only (not persisted). services.yaml declares `device_id` (HA device id) as the
-        # required target; `vin` is kept as the fallback the old code used.
+        # Config only (not persisted). `device_id` (HA device id) is the only target the audiconnect
+        # services take (services.yaml, schema in audi_account.py); there is no `vin` parameter.
         self.device_id:Optional[str] = device_id
         self.verify_minutes:float = verify_minutes
         self.max_command_retries:int = max_command_retries
@@ -1701,7 +1788,19 @@ class Audi_charger(Charger):
         self._command_retries:int = 0
         self._last_state:Optional[str] = None
         self._warned_states:set = set()
-        self._warned_no_device_id:bool = False
+
+        self.ADapi.log(
+            f"{self.charger}: Audi support is work in progress and untested on a real car. The audiconnect README "
+            "says start_charger / stop_charger could not be shown to work, so the hourly kWh limit can not rely "
+            "on stopping this car.",
+            level = 'WARNING'
+        )
+        if not self.device_id:
+            self.ADapi.log(
+                f"{self.charger}: no 'device_id' in the audi entry. The audiconnect services only take device_id "
+                "(the Home Assistant device id of the car), so no start or stop command is sent to this car.",
+                level = 'WARNING'
+            )
 
         if self.charge_power_kW:
             # Estimate from the configured charger power: maxAmps = P / voltPhase. No ampere control,
@@ -1845,6 +1944,10 @@ class Audi_charger(Charger):
         self._begin_command('stop')
 
     def _begin_command(self, intent:str) -> None:
+        if not self.device_id:
+            # Nothing can be sent (WARNING at startup): no intent, no verify timer, no "sent 3 times" notification.
+            self.ADapi.log(f"{self.charger}: {intent} not sent, no device_id configured", level = 'DEBUG')
+            return
         if cancel_timer_handler(ADapi = self.ADapi, handler = self.checkCharging_handler, name = self.charger):
             self.checkCharging_handler = None
         self._command_intent = intent
@@ -1909,19 +2012,6 @@ class Audi_charger(Charger):
             self.charging_scheduler.removeFromCharging(self._vehicle_for_commands().vehicle_id)
         self._clear_intent()
 
-    def _service_target(self) -> dict:
-        if self.device_id:
-            return {'device_id': self.device_id}
-        if not self._warned_no_device_id:
-            self._warned_no_device_id = True
-            self.ADapi.log(
-                f"{self.charger}: no 'device_id' configured for the audiconnect services. services.yaml requires "
-                f"device_id (the Home Assistant device id of the car); falling back to vin={self.charger_id}, "
-                "which the service may reject. Add 'device_id' to the audi entry in the configuration.",
-                level = 'WARNING'
-            )
-        return {'vin': self.charger_id}
-
     def _call_audi_action(self, action:str) -> None:
         """ Calls the service without blocking the app thread: AppDaemon's call_service returns at once when
             a `callback` is given (adapi.call_service, AppDaemon 4.5). The service itself can take ~15 s while
@@ -1932,7 +2022,7 @@ class Audi_charger(Charger):
                 namespace = self.namespace,
                 callback = self._audi_action_done,
                 action = action,
-                **self._service_target()
+                device_id = self.device_id
             )
             self.ADapi.log(f"{action} sent to {self.charger}") ###
         except Exception as e:
@@ -1957,8 +2047,9 @@ class Audi_charger(Charger):
         return int(self.charger_data.ampereCharging)
 
     def getChargingPowerW(self) -> float:
-        """ Live draw from the `charging_power` sensor (kW, UNVERIFIED entity id
-            `sensor.<car>_charging_power`) when it reads above 0, else the ampere * voltPhase estimate. """
+        """ Draw from the `charging_power` sensor (kW, UNVERIFIED entity id `sensor.<car>_charging_power`)
+            when it reads above 0, else the ampere * voltPhase estimate. The sensor only changes at a cloud
+            poll (every 15 min by default), so it can be up to that old. """
 
         if self.charger_data.charger_power is not None:
             power_kW = self.getChargerPower()

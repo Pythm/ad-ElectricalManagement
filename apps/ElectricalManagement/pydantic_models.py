@@ -87,7 +87,7 @@ class ElectricalManagementConfig(BaseModel):
 
 
 class MaxUsage(BaseModel):
-    # float since 1.0.6 (was int); existing files with ints load fine.
+    # float since 1.0.5 (was int); existing files with ints load fine.
     max_kwh_usage_pr_hour: float = 0
     topUsage: List[float] = Field(default_factory=lambda: [0, 0, 0])
     calculated_difference_on_idle: float = 1.1
@@ -229,6 +229,12 @@ class CarData(BaseModel):
     old_charge_limit: float = 100
     kWh_remain_to_charge: float = -2
     connected_charger_id: str | None = None
+
+class CarOptions(BaseModel):
+    """ Config-only car keys (not persisted), checked one key at a time by car_option() in
+        electricalManagement.py. The defaults there depend on the car type. """
+    wake_when_stale: bool = True
+    unlink_grace_minutes: float = Field(default = 0, allow_inf_nan = False)
 
 class ChargingQueueItem(BaseModel):
     vehicle_id: str
