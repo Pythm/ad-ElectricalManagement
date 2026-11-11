@@ -615,6 +615,7 @@ class ElectricalUsage(ad.ADBase):
         self._setup_easee()
         self._link_cars_to_chargers()
         self._recreate_guest_sessions()
+        self._restore_plug_links()
         self._purge_orphan_guest_queue_entries()
         self._purge_orphan_queue_entries()
 
@@ -628,6 +629,15 @@ class ElectricalUsage(ad.ADBase):
             guest_manager = getattr(charger, 'guest_manager', None)
             if guest_manager is not None:
                 guest_manager.recreate_at_startup()
+
+    def _restore_plug_links(self) -> None:
+        """ A car under `cars:` or an Audi whose persisted link to an Easee was restored keeps its session
+            (Easee.restore_link_at_startup). After the guests, so a recreated guest that took the charger wins. """
+
+        for charger in self.all_chargers():
+            restore = getattr(charger, 'restore_link_at_startup', None)
+            if restore is not None:
+                restore()
 
     def _purge_orphan_guest_queue_entries(self) -> None:
         """ Guest cars are not persisted but their queue entries are. After a restart a 'guest_<id>' entry
@@ -2874,6 +2884,16 @@ class ElectricalUsage(ad.ADBase):
                 return
 
         for charger in self.all_chargers():
+            # Replies to the notification of a car linked to an Easee on its plug name the car:
+            # '<action><charger>|<vehicle_id>'. Easee.reply_for_linked_car acts only on that car while it is linked.
+            reply_for_linked_car = getattr(charger, 'reply_for_linked_car', None)
+            if reply_for_linked_car is not None:
+                for kind in ('kWhremaining', 'chargeNow'):
+                    prefix = kind + str(charger.charger) + charger.REPLY_SEPARATOR
+                    if action.startswith(prefix):
+                        reply_for_linked_car(kind, action[len(prefix):], data.get('reply_text'))
+                        return
+
             # Guest notification replies act on the guest car only, never on a Tesla that is on the
             # charger. Without a guest they are ignored with an INFO log (GuestManager).
             if action == 'kWhremaining'+str(charger.charger):

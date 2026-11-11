@@ -91,6 +91,10 @@ class Car:
         self.pct_start_charge:float = 100
         # Last SOC read while the cable has been in. Forgotten when the cable is disconnected.
         self._soc_since_connected:Optional[float] = None
+        # kWh the owner answered in the notification sent when the car was linked to an Easee on its plug,
+        # and that charger. Only used while the car is linked to that charger (session_kWh). Not persisted.
+        self._session_kWh:Optional[float] = None
+        self._session_kWh_charger = None
 
         # Charger objects:
         self.connected_charger: Optional[Charger] = None
@@ -247,6 +251,7 @@ class Car:
         self._completion_deferred = False
         self.turnOff_Charge_now()
         self.removeFromQueue()
+        self.clear_session_kWh()
         self.car_data.kWh_remain_to_charge = -1
 
     def charging_scheduled_with_updated_data(self) -> bool:
@@ -388,9 +393,35 @@ class Car:
             return True
         return False
 
+    def need_from_sensors(self) -> bool:
+        """ True when the car's own sensors give the kWh to charge (kWhRemaining): a charge limit and a
+            battery (state of charge) sensor. Without them the estimate is a guess, so the Easee link
+            notification asks the owner for the kWh. """
+        return self.car_data.charge_limit is not None and self.car_data.battery_sensor is not None
+
+    def session_kWh(self) -> Optional[float]:
+        """ The kWh answered in the Easee link notification, while the car is still linked to that charger. """
+        if self._session_kWh is not None and self.connected_charger is self._session_kWh_charger:
+            return self._session_kWh
+        return None
+
+    def set_session_kWh(self, kWh:float, charger) -> None:
+        """ The kWh to charge in this session on `charger`. It replaces the estimate while the car stays linked
+            there; learned values (max_kWh_charged, battery size) are not changed. """
+        self._session_kWh = float(kWh)
+        self._session_kWh_charger = charger
+        self.car_data.kWh_remain_to_charge = float(kWh)
+
+    def clear_session_kWh(self) -> None:
+        self._session_kWh = None
+        self._session_kWh_charger = None
+
     def kWhRemaining(self) -> float:
         """ Calculates kWh remaining to charge car from battery sensor/size and charge limit.
+            The kWh answered in the Easee link notification (session_kWh) wins while the car is linked there.
         """
+        if self.session_kWh() is not None:
+            return self.car_data.kWh_remain_to_charge
         if self.car_data.charge_limit:
             battery_pct = self.car_battery_soc()
             limit_pct = self.ADapi.get_state(self.car_data.charge_limit, namespace = self.namespace)

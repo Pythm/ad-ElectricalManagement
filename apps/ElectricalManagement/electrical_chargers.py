@@ -182,9 +182,14 @@ class Charger:
         if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
             self._recheck_findCarConnectedToCharger_handler = None
         Registry.set_link(car, self)
+        self._car_linked(car)
         self.kWhRemaining()
         self.connected_vehicle.findNewChargeTime()
         self._register_battery_soc_for_calculation()
+
+    def _car_linked(self, car:Car) -> None:
+        """ A car has just been linked by _link_car (not at startup from the persisted link). Easee overrides this. """
+        pass
 
     def _find_and_link(self, fresh_since = None, accept_unverified:bool = False) -> bool:
         """ Links the car that matches this charger. With more than one match nothing is linked:
@@ -748,21 +753,25 @@ class Charger:
         elif new == 'off':
             self.idle_current = False
 
-    def notify_charge_now_or_kWhRemain(self, carName):
-        """ Sends notification to ask to charge car Now or input kWh remaining """
+    def notify_charge_now_or_kWhRemain(self, carName, ask_kWh:bool = True, action_suffix:str = '', message:str = "Guest Car connected. Select options."):
+        """ Sends notification to ask to charge car Now or input kWh remaining.
+            Guest: the defaults. A car linked to the Easee on its plug: action_suffix '|<vehicle_id>' so a reply
+            reaches that car only, and ask_kWh False when its own sensors give the kWh. """
 
         if self.notify_app is None:
             return
+        actions = [{ 'action' : 'chargeNow'+str(self.charger)+action_suffix, 'title' : f'Charge {carName} Now' }]
+        if ask_kWh:
+            actions.append({ 'action' : 'kWhremaining'+str(self.charger)+action_suffix,
+                             'title' : 'Input expected kWh to charge',
+                             "behavior": "textInput"
+                             })
         data = {
             'tag' : carName,
-            'actions' : [{ 'action' : 'chargeNow'+str(self.charger), 'title' : f'Charge {carName} Now' },
-                         { 'action' : 'kWhremaining'+str(self.charger),
-                           'title' : 'Input expected kWh to charge',
-                           "behavior": "textInput"
-                           } ]
+            'actions' : actions
             }
         self.notify_app.send_notification(
-                    message = f"Guest Car connected. Select options.",
+                    message = message,
                     message_title = f"{self.charger}",
                     message_recipient = self.recipients,
                     also_if_not_home = True,
@@ -1050,6 +1059,10 @@ class Easee(Charger):
         # Pause commands sent in this episode of charging with no linked car, and the handle of the check after them.
         self._unlinked_pauses:int = 0
         self._unlinked_pause_handler = None
+        # Car linked on its plug that the link notification was sent for (_car_linked), and the ids of the cars
+        # linked here since the app started (the first link after a restart may be the session from before it).
+        self._notified_car:Optional[Car] = None
+        self._plug_linked_since_start:set = set()
 
         if self.charger_data.charger_sensor is not None:
             self.ADapi.listen_state(self.statusChange, self.charger_data.charger_sensor, namespace = namespace)
@@ -1127,6 +1140,112 @@ class Easee(Charger):
             if plugged is not None:
                 return 'Stopped' if plugged else 'Disconnected'
         return car.getCarChargerState()
+
+    # ---- link notification for a car linked on its plug ---------------------------------- #
+    # Notification actions for such a car are 'chargeNow<charger>|<vehicle_id>' and
+    # 'kWhremaining<charger>|<vehicle_id>'; the guest keeps 'chargeNow<charger>' / 'kWhremaining<charger>'.
+    REPLY_SEPARATOR = '|'
+
+    def _car_linked(self, car:Car) -> None:
+        """ A car under `cars:` or an Audi (_links_on_plug) has just been linked: the owner gets the guest
+            notification for it, "Charge now" and, when the car's sensors do not give the kWh
+            (Car.need_from_sensors), the kWh input. Once per link. The first link of a car since the app
+            started, with an entry of that car left in the charge queue, is the session from before a
+            restart: the kWh is taken from that entry and the owner is not asked again (as
+            GuestManager.recreate_at_startup). Teslas and guests get nothing here. """
+
+        if not self._links_on_plug(car):
+            return
+        self.ADapi.log(f"{self.charger}: {car.carName} linked. {self._plug_states_text(car)}", level = 'INFO')
+        first_since_start = car.vehicle_id not in self._plug_linked_since_start
+        self._plug_linked_since_start.add(car.vehicle_id)
+        self._notified_car = car
+        car.clear_session_kWh()
+        restored = self._queued_kWh(car) if first_since_start else None
+        if restored is not None:
+            self._restore_session_kWh(car, restored)
+            return
+        self.notify_charge_now_or_kWhRemain(
+            car.carName,
+            ask_kWh = not car.need_from_sensors(),
+            action_suffix = self.REPLY_SEPARATOR + str(car.vehicle_id),
+            message = f"{car.carName} connected. Select options.",
+        )
+
+    def restore_link_at_startup(self) -> None:
+        """ Called by the core once the persisted links are restored (Registry.set_link, no notification).
+            A car under `cars:` or an Audi that is still linked here keeps its session: replies to the
+            notification sent before the restart still reach it, and the kWh comes from its queue entry. """
+
+        car = self.connected_vehicle
+        if car is None or not self._links_on_plug(car):
+            return
+        self._plug_linked_since_start.add(car.vehicle_id)
+        self._notified_car = car
+        restored = self._queued_kWh(car)
+        if restored is not None:
+            self._restore_session_kWh(car, restored)
+
+    def _queued_kWh(self, car:Car) -> Optional[float]:
+        for item in self.charging_scheduler.chargingQueue:
+            if item.vehicle_id == car.vehicle_id and item.kWhRemaining is not None and item.kWhRemaining > 0:
+                return float(item.kWhRemaining)
+        return None
+
+    def _restore_session_kWh(self, car:Car, kWh:float) -> None:
+        if not car.need_from_sensors():
+            car.set_session_kWh(kWh, self)
+        self.ADapi.log(f"{self.charger}: {car.carName} linked at startup with {kWh} kWh in the charge queue. Not asking again. ###", level = 'INFO')
+
+    def _plug_states_text(self, car:Car) -> str:
+        """ The raw readings behind a plug link, so a plug sensor that always reads 'on' shows in the log. """
+
+        plug_sensor = car.car_data.charger_sensor
+        plug = self.ADapi.get_state(plug_sensor, namespace = car.namespace) if plug_sensor else None
+        if isinstance(car.onboard_charger, Audi_charger):
+            state_sensor = car.onboard_charger.charger_data.charger_sensor
+            raw_state = car.onboard_charger._raw_charging_state()
+        else:
+            state_sensor = plug_sensor
+            raw_state = self.ADapi.get_state(plug_sensor, namespace = car.namespace, attribute = 'charging_state') if plug_sensor else None
+        return (
+            f"Plug sensor {plug_sensor}: '{plug}', charging_state ({state_sensor}): '{raw_state}', "
+            f"{self.charger} status: '{self._raw_status()}'."
+        )
+
+    def reply_for_linked_car(self, kind:str, vehicle_id:str, reply_text = None) -> bool:
+        """ 'chargeNow<charger>|<vehicle_id>' / 'kWhremaining<charger>|<vehicle_id>' notification actions.
+            They act on that car only while it is linked here and is the car the notification was sent for;
+            otherwise the reply is ignored with an INFO log. The kWh is a session value (Car.set_session_kWh). """
+
+        car = self.connected_vehicle
+        what = 'Charge now' if kind == 'chargeNow' else 'kWh remaining'
+        if car is None or car is not self._notified_car or str(car.vehicle_id) != vehicle_id:
+            self.ADapi.log(f"{what} received for {vehicle_id} on {self.charger}, but that car is not linked to {self.charger}. Ignored.", level = 'INFO')
+            return False
+
+        if kind == 'chargeNow':
+            car.charge_now = True
+            self.startCharging()
+            return True
+
+        if car.need_from_sensors():
+            self.ADapi.log(f"{what} received for {car.carName}, but its own sensors give the kWh to charge. Ignored.", level = 'INFO')
+            return False
+        try:
+            kWh = float(str(reply_text).replace(',', '.'))
+        except (ValueError, TypeError):
+            kWh = None
+        if kWh is None or not math.isfinite(kWh) or kWh <= 0:
+            self.ADapi.log(
+                f"User input {reply_text} on setting kWh remaining for {car.carName}. Not valid number. "
+                f"Using {car.car_data.kWh_remain_to_charge} to calculate charge time",
+                level = 'INFO'
+            )
+            return True
+        car.set_session_kWh(kWh, self)
+        car.findNewChargeTime()
+        return True
 
     def _set_min_ampere_from_phases(self) -> None:
         """ Minimum ampere if locked to 3 phase, and back to the default when it no longer is. """
@@ -1788,6 +1907,7 @@ class Audi_charger(Charger):
         self._command_retries:int = 0
         self._last_state:Optional[str] = None
         self._warned_states:set = set()
+        self._stop_warned:bool = False
 
         self.ADapi.log(
             f"{self.charger}: Audi support is work in progress and untested on a real car. The audiconnect README "
@@ -1801,6 +1921,17 @@ class Audi_charger(Charger):
                 "(the Home Assistant device id of the car), so no start or stop command is sent to this car.",
                 level = 'WARNING'
             )
+        # What the app resolved and reads now, so the entity ids and raw strings can be checked against the car.
+        car_data = Car.car_data
+        plug_now = self.ADapi.get_state(car_data.charger_sensor, namespace = self.namespace) if car_data.charger_sensor else None
+        self.ADapi.log(
+            f"{self.charger}: Audi entities: plug {car_data.charger_sensor}, charging state {self.charger_data.charger_sensor}, "
+            f"charge target {car_data.charge_limit}, state of charge {car_data.battery_sensor}, "
+            f"location {car_data.location_tracker}, last update {car_data.data_last_update_time}, "
+            f"charging power {self.charger_data.charger_power}. Now: plug '{plug_now}', charging state "
+            f"'{self._raw_charging_state()}' (charging state strings are unverified, see AUDI_STATE_EXACT).",
+            level = 'INFO'
+        )
 
         if self.charge_power_kW:
             # Estimate from the configured charger power: maxAmps = P / voltPhase. No ampere control,
@@ -2036,6 +2167,13 @@ class Audi_charger(Charger):
         self._call_audi_action('start_charger')
 
     def _send_stop_command(self) -> None:
+        if not self._stop_warned:
+            self._stop_warned = True
+            self.ADapi.log(
+                f"{self.charger}: Audi stop is not confirmed to work with audiconnect (see its README); "
+                "the hourly cap and fire stop may not take effect",
+                level = 'WARNING'
+            )
         self._call_audi_action('stop_charger')
 
     # ---- capabilities ------------------------------------------------------------------- #
