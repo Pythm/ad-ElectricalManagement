@@ -669,7 +669,7 @@ class Tesla_car(Car):
             self.ADapi.listen_state(self.car_charging_state_changed, car_data.charger_sensor,
                 namespace = namespace,
                 attribute = 'charging_state'
-            ) ###
+            )
 
         if self.car_data.destination_location_tracker:
            self.ADapi.listen_state(self.destination_updated, self.car_data.destination_location_tracker,
@@ -708,15 +708,12 @@ class Tesla_car(Car):
             # Cloud data from a (sleeping) car can be old or wrong while the external charger is the
             # real sensor. Give the car time to report again before unlinking.
             if self._unlink_grace_handler is None or not self.ADapi.timer_running(self._unlink_grace_handler):
-                self.ADapi.log(f"State of {self.carName} is {new} not equal to charger {self.connected_charger.getChargingState()}. Waiting {self.unlink_grace_minutes:g} min before unlinking") ###
-                self.ADapi.log(f"{self.carName}: car {new}, raw {self.connected_charger.charger} status {self.ADapi.get_state(self.connected_charger.charger_data.charger_sensor, namespace = self.namespace)}") ###
                 self._unlink_grace_handler = self.ADapi.run_in(self._unlink_if_still_mismatched,
                     self.unlink_grace_minutes * 60,
                     charger = self.connected_charger
                 )
             return
 
-        self.ADapi.log(f"State of car is {new} not equal to charger: {self.connected_charger.getChargingState()}. Need to unlink") ###
         self._unlink_and_try_onboard()
 
     def _cancel_unlink_grace(self) -> None:
@@ -735,14 +732,10 @@ class Tesla_car(Car):
             attribute = 'charging_state'
         )
         if state is None or state in UNAVAIL:
-            self.ADapi.log(f"{self.carName}: grace period over, car state is {state}. Keeping link") ###
             return
         if state == 'Starting':
             state = 'Charging'
-        if charger.compareChargingState(car_status = state):
-            self.ADapi.log(f"{self.carName}: grace period over, car reports {state} and matches charger. Keeping link") ###
-        else:
-            self.ADapi.log(f"State of car is {state} not equal to charger: {charger.getChargingState()} after grace period. Need to unlink") ###
+        if not charger.compareChargingState(car_status = state):
             self._unlink_and_try_onboard()
 
     def _unlink_and_try_onboard(self) -> None:

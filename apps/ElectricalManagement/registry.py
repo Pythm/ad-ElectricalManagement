@@ -40,13 +40,6 @@ class Registry:
         """Return the Charger instance for the given ID, or ``None``."""
         return self._chargers.get(charger_id)
 
-    @staticmethod
-    def _log_link(car: "Car", message: str) -> None:
-        """ Debug line for a link change, so power.log shows which car sits on which charger. """
-        api = getattr(car, "ADapi", None)
-        if api is not None:
-            api.log(message) ###
-
     @classmethod
     def set_onboard_link(cls, car: "Car", charger: "Charger") -> None:
         """
@@ -93,10 +86,6 @@ class Registry:
         ):
             previous_charger.connected_vehicle = None
 
-        if previous_charger is not charger:
-            cls._log_link(car, f"Linked {getattr(car, 'carName', car)} to {getattr(charger, 'charger', charger)}"
-                               f" (was {getattr(previous_charger, 'charger', None)})")
-
         # In‑memory links
         car.connected_charger = charger
         charger.connected_vehicle = car
@@ -119,7 +108,6 @@ class Registry:
         if charger is None:
             return None
 
-        cls._log_link(car, f"Unlinked {getattr(car, 'carName', car)} from {getattr(charger, 'charger', charger)}")
 
         # Clear persistent identifiers
         car.car_data.connected_charger_id = None

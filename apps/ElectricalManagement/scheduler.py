@@ -360,7 +360,6 @@ class Scheduler:
         if self.ADapi.now_is_between(*NO_TOMORROW_PRICES_WINDOW) and not self.electricalPriceApp.tomorrow_valid:
             # The price app has no window to give yet. A car with a window keeps it. The others get one when
             # tomorrow's prices arrive (ElectricalUsage._get_new_prices), and can charge on a low price until then.
-            self.ADapi.log(f"{name}: no tomorrow prices yet, keeping window {new_item.chargingStart} - {new_item.chargingStop}", level = 'DEBUG') ###
             return self.isChargingTime(vehicle_id=vehicle_id)
 
         self.process_charging_queue()
@@ -392,9 +391,7 @@ class Scheduler:
                 startBeforePrice=self.startBeforePrice,
                 stopAtPriceIncrease=self.stopAtPriceIncrease,
             )
-            if start is None and self._window_not_ended(current_car, now):
-                self.ADapi.log(f"{current_car.name}: price app has no window, keeping {current_car.chargingStart} - {current_car.chargingStop}", level = 'DEBUG') ###
-            else:
+            if not (start is None and self._window_not_ended(current_car, now)):
                 current_car.chargingStart, current_car.chargingStop, current_car.price = start, stop, price
                 if start is not None:
                     estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
@@ -416,7 +413,6 @@ class Scheduler:
     def _merge_overlapping(self, overlapping: List[ChargingQueueItem]) -> None:
         """ Cars whose windows overlap charge at the same time and get one window. A car alone keeps its own. """
 
-        self.ADapi.log(f"Charge group: {[(c.name, c.chargingStart, c.chargingStop) for c in overlapping]}", level = 'DEBUG') ###
         if len(overlapping) > 1:
             self.calcSimultaneousCharge([c.vehicle_id for c in overlapping])
 
@@ -567,7 +563,6 @@ class Scheduler:
         new_info = self._mark_informed(now)
         plan_changed = (windows, waiting, below) != self._last_plan
         self._last_plan = (windows, waiting, below)
-        self.ADapi.log(f"Charge info: new {new_info}, changed {plan_changed}, helper {self.infotext}, {len(info_text)} chars: {info_text}", level = 'DEBUG') ###
 
         if self.infotext is not None:
             self.ADapi.call_service(

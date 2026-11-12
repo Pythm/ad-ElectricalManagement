@@ -105,7 +105,6 @@ class GuestManager:
             owner for kWh / charge now. Idempotent: a second call while a guest exists does nothing. """
 
         if self.guest is not None:
-            self.ADapi.log(f"{self.charger.charger}: guest {self.guest.carName} already exists ({reason}). Nothing to do. ###", level = 'DEBUG')
             return self.guest
 
         stale = self.charging_scheduler.registry.get_car(self.guest_id)
@@ -135,7 +134,6 @@ class GuestManager:
         # 1:1 link: a car that was linked to this charger is detached cleanly by set_link.
         Registry.set_link(guest, self.charger)
         self.charger._listen_for_car_max_ampere()
-        self.ADapi.log(f"{self.charger.charger}: guest {guest.carName} created and linked ({reason}). ###", level = 'DEBUG')
 
         if notify:
             self.charger.notify_charge_now_or_kWhRemain(guest.carName)
@@ -176,12 +174,6 @@ class GuestManager:
             self.last_kWh = restored_kWh
 
         self.begin_guest(reason = 'guest switch on at startup', notify = restored_kWh is None)
-        self.ADapi.log(
-            f"{self.charger.charger}: guest switch is on at startup, guest {self.guest_id} recreated"
-            + (f" with {restored_kWh} kWh from the charge queue" if restored_kWh is not None else f" with {self.last_kWh} kWh")
-            + ". ###",
-            level = 'INFO'
-        )
 
     def _warn_car_linked(self, car) -> None:
         message = (
@@ -283,7 +275,6 @@ class GuestManager:
             # The pause is sent once; the removed car must not be verified against.
             if cancel_timer_handler(ADapi = self.ADapi, handler = charger.checkCharging_handler, name = charger.charger):
                 charger.checkCharging_handler = None
-            self.ADapi.log(f"{charger.charger} paused for guest {vehicle_id} ###", level = 'DEBUG')
 
         # 5. Unlink (only clears the charger side if it still points at the guest).
         Registry.unlink(guest)
