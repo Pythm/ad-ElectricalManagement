@@ -1807,8 +1807,7 @@ class Onboard_charger(Charger):
 # An empty value makes the sensor `unavailable` (audi_entity.py:141-148). The source does NOT list the
 # possible values.
 #
-# Where the strings come from (THIRD-PARTY evidence, weaker than the source; see
-# .claude/audit_out/audiconnect/CHARGING_STATE_EVIDENCE.md): the VW-group (Cariad) cloud API that the
+# Where the strings come from (THIRD-PARTY evidence, weaker than the source): the VW-group (Cariad) cloud API that the
 # Audi uses, as read by VW ID / Skoda / Seat-Cupra projects. The one Audi-specific example is
 # 'notReadyForCharging' (myaudi-api README). None of them is confirmed on a real Audi through this app.
 #
