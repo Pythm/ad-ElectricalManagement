@@ -1,26 +1,31 @@
 from __future__ import annotations
 
-import math
 import bisect
-from datetime import timedelta
+import math
+import weakref
 
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 from pydantic_models import TempConsumption
 from utils import (
+    UNAVAIL,
     cancel_timer_handler,
     cancel_listen_handler,
-    floor_even
+    floor_even,
+    price_now_or_inf,
+    to_float_or_none,
 )
 
-from scheduler import Scheduler
-
-UNAVAIL = ('unavailable', 'unknown')
+# ADapi of each app instance that has logged the "update ElectricalPriceCalc" warning, so it is logged once per app.
+_warned_no_lowest_hours = weakref.WeakSet()
 
 class Heater:
     """ Heater
         Parent class for on_off_switch and electrical heaters
         Sets up times to save/spend based on electricity price. """
+
+    # Window sensors only make sense for a climate; On_off_switch sets this to False (W3).
+    supports_windowsensors: bool = True
 
     def __init__(self,
         api,
@@ -30,7 +35,8 @@ class Heater:
         electricalPriceApp,
         charging_scheduler,
         notify_app,
-        print_save_hours
+        print_save_hours,
+        persist_callback = None,
     ):
         self.ADapi = api
         self.namespace = namespace
@@ -40,6 +46,9 @@ class Heater:
         self.charging_scheduler = charging_scheduler
         self.notify_app = notify_app
         self.print_save_hours = print_save_hours
+        # Optional callable from the main app that writes the persistence file after
+        # registerConsumption() has stored new learned data.
+        self.persist_callback = persist_callback
 
         # Vacation setup
         if self.heater_data.vacation is not None and self.ADapi.entity_exists(self.heater_data.vacation, namespace = self.namespace):
@@ -58,21 +67,33 @@ class Heater:
             )
         elif isinstance(self.heater_data.automate, bool):
             self.automate = self.heater_data.automate
+        else:
+            self.automate = True
+            self.ADapi.log(f"{self.heater}: 'automate' must be a boolean or an entity id, got {self.heater_data.automate!r}. Automation is on.", level = 'WARNING')
 
         # Consumption data
         self.reset_continuous_hours:bool = False
         self.time_to_spend:list = []
         self.kWh_consumption_when_turned_on:float = 0.0
         self.isSaveState:bool = False
-        self.isOverconsumption:bool = False
+        self.isOverconsumption:bool = False   # set by the main app only (overconsumption reduce / restore)
+        self.window_save:bool = False         # set while a window is open; independent of isOverconsumption
         self.increase_now:bool = False
-        self.last_reduced_state = self.ADapi.datetime(aware = True) - timedelta(minutes=20)
+        # True after the finished-appliance logic (On_off_switch.turn_off_appliance) turned the switch off.
+        # Checked by heater_setNewValues so the slot runner does not turn it on again before turn_back_on.
+        self.turned_off_by_finish:bool = False
+        # The 'entity is unavailable' line is logged once per transition, not every tick.
+        self._unavailable_logged:bool = False
 
         # Handlers
         self._consumption_stops_register_usage_handler = None
         self.checkConsumption_handler = None
-        self.off_retry_handler = None
         self.off_retry_count = 3
+        # Vacation: oneshot listener that turns the switch off once consumption has dropped.
+        self._turn_off_after_consumption_handler = None
+
+        # Set by the main app while a fire alarm keeps this heater off
+        self.fire_off:bool = False
 
         # Helpers used on vacation
         self.HeatAt = None
@@ -85,22 +106,23 @@ class Heater:
         self.wind_amount:float = 0
         self.ADapi.listen_event(self.weather_event, 'WEATHER_CHANGE', namespace=self.namespace)
 
-        # Finding data if not set to persistent
-        if self.heater_data.normal_power < 30:
-            self.ADapi.listen_state(self._set_normal_power, self.heater_data.consumptionSensor,
-                constrain_state=lambda x: float(x) > 30,
-                oneshot = True,
-                namespace = self.namespace
-            )
-    
+        # normal_power comes from `power` in the YAML (see ElectricalUsage._apply_power), it is not learned.
+
         self.windows_is_open:bool = False
         self.notify_on_window_open:bool = True
         self.notify_on_window_closed:bool = False
-        if self.heater_data.windowsensors is not None:
+        if self.heater_data.windowsensors and not self.supports_windowsensors:
+            self.ADapi.log(f"{self.heater}: windowsensors is ignored for switches.", level = 'WARNING')
+        elif self.heater_data.windowsensors is not None:
             for window in self.heater_data.windowsensors:
+                # Intentional: at startup the open state is taken as is (no 120 s wait), so a window
+                # that is already open lowers the heater at once.
                 if self.ADapi.get_state(window, namespace = self.namespace) == 'on':
                     self.windows_is_open = True
+                    self.window_save = True
 
+                # Intentional asymmetry: 'open' must last 120 s (a window opened briefly for airing
+                # does not lower the heater), 'closed' is reacted to at once.
                 self.ADapi.listen_state(self.windowOpened, window,
                     new = 'on',
                     duration = 120,
@@ -111,15 +133,35 @@ class Heater:
                     namespace = self.namespace
                 )
 
-    def _set_normal_power(self, entity, attribute, old, new, kwargs) -> None:
+    def _unavailable_now(self, state) -> bool:
+        """ True when the entity's state is unavailable/unknown (or missing). The transition in and out
+            of that state is logged once at INFO, so a dead entity does not fill the log every tick. """
 
-        if float(new) < 30:
-            self.heater_data.normal_power = float(new)
+        if state is None or state in UNAVAIL:
+            if not self._unavailable_logged:
+                self._unavailable_logged = True
+                self.ADapi.log(f"{self.heater} is {state}. No commands are sent until it is back.", level = 'INFO')
+            return True
+        if self._unavailable_logged:
+            self._unavailable_logged = False
+            self.ADapi.log(f"{self.heater} is back ({state}).", level = 'INFO')
+        return False
 
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
         self.vacation_state = new == 'on'
         self.off_retry_count = 3
+        if not self.vacation_state:
+            # The vacation-only oneshot must not turn the switch off during normal operation.
+            cancel_listen_handler(ADapi = self.ADapi, handler = self._turn_off_after_consumption_handler, name = self.heater)
+            self._turn_off_after_consumption_handler = None
+        if (
+            self.vacation_state
+            and self.HeatAt is None
+            and self.electricalPriceApp.tomorrow_valid
+            and not self.heater_data.vacation_keep_off
+        ):
+            self.heater_getNewPrices(0)
         self.heater_setNewValues()
 
     def _automateStateListen(self, entity, attribute, old, new, kwargs) -> None:
@@ -131,7 +173,6 @@ class Heater:
         """ Updates time to save and spend based on self.electricalPriceApp.find_times_to_save()
             Will also find cheapest times to heat hotwater boilers and other on/off switches when on vacation. """
 
-        now = self.ADapi.datetime(aware = True)
         self.heater_data.time_to_save = self.electricalPriceApp.find_times_to_save(
             pricedrop = self.heater_data.pricedrop,
             max_continuous_hours = self.heater_data.max_continuous_hours,
@@ -163,11 +204,50 @@ class Heater:
         if self.print_save_hours and self.heater_data.time_to_save:
             self.ADapi.log(f"{self.heater} save hours:{self.electricalPriceApp.print_peaks(self.heater_data.time_to_save)}")
 
+    def _find_times_to_spend(self) -> list:
+        """ Spend periods from ElectricalPriceCalc. `lowest_hours` is only sent when
+            low_price_max_continuous_hours is configured. ElectricalPriceCalc older than 0.1.8 does not
+            know it and raises TypeError: then one WARNING per app, and the call is made without it. """
+
+        if self.heater_data.low_price_max_continuous_hours is None:
+            return self.electricalPriceApp.find_times_to_spend(priceincrease = self.heater_data.priceincrease)
+        try:
+            return self.electricalPriceApp.find_times_to_spend(
+                priceincrease = self.heater_data.priceincrease,
+                lowest_hours = self.heater_data.low_price_max_continuous_hours
+            )
+        except TypeError as e:
+            if 'lowest_hours' not in str(e):
+                raise
+            if self.ADapi not in _warned_no_lowest_hours:
+                _warned_no_lowest_hours.add(self.ADapi)
+                self.ADapi.log(
+                    "low_price_max_continuous_hours needs ElectricalPriceCalc 0.1.8 or later. Update ElectricalPriceCalc; "
+                    "until then spend hours use its default (the 3 lowest hours).",
+                    level = 'WARNING'
+                )
+            return self.electricalPriceApp.find_times_to_spend(priceincrease = self.heater_data.priceincrease)
+
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Turns heater on or off based on this hours electricity price. """
 
-        isOn:bool = self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
+        if self.fire_off:
+            return
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        if self._unavailable_now(state):
+            # No turn_on / turn_off to an unavailable or unknown switch.
+            return
+        isOn:bool = state == 'on'
         now = self.ADapi.datetime(aware = True)
+
+        if isOn:
+            # Someone (or turn_back_on) turned it on: the finished-appliance turn-off is over.
+            self.turned_off_by_finish = False
+        elif self.turned_off_by_finish:
+            # Turned off by turn_off_appliance (notify_when_finished). Only turn_back_on, after
+            # turn_back_on_after seconds, or a manual turn-on ends this. With turn_back_on_after: 0
+            # the app never turns it on again.
+            return
 
         if self.isOverconsumption and isOn:
             self.ADapi.call_service('switch/turn_off',
@@ -202,10 +282,7 @@ class Heater:
         elif not isOn:
             if self.vacation_state:
                 if not self.heater_data.vacation_keep_off and self.HeatAt is not None:
-                    if (
-                        (start := self.HeatAt) <= now < (end := self.EndAt)
-                        or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-                    ):
+                    if self._vacation_heat_now(now):
                         self.ADapi.call_service('switch/turn_on',
                             entity_id = self.heater,
                             namespace = self.namespace
@@ -225,29 +302,50 @@ class Heater:
             (self.HeatAt is not None or self.heater_data.vacation_keep_off)
         ):
             if self.HeatAt is not None:
-                if (
-                    (start := self.HeatAt) <= now < (end := self.EndAt)
-                    or self.electricalPriceApp.electricity_price_now() <= self.price + (self.heater_data.pricedrop/2)
-                ):
+                if self._vacation_heat_now(now):
                     return
             if self.heater_data.validConsumptionSensor:
-                if float(self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)) > 20:
-                    self.ADapi.listen_state(self._turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
-                        namespace = self.namespace,
-                        constrain_state=lambda x: float(x) < 20
-                    )
+                consumption_now = to_float_or_none(
+                    self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)
+                )
+                # Unavailable sensor (None) falls through to the turn-off below.
+                if consumption_now is not None and consumption_now > 20:
+                    if self._turn_off_after_consumption_handler is None:
+                        # Added once per heating session, oneshot so it is gone after it fires.
+                        self._turn_off_after_consumption_handler = self.ADapi.listen_state(
+                            self._turnOffHeaterAfterConsumption, self.heater_data.consumptionSensor,
+                            namespace = self.namespace,
+                            constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
+                            oneshot = True
+                        )
                     return
             self.ADapi.call_service('switch/turn_off',
                 entity_id = self.heater,
                 namespace = self.namespace
             )
 
+    def _vacation_heat_now(self, now) -> bool:
+        """ On vacation: True when inside the cheapest window (HeatAt..EndAt) or the price right now is
+            at most the window price plus half the pricedrop. No window price / no current price -> False. """
+
+        if self.HeatAt is not None and self.EndAt is not None and self.HeatAt <= now < self.EndAt:
+            return True
+        if self.price is None:
+            return False
+        return price_now_or_inf(self.electricalPriceApp) <= self.price + (self.heater_data.pricedrop/2)
+
     def _turnOffHeaterAfterConsumption(self, entity, attribute, old, new, kwargs) -> None:
 
+        self._turn_off_after_consumption_handler = None
         self.ADapi.call_service('switch/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
         )
+
+    def is_on(self) -> bool:
+        """ True when the switch is on (used to restore only what a fire alarm turned off). """
+
+        return self.ADapi.get_state(self.heater, namespace = self.namespace) == 'on'
 
     def turn_on_heater(self) -> None:
         """ Turns heater back to normal operation. """
@@ -255,12 +353,14 @@ class Heater:
         self.heater_setNewValues()
 
     def turn_off_heater(self) -> None:
-        """ Turns heater off. """
+        """ Turns heater off (fire alarm). """
 
         self.ADapi.call_service('switch/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
         )
+        # The power drop that follows is not a finished program: no "Consumption finished" notification.
+        self.isSaveState = True
 
         # Functions called from electrical power ajustments
     def setPreviousState(self) -> None:
@@ -301,16 +401,21 @@ class Heater:
                     return float(consumption_now), True
                 except (TypeError, ValueError):
                     pass
+        if self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off':
+            # No sensor and the entity is off: it does not draw normal_power.
+            return 0.0, False
         return self.heater_data.normal_power, False
 
     def get_heater_kWh_consumption(self) -> float:
         """ Returns heater total consumption. """
 
+        raw_state = None
         try:
-            consumption = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
-        except (TypeError, AttributeError) as ve:
+            raw_state = self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace)
+            consumption = float(raw_state)
+        except (TypeError, ValueError, AttributeError) as ve:
             self.ADapi.log(
-                f"Could not get kWh consumption for {self.heater} {consumption} Error: {ve}",
+                f"Could not get kWh consumption for {self.heater} {raw_state} Error: {ve}",
                 level = 'DEBUG'
             )
             return None
@@ -336,9 +441,10 @@ class Heater:
                 return
             self.kWh_consumption_when_turned_on = kWh_consumption
 
+            cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater)
             self._consumption_stops_register_usage_handler = self.ADapi.listen_state(self._consumption_stops_register_usage, self.heater_data.consumptionSensor,
                 namespace = self.namespace,
-                constrain_state=lambda x: float(x) < 20,
+                constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
                 hoursOffInt = hoursOffInt,
                 oneshot = True
             )
@@ -365,13 +471,16 @@ class Heater:
         wattconsumption, valid_consumption = self.get_heater_consumption()
         if valid_consumption:
             if wattconsumption < 30:
-                if cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater):
+                # Register only when the usage listener is still armed. A handle of None means the
+                # oneshot already fired and registered (or nothing was armed): do not register twice.
+                if self._consumption_stops_register_usage_handler is not None:
+                    if cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater):
+                        self.registerConsumption(hoursOffInt = hoursOffInt)
                     self._consumption_stops_register_usage_handler = None
-                    self.registerConsumption(hoursOffInt = hoursOffInt)
             elif self._consumption_stops_register_usage_handler is None:
                 self._consumption_stops_register_usage_handler = self.ADapi.listen_state(self._consumption_stops_register_usage, self.heater_data.consumptionSensor,
                     namespace = self.namespace,
-                    constrain_state=lambda x: float(x) < 20,
+                    constrain_state=lambda x: (to_float_or_none(x) if to_float_or_none(x) is not None else 20) < 20,
                     hoursOffInt = hoursOffInt,
                     oneshot = True
                 )
@@ -386,14 +495,9 @@ class Heater:
             self.checkConsumption_handler = self.ADapi.run_in(self.checkIfConsumption, 600, hoursOffInt = hoursOffInt)
             return
 
-        if cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater):
-           self._consumption_stops_register_usage_handler = None
+        cancel_listen_handler(ADapi = self.ADapi, handler = self._consumption_stops_register_usage_handler, name = self.heater)
+        self._consumption_stops_register_usage_handler = None
 
-        try:
-            if self.heater_data.normal_power < float(old):
-                self.heater_data.normal_power = float(old)
-        except (TypeError, ValueError):
-            pass
         self.registerConsumption(hoursOffInt = hoursOffInt)
 
     def registerConsumption(self, hoursOffInt:int = 0) -> None:
@@ -403,7 +507,7 @@ class Heater:
         try:
             consumption = float(self.ADapi.get_state(self.heater_data.kWhconsumptionSensor, namespace = self.namespace))
             consumption -= self.kWh_consumption_when_turned_on
-        except (TypeError, AttributeError) as ve:
+        except (TypeError, ValueError, AttributeError) as ve:
             self.ADapi.log(
                 f"Could not get consumption for {self.heater} to register data. {consumption} Error: {ve}",
                 level = 'DEBUG'
@@ -447,22 +551,31 @@ class Heater:
             existing.Consumption = avg_consumption
             existing.Counter = counter
 
+        if self.persist_callback is not None:
+            self.persist_callback()
+
 
         # Helper functions for windows
     def windowOpened(self, entity, attribute, old, new, kwargs) -> None:
+        """ A window has been open for 120 s: use the save behaviour, without touching
+            isOverconsumption (that flag belongs to the main app's overconsumption reduce). """
 
         if self.numWindowsOpened() != 0:
             self.windows_is_open = True
             self.notify_on_window_closed = True
-            self.setSaveState()
+            self.window_save = True
+            self.heater_setNewValues()
 
     def windowClosed(self, entity, attribute, old, new, kwargs) -> None:
+        """ Last window closed: end the window save. The previous state is restored only when the
+            main app is not reducing this heater; otherwise it stays reduced until setPreviousState. """
 
         if self.numWindowsOpened() == 0:
             self.windows_is_open = False
             self.notify_on_window_open = True
-            self.isOverconsumption = False
-            self.heater_setNewValues()
+            self.window_save = False
+            if not self.isOverconsumption:
+                self.heater_setNewValues()
 
     def numWindowsOpened(self) -> int:
         """ Returns number of windows opened. """
@@ -493,63 +606,86 @@ class Heater:
 
     def find_target_temperatures(self) -> int:
         """ Return the index of the *last* temperature entry whose ``out`` value
-        is less-than or equal to ``self.out_temp``. """
+        is less-than or equal to ``self.out_temp`` (an entry applies from its out value and up). """
 
         if not self.heater_data.temperatures:
             return 0
 
         out_values = [t['out'] for t in self.heater_data.temperatures]
-        idx = bisect.bisect_left(out_values, self.out_temp)
+        idx = bisect.bisect_right(out_values, self.out_temp)
         return max(0, idx - 1)
 
+    def current_target_temp_entry(self) -> dict:
+        """ The `temperatures` entry for the current outside temperature.
+            With no temperatures configured an entry with offset 0 is returned,
+            so the heater's own target temperature is used unchanged. """
+
+        if not self.heater_data.temperatures:
+            return {'offset': 0}
+        return self.heater_data.temperatures[self.find_target_temperatures()]
+
     def getSaveTemp(self, current_target_temp:float, target_temp:dict) -> float:
-        """ Returns save temperature. """
+        """ Returns save temperature (Climate only: uses the climate's min_temp as the fallback
+            when no save temperature is configured). """
 
         if self.heater_data.save_temp_offset is not None:
             current_target_temp += self.heater_data.save_temp_offset
         elif self.heater_data.save_temp is not None:
-            if current_target_temp > self.heater_data.save_temp + target_temp['offset']:
-                current_target_temp = self.heater_data.save_temp + target_temp['offset']
+            if current_target_temp > self.heater_data.save_temp + target_temp.get('offset', 0):
+                current_target_temp = self.heater_data.save_temp + target_temp.get('offset', 0)
         elif 'save' in target_temp:
             if current_target_temp > target_temp['save']:
                 current_target_temp = target_temp['save']
         else:
-            current_target_temp = 10
+            current_target_temp = self.min_temp
 
         return current_target_temp
 
     def getVacationTemp(self, current_target_temp:float, target_temp:dict) -> float:
-        """ Returns vacation temperature. """
+        """ Returns vacation temperature (Climate only: falls back to the climate's min_temp). """
 
         if self.heater_data.vacation_temp is not None:
-            if current_target_temp > self.heater_data.vacation_temp + target_temp['offset']:
-                current_target_temp = self.heater_data.vacation_temp + target_temp['offset']
+            if current_target_temp > self.heater_data.vacation_temp + target_temp.get('offset', 0):
+                current_target_temp = self.heater_data.vacation_temp + target_temp.get('offset', 0)
         elif 'vacation' in target_temp:
             if current_target_temp > target_temp['vacation']:
                 current_target_temp = target_temp['vacation']
         else:
-            current_target_temp = 10
+            current_target_temp = self.min_temp
 
         return current_target_temp
 
     def updateIndoorTarget(self, entity, attribute, old, new, kwargs):
         """ Reacts to target temperature for room beening updated. """
 
-        self.target_indoor_temp = float(new)
+        value = to_float_or_none(new)
+        if value is None:  # unavailable/unknown input: keep the previous target
+            return
+        self.target_indoor_temp = value
         self.heater_setNewValues()
 
     def updateHeaterTarget(self, entity, attribute, old, new, kwargs):
         """ Reacts to target temperature for room beening updated. """
 
-        self.target_heater_temp = float(new)
+        value = to_float_or_none(new)
+        if value is None:
+            return
+        self.target_heater_temp = value
         self.heater_setNewValues()
 
     def weather_event(self, event_name, data, **kwargs) -> None:
-        """ Listens for weather change from the weather app """
+        """ Listens for weather change from the weather app. Missing keys keep the previous value. """
 
-        self.out_temp = float(data['temp'])
-        self.rain_amount = float(data['rain'])
-        self.wind_amount = float(data['wind'])
+        # A value that is missing or not numeric ('unavailable') keeps the previous value
+        temp = to_float_or_none(data.get('temp'))
+        if temp is not None:
+            self.out_temp = temp
+        rain = to_float_or_none(data.get('rain'))
+        if rain is not None:
+            self.rain_amount = rain
+        wind = to_float_or_none(data.get('wind'))
+        if wind is not None:
+            self.wind_amount = wind
 
 
 class Climate(Heater):
@@ -564,6 +700,7 @@ class Climate(Heater):
         charging_scheduler,
         notify_app,
         print_save_hours,
+        persist_callback = None,
     ):
 
         # Sensors
@@ -571,7 +708,9 @@ class Climate(Heater):
             api.listen_state(self.updateIndoorTarget, heater_data.target_indoor_input,
                 namespace = namespace
             )
-            self.target_indoor_temp = float(api.get_state(heater_data.target_indoor_input, namespace = namespace))
+            value = to_float_or_none(api.get_state(heater_data.target_indoor_input, namespace = namespace))
+            # Input unavailable at startup: use the configured temperature until the listener fires.
+            self.target_indoor_temp = value if value is not None else heater_data.target_indoor_temp
         else:
             self.target_indoor_temp:float = heater_data.target_indoor_temp
 
@@ -579,7 +718,8 @@ class Climate(Heater):
             api.listen_state(self.updateHeaterTarget, heater_data.target_heater_input,
                 namespace = namespace
             )
-            self.target_heater_temp = float(api.get_state(heater_data.target_heater_input, namespace = namespace))
+            value = to_float_or_none(api.get_state(heater_data.target_heater_input, namespace = namespace))
+            self.target_heater_temp = value if value is not None else heater_data.target_heater_temp
         else:
             self.target_heater_temp:float = heater_data.target_heater_temp
         super().__init__(
@@ -591,6 +731,7 @@ class Climate(Heater):
             charging_scheduler = charging_scheduler,
             notify_app = notify_app,
             print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
         )
         self.reset_continuous_hours = True
 
@@ -607,14 +748,28 @@ class Climate(Heater):
                 level = 'DEBUG'
             )
             self.min_temp = 5
+        if self.min_temp is None:  # get_state returns None (no exception) when the attribute is missing
+            self.min_temp = 5
+
+        # Only hvac_mode 'heat' is managed. Any other mode is logged once (WARNING) and left alone.
+        self._unmanaged_mode_logged:bool = False
+        # True while this app has turned the climate off (vacation_keep_off, fire alarm). Vacation end
+        # sends 'heat' only to a climate with this flag set, so a climate turned off by hand stays off.
+        # Not persisted: after a restart during vacation an 'off' climate with vacation_keep_off is
+        # taken as turned off by the app (that is what the app would do anyway).
+        self.turned_off_by_app:bool = (
+            self.vacation_state
+            and self.heater_data.vacation_keep_off
+            and self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
+        )
 
         # Get new prices to save and in addition to turn up heat for heaters before expensive hours
     def heater_getNewPrices(self, kwargs) -> None:
 
         super().heater_getNewPrices(0)
-        self.time_to_spend = self.electricalPriceApp.find_times_to_spend(
-            priceincrease = self.heater_data.priceincrease
-        )
+        self.time_to_spend = self._find_times_to_spend()
+        # A spend period that already covers now is applied at once, not one runner tick later.
+        self.heater_setNewValues()
 
         if self.time_to_spend and self.print_save_hours:
             self.ADapi.log(f"{self.heater} Extra heating at: {self.electricalPriceApp.print_peaks(self.time_to_spend)}", level = 'INFO')
@@ -622,19 +777,28 @@ class Climate(Heater):
     def _awayStateListen_Heater(self, entity, attribute, old, new, kwargs) -> None:
 
         self.vacation_state = new == 'on'
+        self.off_retry_count = 3  # same reset as Heater: vacation_keep_off retries again on the next vacation
         if (
             self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
             and new == 'off'
+            and self.turned_off_by_app
         ):
+            # Vacation ended: turn on only a climate this app turned off (vacation_keep_off or fire).
+            # A climate the user turned off by hand stays off.
             try:
                 self.ADapi.call_service('climate/set_hvac_mode',
                     namespace = self.namespace,
                     entity_id = self.heater,
                     hvac_mode = 'heat'
                 )
+                self.turned_off_by_app = False
             except Exception as e:
                 self.ADapi.log(f"Not able to set hvac_mode to heat for {self.heater}. Exception: {e}", level = 'INFO')
         self.heater_setNewValues()
+
+    def is_on(self) -> bool:
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        return state is not None and state != 'off' and state not in UNAVAIL
 
     def turn_on_heater(self) -> None:
         """ Turns climate on and set new values.  """
@@ -643,24 +807,52 @@ class Climate(Heater):
             entity_id = self.heater,
             namespace = self.namespace
         )
+        self.turned_off_by_app = False
         self.heater_setNewValues()
 
     def turn_off_heater(self) -> None:
-        """ Turns climate off. """
+        """ Turns climate off (vacation_keep_off, fire alarm). """
 
         self.ADapi.call_service('climate/turn_off',
             entity_id = self.heater,
             namespace = self.namespace
         )
+        self.turned_off_by_app = True
+
+    def _state_blocks_control(self, state) -> bool:
+        """ Gate for setSaveState and heater_setNewValues. True (send nothing) when the climate is
+            unavailable/unknown, or in an hvac mode other than 'heat' or 'off'. The unmanaged mode is
+            logged once per entity at WARNING; cool/fan_only/dry/auto/heat_cool belong in a ClimateCommander app. """
+
+        if self._unavailable_now(state):
+            return True
+        if state not in ('heat', 'off'):
+            if not self._unmanaged_mode_logged:
+                self._unmanaged_mode_logged = True
+                self.ADapi.log(
+                    f"{self.heater} is in hvac mode '{state}'. ElectricalManagement 'climate:' manages only 'heat'; "
+                    "nothing is sent to it. Use a ClimateCommander app for other modes.",
+                    level = 'WARNING'
+                )
+            return True
+        return False
 
         # Functions to set temperature
     def setSaveState(self) -> None:
-        """ Set heater to save state when overconsumption. """
+        """ Set heater to save state when overconsumption (main app). """
 
         self.isOverconsumption = True
-        if self.ADapi.get_state(self.heater, namespace = self.namespace) in ('heat', 'cool'):
-            target_num = self.find_target_temperatures()
-            target_temp = self.heater_data.temperatures[target_num]
+        self._apply_save_temperature()
+
+    def _apply_save_temperature(self) -> None:
+        """ Lowers the setpoint to the lowest of save and vacation temperature (overconsumption, open window).
+            Does not touch isOverconsumption. """
+
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        if self._state_blocks_control(state):
+            return
+        if state == 'heat':
+            target_temp = self.current_target_temp_entry()
 
             if 'offset' in target_temp:
                 new_temperature = self.target_heater_temp + target_temp['offset']
@@ -685,24 +877,32 @@ class Climate(Heater):
                         temperature = new_temp
                     )
             except (TypeError, AttributeError) as ve:
+                # The setpoint could not be read: fall back to the climate's own minimum.
                 self.ADapi.call_service('climate/set_temperature',
                     namespace = self.namespace,
                     entity_id = self.heater,
-                    temperature = 10
+                    temperature = self.min_temp
                 )
                 self.ADapi.log(f"Error when trying to set temperature to {self.heater}: {ve}", level = 'DEBUG')
 
     def heater_setNewValues(self, kwargs=None) -> None:
         """ Adjusts temperature based on weather and time to save/spend. """
 
+        if self.fire_off:
+            return
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        if self._state_blocks_control(state):
+            return
+        if state == 'heat':
+            # Seen on: whatever turned it off (app or user) is over.
+            self.turned_off_by_app = False
         if (
-            self.ADapi.get_state(self.heater, namespace = self.namespace) == 'off'
+            state == 'off'
             or self.isOverconsumption
         ):
             return
         self.isSaveState =  False
-        target_num = self.find_target_temperatures()
-        target_temp = self.heater_data.temperatures[target_num]
+        target_temp = self.current_target_temp_entry()
 
         try:
             heater_temp = float(self.ADapi.get_state(self.heater, namespace = self.namespace, attribute='temperature'))
@@ -731,8 +931,11 @@ class Climate(Heater):
                     f"Getting in temp from heater. It is: {in_temp}",
                     level = 'DEBUG'
                 )
-            except (TypeError, AttributeError) as te:
+            except (TypeError, AttributeError, ValueError) as te:
                 self.ADapi.log(f"{self.heater} has no temperature. Probably offline. Error: {te}", level = 'DEBUG')
+            else:
+                in_temp_set = True
+        # in_temp_set False from here on means: no indoor temperature is known (in_temp is the -50 sentinel).
 
         # Set Target temperatures
         if 'offset' in target_temp:
@@ -756,16 +959,19 @@ class Climate(Heater):
             try:
                 window_temp = float(self.ADapi.get_state(self.heater_data.window_temp, namespace = self.namespace))
             except (TypeError, AttributeError):
-                window_temp = self.target_heater_temp + self.heater_data.window_offset
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset   # offline sensor: at the threshold, no correction
                 self.ADapi.log(f"{self.heater_data.window_temp} has no temperature. Probably offline", level = 'DEBUG')
             except Exception as e:
-                window_temp = self.target_heater_temp + self.heater_data.window_offset
+                window_temp = self.target_indoor_temp + self.heater_data.window_offset   # offline sensor: at the threshold, no correction
                 self.ADapi.log(f"Not able to get temperature from {self.heater_data.window_temp}. {e}", level = 'DEBUG')
             if window_temp > self.target_indoor_temp + self.heater_data.window_offset:
                 adjust = float(window_temp - (self.target_indoor_temp + self.heater_data.window_offset))
 
         if in_temp > self.target_indoor_temp:
-            adjust = min(adjust + float(in_temp - self.target_indoor_temp), 3)
+            adjust += float(in_temp - self.target_indoor_temp)
+        # The total correction (window sensor plus indoor sensor) is capped at 3 degrees, so a sunny
+        # window reading 35 lowers the setpoint by 3, not down to the floor.
+        adjust = min(adjust, 3)
         new_temperature -= adjust
 
         # Windows
@@ -778,25 +984,31 @@ class Climate(Heater):
             self.notify_app.send_notification(
                 message = f"No Window near {self.heater} is open and it is getting hot inside! {in_temp}°",
                 message_title = f"Window closed",
-                message_recipient = self.heater_data.recipients,
+                message_recipient = self.heater_data.recipient,
                 also_if_not_home = False
             )
             self.notify_on_window_closed = False
-        
+
         if self.windows_is_open:
             if (
                 self.notify_on_window_open
                 and self.out_temp < self.heater_data.getting_cold
                 and in_temp < self.heater_data.getting_cold
             ):
+                if in_temp_set:
+                    message = f"Window near {self.heater} is open and inside temperature is {in_temp}°"
+                else:
+                    # No indoor temperature known: the alert is still sent, without a figure.
+                    message = f"Window near {self.heater} is open"
                 self.notify_app.send_notification(
-                    message = f"Window near {self.heater} is open and inside temperature is {in_temp}°",
+                    message = message,
                     message_title = "Window open",
-                    message_recipient = self.heater_data.recipients,
+                    message_recipient = self.heater_data.recipient,
                     also_if_not_home = False
                 )
                 self.notify_on_window_open = False
-            self.setSaveState()
+            # Window save: same temperature as overconsumption, but isOverconsumption stays the main app's.
+            self._apply_save_temperature()
             return
 
         # Holliday temperature
@@ -820,7 +1032,7 @@ class Climate(Heater):
         # Daytime Savings
         else:
             doDaytimeSaving = False
-            for daytime in self.heater_data.daytime_savings:
+            for daytime in self.heater_data.daytime_savings or []:
                 if (
                     'start' in daytime
                     and 'stop' in daytime
@@ -850,19 +1062,24 @@ class Climate(Heater):
         ):
             new_temperature += 1
 
-        # Avoid setting lower temp than climate minimum
+        # Setting new temperature. The setpoint is compared with the target rounded half up to 0.5 (the
+        # value that is sent), so an unchanged target is not re-sent every runner tick. round() rounds
+        # half to even (22.25 -> 22.0 but 22.75 -> 23.0).
+        new_temperature = math.floor(new_temperature * 2 + 0.5) / 2
+
+        # Avoid setting lower temp than vacation temp or the climate minimum. After the rounding, so a
+        # floor is sent as it is (a floor of 13.2 is not rounded down to 13.0).
         if new_temperature < vacation_temp:
             new_temperature = vacation_temp
         if new_temperature < self.min_temp:
             new_temperature = self.min_temp
 
-        # Setting new temperature
         try:
             if heater_temp != new_temperature:
                 self.ADapi.call_service('climate/set_temperature',
                     namespace = self.namespace,
                     entity_id = self.heater,
-                    temperature = round(new_temperature * 2, 0) / 2
+                    temperature = new_temperature
                 )
         except (TypeError, AttributeError):
             self.ADapi.log(f"{self.heater} has no temperature. Probably offline", level = 'DEBUG')
@@ -870,6 +1087,8 @@ class Climate(Heater):
 
 class On_off_switch(Heater):
     """ Controls on/off switches depending og given input and electricity price. """
+
+    supports_windowsensors = False   # windowsensors is ignored for switches (WARNING at startup)
 
     def __init__(self,
         api,
@@ -880,6 +1099,7 @@ class On_off_switch(Heater):
         charging_scheduler,
         notify_app,
         print_save_hours,
+        persist_callback = None,
     ):
 
         super().__init__(
@@ -891,4 +1111,270 @@ class On_off_switch(Heater):
             charging_scheduler = charging_scheduler,
             notify_app = notify_app,
             print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
+        )
+
+        self.turn_off_action:str = 'turn_off_' + str(self.heater)
+        self.ADapi.listen_event(self._notify_event, "mobile_app_notification_action",
+            action = self.turn_off_action,
+            namespace = self.namespace
+        )
+
+        # Detection of finished program (notify_when_finished)
+        self.running:bool = False
+        self.debounce_handler = None
+        self.turn_back_on_handler = None
+        # Detection (and the notification) runs whenever notify_when_finished is on. The automatic
+        # turn-off needs both turn_off_after and turn_off_before, see _dryer_is_stopping.
+        if self.heater_data.notify_when_finished:
+            self.start_finished_detection()
+
+    def start_finished_detection(self) -> None:
+        """ Starts watching the consumption sensor for a program that starts and finishes. """
+
+        if self.heater_data.consumptionSensor is None:
+            self.ADapi.log(f"{self.heater} has notify_when_finished but no consumptionSensor.", level = 'WARNING')
+            return
+        power = self.ADapi.get_state(self.heater_data.consumptionSensor, namespace = self.namespace)
+        self.ADapi.listen_state(self._power_changed, self.heater_data.consumptionSensor,
+            namespace = self.namespace
+        )
+        self._evaluate(power)
+
+    def _power_changed(self, entity, attribute, old, new, kwargs) -> None:
+        self._evaluate(new)
+
+    def _evaluate(self, value) -> None:
+        """ Starts or cancels the timer that confirms that the appliance started or finished.
+            Every new reading is checked, so a sensor that changes often works as well. """
+
+        try:
+            watts = float(value)
+        except (TypeError, ValueError):
+            # unavailable or unknown. Do not notify on missing data, and forget that a program was
+            # running: a sensor that comes back low must not count as "finished".
+            self._cancel_debounce()
+            self.running = False
+            return
+
+        if not self.running:
+            if watts > self.heater_data.start_threshold:
+                self._start_debounce(self._dryer_is_running, self.heater_data.start_duration)
+            else:
+                self._cancel_debounce()
+        else:
+            if watts < self.heater_data.stop_threshold:
+                self._start_debounce(self._dryer_is_stopping, self.heater_data.stop_duration)
+            else:
+                self._cancel_debounce()
+
+    def _start_debounce(self, callback, seconds:int) -> None:
+        if self.debounce_handler is None:
+            self.debounce_handler = self.ADapi.run_in(callback, seconds)
+
+    def _cancel_debounce(self) -> None:
+        if self.debounce_handler is not None:
+            self.ADapi.cancel_timer(self.debounce_handler, silent = True)
+            self.debounce_handler = None
+
+    def _dryer_is_running(self, **kwargs) -> None:
+        """ Consumption has been high long enough. Now waiting for it to fall again """
+
+        self.debounce_handler = None
+        self.running = True
+
+    def _dryer_is_stopping(self, **kwargs) -> None:
+        """ Consumption has been low long enough. Notifies that the program is finished """
+
+        self.debounce_handler = None
+        self.running = False
+
+        if self.isSaveState:
+            # Consumption fell because the switch is off to save, not because the program finished.
+            return
+
+        data = {
+            'tag' : str(self.heater),
+            'actions' : [{ 'action' : self.turn_off_action, 'title' : 'Turn Off', 'destructive' : True, 'icon' : 'sfsymbols:stop.circle.fill' }]
+            }
+
+        if (
+            self.heater_data.turn_off_after is not None
+            and self.heater_data.turn_off_before is not None
+            and self.ADapi.now_is_between(self.heater_data.turn_off_after, self.heater_data.turn_off_before)
+        ):
+            self.turn_off_appliance()
+
+        name = self.ADapi.get_state(self.heater, namespace = self.namespace, attribute = 'friendly_name') or str(self.heater)
+        # Custom texts from `notify_title` / `notify_message`; {name} = friendly name, {heater} = entity id.
+        texts = {
+            'message': self.heater_data.notify_message or "Consumption finished",
+            'title': self.heater_data.notify_title or f"{self.heater}",
+        }
+        for key, text in texts.items():
+            texts[key] = str(text).replace('{name}', str(name)).replace('{heater}', str(self.heater))
+        self.notify_app.send_notification(
+            message = texts['message'],
+            message_title = texts['title'],
+            message_recipient = self.heater_data.recipient,
+            also_if_not_home = True,
+            data = data
+        )
+
+    def _notify_event(self, event_name, data, **kwargs) -> None:
+        if data.get('action') == self.turn_off_action:
+            self.turn_off_appliance()
+
+    def turn_off_appliance(self) -> None:
+        """ Turns the finished appliance off. The slot runner leaves it off (turned_off_by_finish) until
+            turn_back_on runs after turn_back_on_after seconds, or until someone turns it on.
+            With turn_back_on_after 0 the app never turns it on again. """
+
+        self.ADapi.call_service('switch/turn_off',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+        self.turned_off_by_finish = True
+        if self.heater_data.turn_back_on_after > 0:
+            if self.turn_back_on_handler is not None:
+                self.ADapi.cancel_timer(self.turn_back_on_handler, silent = True)
+            self.turn_back_on_handler = self.ADapi.run_in(self.turn_back_on, self.heater_data.turn_back_on_after)
+
+    def turn_back_on(self, **kwargs) -> None:
+        self.turn_back_on_handler = None
+        self.turned_off_by_finish = False
+        self.ADapi.call_service('switch/turn_on',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+
+
+class ClimateCommanderHeater(Heater):
+    """ A climate entity controlled by a ClimateCommander app (`climate_commander:` in the YAML).
+
+        ElectricalManagement keeps the price, overconsumption and consumption-learning logic and
+        sends a power state ('normal', 'save', 'spend', 'reduce') to the ClimateCommander device,
+        which turns it into a setpoint. The device is looked up by app name on every push, so a
+        reloaded ClimateCommander app is found again. The state is re-sent at least every
+        PUSH_REFRESH_SECONDS; the device falls back to 'normal' by itself after STATE_VALID_MINUTES
+        without a refresh. """
+
+    PUSH_REFRESH_SECONDS = 600
+    STATE_VALID_MINUTES = 45
+
+    def __init__(self,
+        api,
+        namespace,
+        heater,
+        heater_data,
+        electricalPriceApp,
+        charging_scheduler,
+        notify_app,
+        print_save_hours,
+        cc_app:str,
+        cc_climate:str | None = None,
+        persist_callback = None,
+    ):
+        self.cc_app = cc_app
+        self.cc_climate = cc_climate
+        self._pushed_state = None
+        self._pushed_at = None
+        self._device = None
+        self._missing_logged = False
+        super().__init__(
+            api = api,
+            namespace = namespace,
+            heater = heater,
+            heater_data = heater_data,
+            electricalPriceApp = electricalPriceApp,
+            charging_scheduler = charging_scheduler,
+            notify_app = notify_app,
+            print_save_hours = print_save_hours,
+            persist_callback = persist_callback,
+        )
+        self.reset_continuous_hours = True
+        self.ADapi.run_every(self._keepalive, "now+30", 60)
+
+    def device(self):
+        """ The ClimateCommander device, or None while that app is not running. """
+
+        app = self.ADapi.get_app(self.cc_app)
+        if app is None or not hasattr(app, 'get_device'):
+            return None
+        return app.get_device(self.cc_climate if self.cc_climate is not None else self.heater)
+
+    def _wanted_state(self) -> str:
+        if self.isOverconsumption:
+            return 'reduce'
+        if self.increase_now:
+            return 'spend'
+        if self._is_time_within_any_save_range() and self.automate:
+            return 'save'
+        if self._is_time_within_any_spend_range():
+            return 'spend'
+        return 'normal'
+
+    def _push(self, state:str, device) -> None:
+        if device is None:
+            if not self._missing_logged:
+                self._missing_logged = True
+                self.ADapi.log(f"ClimateCommander app '{self.cc_app}' for {self.heater} is not running (yet).", level = 'WARNING')
+            return
+        self._missing_logged = False
+        device.set_power_state(state, valid_minutes = self.STATE_VALID_MINUTES, source = 'ElectricalManagement')
+        self._pushed_state = state
+        self._pushed_at = self.ADapi.datetime(aware = True)
+        self._device = device
+
+    def _keepalive(self, **kwargs) -> None:
+        """ Re-sends the state when the ClimateCommander app was reloaded or the last push is old. """
+
+        if self.fire_off:
+            return
+        device = self.device()
+        if device is None:
+            return
+        now = self.ADapi.datetime(aware = True)
+        if (
+            device is not self._device
+            or self._pushed_at is None
+            or (now - self._pushed_at).total_seconds() > self.PUSH_REFRESH_SECONDS
+        ):
+            self._send_state(device)
+
+    def heater_getNewPrices(self, kwargs) -> None:
+        super().heater_getNewPrices(0)
+        self.time_to_spend = self._find_times_to_spend()
+        self.heater_setNewValues()
+        if self.time_to_spend and self.print_save_hours:
+            self.ADapi.log(f"{self.heater} Extra heating at: {self.electricalPriceApp.print_peaks(self.time_to_spend)}", level = 'INFO')
+
+    def heater_setNewValues(self, kwargs=None) -> None:
+        """ Sends the power state for now to the ClimateCommander device. """
+
+        if self.fire_off:
+            return
+        self._send_state(self.device())
+
+    def _send_state(self, device) -> None:
+        state = self._wanted_state()
+        if state != 'reduce':
+            self.isSaveState = state == 'save' or (device is not None and device.in_daytime_saving())
+        self._push(state, device)
+
+    def is_on(self) -> bool:
+        state = self.ADapi.get_state(self.heater, namespace = self.namespace)
+        return state is not None and state != 'off' and state not in UNAVAIL
+
+    def turn_on_heater(self) -> None:
+        self.ADapi.call_service('climate/turn_on',
+            entity_id = self.heater,
+            namespace = self.namespace
+        )
+        self.heater_setNewValues()
+
+    def turn_off_heater(self) -> None:
+        self.ADapi.call_service('climate/turn_off',
+            entity_id = self.heater,
+            namespace = self.namespace
         )

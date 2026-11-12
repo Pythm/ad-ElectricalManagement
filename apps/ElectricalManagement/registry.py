@@ -4,29 +4,48 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 class Registry:
-    _cars: Dict[str, "Car"] = {}
-    _chargers: Dict[str, "Charger"] = {}
+    """ Lookup of the Car and Charger instances of one ElectricalUsage app, by id.
 
+        ElectricalUsage.initialize creates a new Registry, so a reload starts empty and a second
+        app instance has its own. Cars, chargers and guests reach it through their Scheduler
+        (``charging_scheduler.registry``). The link methods below only touch the car and charger
+        they are given, so they stay class methods.
+    """
 
-    @classmethod
-    def register_car(cls, car: "Car") -> None:
-        """Store a Car instance in the global registry."""
-        cls._cars[car.vehicle_id] = car
+    def __init__(self) -> None:
+        self._cars: Dict[str, "Car"] = {}
+        self._chargers: Dict[str, "Charger"] = {}
 
-    @classmethod
-    def register_charger(cls, charger: "Charger") -> None:
-        """Store a Charger instance in the global registry."""
-        cls._chargers[charger.charger_id] = charger
+    def register_car(self, car: "Car") -> None:
+        """Store a Car instance in this registry."""
+        self._cars[car.vehicle_id] = car
 
-    @classmethod
-    def get_car(cls, vehicle_id: str) -> Optional["Car"]:
+    def register_charger(self, charger: "Charger") -> None:
+        """Store a Charger instance in this registry."""
+        self._chargers[charger.charger_id] = charger
+
+    def unregister_car(self, vehicle_id: str) -> Optional["Car"]:
+        """Remove and return the Car with the given id, or ``None`` if not registered."""
+        return self._cars.pop(vehicle_id, None)
+
+    def unregister_charger(self, charger_id: str) -> Optional["Charger"]:
+        """Remove and return the Charger with the given id, or ``None`` if not registered."""
+        return self._chargers.pop(charger_id, None)
+
+    def get_car(self, vehicle_id: str) -> Optional["Car"]:
         """Return the Car instance for the given ID, or ``None``."""
-        return cls._cars.get(vehicle_id)
+        return self._cars.get(vehicle_id)
 
-    @classmethod
-    def get_charger(cls, charger_id: str) -> Optional["Charger"]:
+    def get_charger(self, charger_id: str) -> Optional["Charger"]:
         """Return the Charger instance for the given ID, or ``None``."""
-        return cls._chargers.get(charger_id)
+        return self._chargers.get(charger_id)
+
+    @staticmethod
+    def _log_link(car: "Car", message: str) -> None:
+        """ Debug line for a link change, so power.log shows which car sits on which charger. """
+        api = getattr(car, "ADapi", None)
+        if api is not None:
+            api.log(message) ###
 
     @classmethod
     def set_onboard_link(cls, car: "Car", charger: "Charger") -> None:
@@ -40,12 +59,44 @@ class Registry:
     def set_link(cls, car: "Car", charger: "Charger") -> None:
         """
         Link a car and a charger both in memory and in the persistent
-        data structures.
+        data structures. Links are kept 1:1:
+
+        * the charger's previous car (if another car was linked to this charger) is detached:
+          its ``connected_charger`` and persisted ``connected_charger_id`` are cleared.
+        * the car's previous charger (if the car was linked to another charger) is detached:
+          its ``connected_vehicle`` is cleared - EXCEPT when that charger is the car's own
+          onboard charger. The onboard charger keeps pointing at its car (``set_onboard_link``
+          semantics) while the car is linked to an external charger such as the Easee; the
+          Tesla_charger auto-link on 'Stopped' and the onboard start/stop commands depend on it.
 
         * `car.connected_charger`  ←  charger
         * `charger.connected_vehicle`  ←  car
         * `car.car_data.connected_charger_id`  ←  charger.charger_id
         """
+        if car is None or charger is None:
+            return
+
+        # Detach the charger's previous car
+        previous_car = getattr(charger, "connected_vehicle", None)
+        if previous_car is not None and previous_car is not car:
+            if getattr(previous_car, "connected_charger", None) is charger:
+                previous_car.connected_charger = None
+                previous_car.car_data.connected_charger_id = None
+
+        # Detach the car's previous charger (never the car's own onboard charger)
+        previous_charger = getattr(car, "connected_charger", None)
+        if (
+            previous_charger is not None
+            and previous_charger is not charger
+            and previous_charger is not getattr(car, "onboard_charger", None)
+            and getattr(previous_charger, "connected_vehicle", None) is car
+        ):
+            previous_charger.connected_vehicle = None
+
+        if previous_charger is not charger:
+            cls._log_link(car, f"Linked {getattr(car, 'carName', car)} to {getattr(charger, 'charger', charger)}"
+                               f" (was {getattr(previous_charger, 'charger', None)})")
+
         # In‑memory links
         car.connected_charger = charger
         charger.connected_vehicle = car
@@ -58,6 +109,9 @@ class Registry:
         """
         Remove the association between a car and its charger.
 
+        The charger side is only cleared when the charger still points at this car,
+        so unlinking a stale car never drops another car that was linked meanwhile.
+
         Returns the charger that was detached, or ``None`` if the car
         was not linked.
         """
@@ -65,12 +119,15 @@ class Registry:
         if charger is None:
             return None
 
+        cls._log_link(car, f"Unlinked {getattr(car, 'carName', car)} from {getattr(charger, 'charger', charger)}")
+
         # Clear persistent identifiers
         car.car_data.connected_charger_id = None
 
         # Clear in‑memory references
         car.connected_charger = None
-        charger.connected_vehicle = None
+        if getattr(charger, "connected_vehicle", None) is car:
+            charger.connected_vehicle = None
 
         return charger
 

@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import bisect
 import math
-from datetime import timedelta
-from typing import Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
 
-# Local imports – adjust the module names to your actual project layout
 from pydantic_models import ChargingQueueItem, WattSlot
-from utils import get_next_runtime_aware
+from registry import Registry
+from utils import NO_TOMORROW_PRICES_WINDOW, cancel_timer_handler, get_next_runtime_aware, price_now_or_inf, slot_index_now, to_float_or_none
+
+LOW_PRICE_PATH_WINDOW = ("09:00:00", "14:00:00")   # without tomorrow's prices a low price is charging time here
+INFO_UPDATE_DELAY_SECONDS = 3   # lets several queue changes in a row end in one update
+INFOTEXT_MAX_LENGTH = 255       # the most a Home Assistant input_text can hold
+INFOTEXT_NOTHING_PLANNED = "No planned charging"
 
 class Scheduler:
-    """ Class for calculating and schedule charge times """
+    """ Class for calculating and schedule charge times.
+
+        `chargingQueue` and `available_watt` are the very list objects stored in the main app's
+        PersistenceData and are shared BY REFERENCE: the scheduler mutates them in place and
+        the main app refreshes `available_watt` with .clear()/.extend() so this reference
+        stays valid. Never rebind these attributes.
+    """
 
     def __init__(self, api,
         stopAtPriceIncrease:float,
@@ -22,6 +33,7 @@ class Scheduler:
         recipients,
         chargingQueue: Optional[list[ChargingQueueItem]] = None,
         available_watt: Optional[List[WattSlot]] = None,
+        registry: Optional[Registry] = None,
     ):
         self.ADapi = api
         self.namespace = namespace
@@ -34,10 +46,12 @@ class Scheduler:
 
         self.chargingQueue: list[ChargingQueueItem] = chargingQueue
         self.available_watt: List[WattSlot] = available_watt
+        # The cars and chargers of this app, see Registry.
+        self.registry: Registry = registry if registry is not None else Registry()
 
-        self.simultaneousChargeComplete: list[str] = []
         self.currentlyCharging: set[str] = set()
         self.informHandler = None
+        self._last_plan = None
 
         # helper values
         now = self.ADapi.datetime(aware=True)
@@ -47,7 +61,7 @@ class Scheduler:
         self,
         kWhRemaining: float = 2,
         totalW_AllChargers: float = 3600,
-        start_time: Optional[self.ADapi.datetime(aware=True)] = None,
+        start_time: Optional[datetime] = None,
     ) -> float:
         """ Estimate the *number of hours* it will take to finish a charge """
 
@@ -59,19 +73,25 @@ class Scheduler:
                 startTime = start_time, offset_seconds=0, delta_in_seconds=60 * 15
             )
 
+        wh_remaining = kWhRemaining * 1_000
+        if not self.available_watt:
+            # No per-slot budget yet (prices not received / idle consumption not calculated):
+            # fall back to a plain power-based estimate instead of claiming 0 hours.
+            return wh_remaining / max(totalW_AllChargers, 1)
+
         idx_start = bisect.bisect_left([s.start for s in self.available_watt], self.save_endHour)
 
-        wh_remaining = kWhRemaining * 1_000
         hours_to_charge = 0.0
 
         for slot in self.available_watt[idx_start:]:
             if wh_remaining <= 0:
                 break
 
-            usable_wh = min(
+            # A slot can be below zero when idle use is above the hourly cap: it gives nothing.
+            usable_wh = max(0.0, min(
                 slot.available_Wh,
                 totalW_AllChargers * slot.duration_hours,
-            )
+            ))
 
             if wh_remaining <= usable_wh:
                 hours_to_charge += slot.duration_hours
@@ -105,7 +125,9 @@ class Scheduler:
         reverse: bool = False
     ) -> List[str]:
         """ Return a **new list** containing the same vehicle_ids but sorted
-        according to the priority stored in `self._persistence.chargingQueue` """
+        according to the priority stored in `self.chargingQueue`.
+        Callers that need the persisted queue reordered must assign back with
+        ``charging_list[:] = ...`` so the list object (shared with PersistenceData) is kept. """
 
         priority_map = self._vehicle_priority_map()
 
@@ -140,10 +162,13 @@ class Scheduler:
                 return True
 
             if entry.charge_below != 0:
-                return self.electricalPriceApp.electricity_price_now() <= entry.charge_below
+                # No current price (inf) -> not cheap -> do not charge on price.
+                cheap = price_now_or_inf(self.electricalPriceApp) <= entry.charge_below
+                if cheap or vehicle_id is not None:
+                    return cheap
 
         if (
-            self.ADapi.now_is_between("09:00:00", "14:00:00")
+            self.ADapi.now_is_between(*LOW_PRICE_PATH_WINDOW)
             and not self.electricalPriceApp.tomorrow_valid
         ):
             return self._is_charging_price(vehicle_id = vehicle_id)
@@ -158,13 +183,14 @@ class Scheduler:
 
         if max_price == 0:
             max_price = self._update_prices_for_future_hours()
-            if max_price == -1:
+            if max_price is None or max_price == -1:
                 return False
-        return self.electricalPriceApp.electricity_price_now() <= max_price
+        return price_now_or_inf(self.electricalPriceApp) <= max_price
 
 
     def _update_prices_for_future_hours(self) -> float:
-        """ When tomorrow's price data is not yet available """
+        """ When tomorrow's price data is not yet available.
+            Returns the price limit, or -1 when no limit could be found (treated as 'not charging time'). """
 
         now = self.ADapi.datetime(aware=True)
         if all(c.price is not None for c in self.chargingQueue):
@@ -181,27 +207,28 @@ class Scheduler:
         else:
             est_hours = sum(c.estHourCharge for c in self.chargingQueue if c.estHourCharge)
 
+        # checkitem is a SLOT INDEX into elpricestoday (24/day hourly, 96/day in 15-minute mode),
+        # not an hour. On a normal hourly day starting at 00:00 the index of 'now' equals now.hour.
         price = self.electricalPriceApp.get_lowest_prices(
-            checkitem = now.hour,
+            checkitem = slot_index_now(self.electricalPriceApp.elpricestoday, now),
             hours = est_hours,
             min_change = 0.1
         )
+        if price is None:
+            # Price app has no data yet: no limit available, retry on the next call.
+            return -1
 
         for c in self.chargingQueue:
             c.price = price
         return price
 
-    def getVehiclePrice(self, vehicle_id: Optional[str] = None) -> float:
-        """ Return the price for a specific vehicle if it is present in the queue.
-        Otherwise return the *highest* price seen across all entries """
+    def isWaitingForPrices(self, vehicle_id: str) -> bool:
+        """ True when the car is queued with something left to charge and the price app gave it no
+            window. A car that is charging is not stopped for that. A car on a fixed price has no
+            window either, but its price decides. """
 
-        highest_price = 0.0
-        for entry in self.chargingQueue:
-            if vehicle_id is not None and entry.vehicle_id == vehicle_id:
-                return entry.price or 0.0
-            if entry.price is not None and entry.price > highest_price:
-                highest_price = entry.price
-        return highest_price
+        entry = self._entry_for(vehicle_id)
+        return entry is not None and entry.charge_below == 0 and not self._window_not_ended(entry, self.ADapi.datetime(aware=True))
 
     def isPastChargingTime(self, vehicle_id: Optional[str] = None) -> bool:
         """ Return ``True`` when the charging stop time for *vehicle_id* has
@@ -262,13 +289,25 @@ class Scheduler:
                         return entry.vehicle_id
         return None
 
-    def removeFromQueue(self, vehicle_id: str) -> None:
+    def _remove_entry(self, vehicle_id: str) -> bool:
         """ Remove the first queue entry that matches *vehicle_id* """
 
         for idx, entry in enumerate(self.chargingQueue):
             if entry.vehicle_id == vehicle_id:
                 del self.chargingQueue[idx]
-                break
+                return True
+        return False
+
+    def removeFromQueue(self, vehicle_id: str) -> None:
+        """ Remove *vehicle_id* from the queue and update the info text """
+
+        if self._remove_entry(vehicle_id):
+            self.schedule_info_update()
+
+    def _window_not_ended(self, entry: ChargingQueueItem, now: datetime) -> bool:
+        """ True when the entry has a charging window that is running or still ahead. """
+
+        return bool(entry.chargingStart and entry.chargingStop and now < entry.chargingStop)
 
     def queueForCharging(
         self,
@@ -283,7 +322,8 @@ class Scheduler:
     ) -> bool:
         """ Enqueue a new charging job (or replace an existing one) """
 
-        self.removeFromQueue(vehicle_id)
+        previous = self._entry_for(vehicle_id)
+        self._remove_entry(vehicle_id)
 
         if kWhRemaining <= 0:
             return False
@@ -304,9 +344,23 @@ class Scheduler:
             name=name,
             charge_below=charge_below,
         )
+        if previous is not None:
+            # What the owner was told survives the re-plan: an unchanged plan is not sent again.
+            new_item.informedStart = previous.informedStart
+            new_item.informedStop = previous.informedStop
+            new_item.informedBelow = previous.informedBelow
+            if charge_below == 0 and self._window_not_ended(previous, self.ADapi.datetime(aware=True)):
+                # process_charging_queue replaces this window when the price app finds a new one.
+                new_item.chargingStart = previous.chargingStart
+                new_item.chargingStop = previous.chargingStop
+                new_item.estimateStop = previous.estimateStop
+                new_item.price = previous.price
         self.chargingQueue.append(new_item)
 
-        if self.ADapi.now_is_between("09:00:00", "14:00:00") and not self.electricalPriceApp.tomorrow_valid:
+        if self.ADapi.now_is_between(*NO_TOMORROW_PRICES_WINDOW) and not self.electricalPriceApp.tomorrow_valid:
+            # The price app has no window to give yet. A car with a window keeps it. The others get one when
+            # tomorrow's prices arrive (ElectricalUsage._get_new_prices), and can charge on a low price until then.
+            self.ADapi.log(f"{name}: no tomorrow prices yet, keeping window {new_item.chargingStart} - {new_item.chargingStop}", level = 'DEBUG') ###
             return self.isChargingTime(vehicle_id=vehicle_id)
 
         self.process_charging_queue()
@@ -315,66 +369,56 @@ class Scheduler:
     def process_charging_queue(self) -> None:
         """ Resolve the whole queue, scheduling charging windows, detecting
         simultaneous sessions and finally computing the “best” price block
-        for each job """
+        for each job.
+
+        A window that has not ended is kept when the price app has no new one. Without tomorrow's
+        prices it can not have one (NO_TOMORROW_PRICES_WINDOW), and an entry only has a window then
+        if it was planned earlier, so the car has been plugged in since before that window began. """
 
         self.chargingQueue.sort(key=lambda c: c.finish_by_hour)
+        now = self.ADapi.datetime(aware=True)
 
-        simultaneous_charge: List[str] = []
-        self.simultaneousChargeComplete = []
+        overlapping: List[ChargingQueueItem] = []
 
-        for i, current_car in enumerate(self.chargingQueue):
+        for current_car in self.chargingQueue:
             if current_car.charge_below != 0:
                 current_car.price = current_car.charge_below
                 continue
 
-            (
-                current_car.chargingStart,
-                current_car.chargingStop,
-                current_car.price,
-            ) = self.electricalPriceApp.get_Continuous_Cheapest_Time(
+            start, stop, price = self.electricalPriceApp.get_Continuous_Cheapest_Time(
                 hoursTotal=current_car.estHourCharge,
                 calculateBeforeNextDayPrices=False,
                 finishByHour=current_car.finish_by_hour,
                 startBeforePrice=self.startBeforePrice,
                 stopAtPriceIncrease=self.stopAtPriceIncrease,
             )
-            estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
-            if current_car.chargingStart is not None:
-                current_car.estimateStop = current_car.chargingStart + timedelta(minutes = estMinutesToCharge)
+            if start is None and self._window_not_ended(current_car, now):
+                self.ADapi.log(f"{current_car.name}: price app has no window, keeping {current_car.chargingStart} - {current_car.chargingStop}", level = 'DEBUG') ###
+            else:
+                current_car.chargingStart, current_car.chargingStop, current_car.price = start, stop, price
+                if start is not None:
+                    estMinutesToCharge = int(math.ceil(current_car.estHourCharge * 60))
+                    current_car.estimateStop = start + timedelta(minutes = estMinutesToCharge)
 
-                has_overlap = False
-                for overlapping_id in simultaneous_charge:
-                    idx = next(
-                        (j for j, c in enumerate(self.chargingQueue) if c.vehicle_id == overlapping_id),
-                        None,
-                    )
-                    if idx is not None and self.chargingQueue[idx].chargingStop > current_car.chargingStart:
-                        has_overlap = True
-                        break
+            if current_car.chargingStart is None or current_car.chargingStop is None:
+                continue
 
-                if not has_overlap:
-                    for j in range(i - 1, -1, -1):
-                        prev = self.chargingQueue[j]
-                        if prev.chargingStop is not None and current_car.chargingStart < prev.chargingStop:
-                            simultaneous_charge.append(prev.vehicle_id)
-                    simultaneous_charge.append(current_car.vehicle_id)
-                else:
-                    simultaneous_charge.append(current_car.vehicle_id)
+            if overlapping and not any(
+                current_car.chargingStart < other.chargingStop and other.chargingStart < current_car.chargingStop
+                for other in overlapping
+            ):
+                self._merge_overlapping(overlapping)
+                overlapping = []
+            overlapping.append(current_car)
 
-                next_index = i + 1
-                if next_index < len(self.chargingQueue):
-                    next_car = self.chargingQueue[next_index]
-                    if next_car.chargingStart is not None and current_car.chargingStop is not None:
-                        if next_car.chargingStart >= current_car.chargingStop:
-                            if simultaneous_charge:
-                                self.calcSimultaneousCharge(simultaneous_charge)
-                                self.simultaneousChargeComplete.extend(simultaneous_charge)
-                                simultaneous_charge = []
+        self._merge_overlapping(overlapping)
 
-        if simultaneous_charge:
-            if len(simultaneous_charge) > 1:
-                self.calcSimultaneousCharge(simultaneous_charge)
-                self.simultaneousChargeComplete.extend(simultaneous_charge)
+    def _merge_overlapping(self, overlapping: List[ChargingQueueItem]) -> None:
+        """ Cars whose windows overlap charge at the same time and get one window. A car alone keeps its own. """
+
+        self.ADapi.log(f"Charge group: {[(c.name, c.chargingStart, c.chargingStop) for c in overlapping]}", level = 'DEBUG') ###
+        if len(overlapping) > 1:
+            self.calcSimultaneousCharge([c.vehicle_id for c in overlapping])
 
     def calcSimultaneousCharge(self, simultaneous_charge: List[str]) -> None:
         """ Re-calculate the charging window for a group of vehicles that must run
@@ -426,10 +470,18 @@ class Scheduler:
             stopAtPriceIncrease=self.stopAtPriceIncrease,
         )
 
-        start_this_charger_at = charging_at
-        eta_stop_simultaneous = start_this_charger_at + timedelta(hours = hours_to_charge)
+        if charging_at is None:
+            # (None, None, price) is returned between 06:00 and 15:00 without tomorrow's prices,
+            # and (None, None, None) when no prices exist. Nothing to schedule yet.
+            self.ADapi.log(
+                f"No continuous charge window found for simultaneous charge of {simultaneous_charge}. "
+                f"Keeping individual charge times.",
+                level = 'DEBUG'
+            )
+            return
+
+        eta_stop_simultaneous = charging_at + timedelta(hours = hours_to_charge)
         if charging_stop is not None:
-            now = self.ADapi.datetime(aware=True)
             for c in simultaneous_items:
                 c.chargingStart = charging_at
                 c.chargingStop = charging_stop
@@ -437,99 +489,99 @@ class Scheduler:
                 c.estimateStop = eta_stop_simultaneous
 
 
+    def schedule_info_update(self) -> None:
+        """ Updates the info text and notification shortly, once for several changes in a row. """
+
+        cancel_timer_handler(ADapi = self.ADapi, handler = self.informHandler, name = "charge queue info")
+        self.informHandler = self.ADapi.run_in(self.notifyChargeTime, INFO_UPDATE_DELAY_SECONDS)
+
+    def _current_plan(self, now: datetime) -> Tuple[dict, List[str], dict]:
+        """ What is planned now: {(start, stop): [car names]}, the names of the cars queued without a
+            window, and {charge_below: [car names]}. """
+
+        windows: dict[Tuple[datetime, datetime], List[str]] = {}
+        waiting: List[str] = []
+        below: dict[float, List[str]] = {}
+        for entry in sorted(self.chargingQueue, key=lambda c: c.finish_by_hour):
+            if entry.charge_below != 0:
+                below.setdefault(entry.charge_below, []).append(entry.name)
+            elif self._window_not_ended(entry, now):
+                windows.setdefault((entry.chargingStart, entry.chargingStop), []).append(entry.name)
+            else:
+                waiting.append(entry.name)
+        return windows, waiting, below
+
+    def _info_text(self, windows: dict, waiting: List[str], below: dict, now: datetime) -> str:
+        """ For example 'Car A, Car B 01:00-04:00; Car C waiting for prices; Charge below 0.8: Car D'.
+            A window that starts a day or more from now gets the weekday in front. """
+
+        parts: List[str] = []
+        for (start, stop), names in sorted(windows.items()):
+            day = start.strftime("%a ") if start - now >= timedelta(days = 1) else ""
+            parts.append(f"{', '.join(names)} {day}{start.strftime('%H:%M')}-{stop.strftime('%H:%M')}")
+        if waiting:
+            parts.append(f"{', '.join(waiting)} waiting for prices")
+        for price, names in sorted(below.items()):
+            parts.append(f"Charge below {price:g}: {', '.join(names)}")
+        return self._shorten("; ".join(parts) or INFOTEXT_NOTHING_PLANNED, INFOTEXT_MAX_LENGTH)
+
+    def _shorten(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit - 1].rstrip(" ,;:") + "…"
+
+    def _infotext_limit(self) -> int:
+        """ The helper's own `max`: a new input_text allows 100 characters, and HA rejects a longer value. """
+
+        helper_max = to_float_or_none(self.ADapi.get_state(self.infotext, attribute = 'max', namespace = self.namespace))
+        if helper_max is None or helper_max < 1:
+            return INFOTEXT_MAX_LENGTH
+        return min(int(helper_max), INFOTEXT_MAX_LENGTH)
+
+    def _mark_informed(self, now: datetime) -> bool:
+        """ Remembers the plan of every queue entry. True when an entry has a plan the owner was not told. """
+
+        new_info = False
+        for entry in self.chargingQueue:
+            if entry.charge_below != 0:
+                if entry.informedBelow != entry.charge_below:
+                    entry.informedBelow = entry.charge_below
+                    new_info = True
+            elif self._window_not_ended(entry, now):
+                if entry.informedStart != entry.chargingStart or entry.informedStop != entry.chargingStop:
+                    entry.informedStart = entry.chargingStart
+                    entry.informedStop = entry.chargingStop
+                    new_info = True
+        return new_info
+
     def notifyChargeTime(self, kwargs) -> None:
-        """ Sends notifications and updates infotext with charging times and prices """
+        """ Writes the plan to the `infotext` helper, when configured, and sends it to `notify_receiver`.
 
-        def _fmt(dt: datetime | None) -> str:
-            """ Return a human readable string without the TZ component """
-            return "" if dt is None else dt.strftime("%Y-%m-%d %H:%M")
+            The helper always shows the plan as it is now. A notification goes out only for a new or
+            changed plan: not when a car has finished and left the queue, and not after a restart or
+            a re-plan that ends with the same plan. """
 
-        lowest_price: float | None = None
-        times_set = False
-        send_new_info = False
-        info_text = ""
-        info_text_simultaneous_car = "Charge "
-        info_text_simultaneous_time = ""
+        now = self.ADapi.datetime(aware=True)
+        windows, waiting, below = self._current_plan(now)
+        info_text = self._info_text(windows, waiting, below, now)
+        new_info = self._mark_informed(now)
+        plan_changed = (windows, waiting, below) != self._last_plan
+        self._last_plan = (windows, waiting, below)
+        self.ADapi.log(f"Charge info: new {new_info}, changed {plan_changed}, helper {self.infotext}, {len(info_text)} chars: {info_text}", level = 'DEBUG') ###
 
-        sorted_queue: List[ChargingQueueItem] = sorted(
-            self.chargingQueue, key=lambda c: c.finish_by_hour
-        )
-
-        for car in sorted_queue:
-            if self.charging_scheduled_with_updated_data(
-                vehicle_id=car.vehicle_id,
-                kWhRemaining=car.kWhRemaining,
-                finish_by_hour=car.finish_by_hour,
-            ):
-                already_informed = (
-                    car.informedStart is not None
-                    and car.informedStop is not None
-                    and car.chargingStart is not None
-                )
-
-                if already_informed:
-                    if (
-                        car.informedStart != car.chargingStart
-                        or car.informedStop != car.chargingStop
-                    ):
-                        send_new_info = True
-                else:
-                    send_new_info = True
-
-                if car.chargingStart is not None:
-                    car.informedStart = car.chargingStart
-                    car.informedStop = car.chargingStop
-
-                    timestr_start = _fmt(car.chargingStart)
-                    timestr_eta_stop = _fmt(car.estimateStop)
-                    timestr_stop = _fmt(car.chargingStop)
-
-                    if car.vehicle_id in self.simultaneousChargeComplete:
-                        info_text_simultaneous_car += f"{car.name} & "
-                        info_text_simultaneous_time = (
-                            f" at {timestr_start}. Finish est at {timestr_eta_stop}. "
-                            f"Stop no later than {timestr_stop}. "
-                        )
-                    else:
-                        info_text += (
-                            f"Start {car.name} at {timestr_start}. "
-                            f"Finish est at {timestr_eta_stop} with {car.estHourCharge} hours to charge. "
-                            f"Stop no later than {timestr_stop}. "
-                        )
-                    times_set = True
-
-            if car.price is not None:
-                if lowest_price is None or car.price < lowest_price:
-                    lowest_price = car.price
-
-        if info_text_simultaneous_car.endswith(" & "):
-            info_text_simultaneous_car = info_text_simultaneous_car[:-3]
-
-        info_text += info_text_simultaneous_car + info_text_simultaneous_time
-
-        if not times_set and lowest_price is not None:
-            price_msg = (
-                f"Charge if price is lower than {self.electricalPriceApp.currency} "
-                f"{round(lowest_price - self.electricalPriceApp.current_daytax, 3)} (day) or "
-                f"{self.electricalPriceApp.currency} {round(lowest_price - self.electricalPriceApp.current_nighttax, 3)} (night/weekend)"
-            )
-            info_text = price_msg
-
-        if self.infotext not in (None, "Charge "):
-            info_text.strip()
+        if self.infotext is not None:
             self.ADapi.call_service(
                 "input_text/set_value",
-                value = info_text,
+                value = self._shorten(info_text, self._infotext_limit()),
                 entity_id = self.infotext,
                 namespace = self.namespace,
             )
 
-            if send_new_info:
-                data = {"tag": "chargequeue"}
-                self.notify_app.send_notification(
-                    message = info_text,
-                    message_title = "🔋 Charge Queue",
-                    message_recipient = self.recipients,
-                    also_if_not_home = True,
-                    data = data,
-                )
+        if new_info and plan_changed and self.notify_app is not None:
+            self.notify_app.send_notification(
+                message = info_text,
+                message_title = "🔋 Charge Queue",
+                message_recipient = self.recipients,
+                also_if_not_home = True,
+                data = {"tag": "chargequeue"},
+            )
