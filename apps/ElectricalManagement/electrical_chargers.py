@@ -10,6 +10,8 @@ from registry import Registry
 from guest import GuestManager, DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
 # Easee: resume resends at 60 s while 'ready_to_charge' before backing off to EASEE_READY_BACKOFF_SECONDS.
+# Wake-up / force-update rounds (10 min apart) per cable event while no car is linked to the Easee; 0 = no limit.
+DEFAULT_LINK_MAX_ROUNDS = 6
 EASEE_READY_RESENDS_AT_60S = 10
 EASEE_READY_BACKOFF_SECONDS = 600
 # Easee: minutes a zero `_current` sample must hold while 'charging' before ampereCharging is set to 0.
@@ -51,6 +53,12 @@ class Charger:
         self._link_check_handler = None
         self._link_cycle_start = None
         self._link_check_attempts:int = 0
+        # Wake-up rounds started since the cable event, the start of the last one, and whether the
+        # 'no car found' notification has been sent (see _find_car_with_fresh_data). Easee sets link_max_rounds.
+        self.link_max_rounds:int = DEFAULT_LINK_MAX_ROUNDS
+        self._link_rounds:int = 0
+        self._link_last_round_start = None
+        self._link_notified:bool = False
         self.reason_for_no_current_handler = None
         self.session_start_charge:float = 0.0
 
@@ -178,7 +186,7 @@ class Charger:
         return candidates, unverified
 
     def _link_car(self, car:Car) -> None:
-        self._cancel_link_check()
+        self._cancel_link_check(reset_rounds = True)
         if cancel_timer_handler(ADapi = self.ADapi, handler = self._recheck_findCarConnectedToCharger_handler, name = self.charger):
             self._recheck_findCarConnectedToCharger_handler = None
         Registry.set_link(car, self)
@@ -229,7 +237,8 @@ class Charger:
     def _find_car_with_fresh_data(self) -> bool:
         """ More than one car can be the one on this charger, and a car that sleeps reports
             'NoPower' from old data. The cars that are not charging are woken and their data
-            is refreshed once per LINK_CYCLE_COOLDOWN_MINUTES. A car is linked only when it is the
+            is refreshed once per LINK_CYCLE_COOLDOWN_MINUTES, at most link_max_rounds times per cable
+            event (then one notification, and the cars are left alone). A car is linked only when it is the
             only one that still matches on data newer than that. Waiting for the data takes at
             most LINK_CHECK_MAX * LINK_CHECK_SECONDS, then the cached data is used. """
 
@@ -238,14 +247,28 @@ class Charger:
 
         now = self.ADapi.datetime(aware = True)
         contenders = self._link_contenders()
-        if (
+        cooldown = self.LINK_CYCLE_COOLDOWN_MINUTES * 60
+        if self._link_rounds >= self.link_max_rounds > 0:
+            # All rounds are used: no more wake-ups or force updates. A car is still linked when it
+            # reports 'NoPower' by itself on data newer than the last round. The notification comes
+            # when the last round's slot has passed, once per cable event.
+            if self._link_last_round_start is not None and (now - self._link_last_round_start).total_seconds() >= cooldown:
+                if not self._link_notified:
+                    self._link_notified = True
+                    self._notify_no_car_found()
+                return self._find_and_link(fresh_since = self._link_last_round_start)
+            if self._link_cycle_start is None:
+                return self._find_and_link(fresh_since = self._link_last_round_start)
+        elif (
             self._link_cycle_start is None
-            or (now - self._link_cycle_start).total_seconds() > self.LINK_CYCLE_COOLDOWN_MINUTES * 60
+            or (now - self._link_cycle_start).total_seconds() > cooldown
         ):
             self._link_cycle_start = now
+            self._link_last_round_start = now
+            self._link_rounds += 1
             self._link_check_attempts = 0
             for car in contenders:
-                self.ADapi.log(f"{self.charger}: refreshing {car.carName} for link, asleep {car.asleep()}, car's own link: {getattr(car.connected_charger, 'charger', None)}") ###
+                self.ADapi.log(f"{self.charger}: refreshing {car.carName} for link, round {self._link_rounds}/{self.link_max_rounds}, asleep {car.asleep()}, car's own link: {getattr(car.connected_charger, 'charger', None)}") ###
                 car.refresh_for_link()
 
         waiting = [
@@ -262,16 +285,25 @@ class Charger:
             accept_unverified = self._link_check_attempts >= self.LINK_CHECK_MAX
         )
 
+    def _notify_no_car_found(self) -> None:
+        """ The wake-up rounds are used up and no car was linked. Easee overrides this. """
+        pass
+
     def _link_check_running(self) -> bool:
         return (
             self._link_check_handler is not None
             and self.ADapi.timer_running(self._link_check_handler)
         )
 
-    def _cancel_link_check(self) -> None:
+    def _cancel_link_check(self, reset_rounds:bool = False) -> None:
+        """ reset_rounds: a car was linked or the cable is out, so the next cable event gets all its rounds. """
         if cancel_timer_handler(ADapi = self.ADapi, handler = self._link_check_handler, name = self.charger):
             self._link_check_handler = None
         self._link_cycle_start = None
+        if reset_rounds:
+            self._link_rounds = 0
+            self._link_last_round_start = None
+            self._link_notified = False
 
     def _link_check(self, kwargs) -> None:
         """ Waits for the woken cars to report again, asks the ones that have not, then tries to link. """
@@ -1011,6 +1043,7 @@ class Easee(Charger):
         notify_app,
         recipients,
         guest_remove_after_minutes:int = DEFAULT_GUEST_REMOVE_AFTER_MINUTES,
+        link_max_rounds:int = DEFAULT_LINK_MAX_ROUNDS,
     ):
 
         charger_id = None
@@ -1044,6 +1077,7 @@ class Easee(Charger):
             notify_app = notify_app,
             recipients = recipients,
         )
+        self.link_max_rounds = max(0, int(link_max_rounds))
 
         self._set_min_ampere_from_phases()
 
@@ -1383,7 +1417,7 @@ class Easee(Charger):
                 self._CleanUpWhenChargingStopped()
                 # A completed guest session is ended when the charger disconnects (_check_if_still_disconnected).
         elif new == 'disconnected':
-            self._cancel_link_check()
+            self._cancel_link_check(reset_rounds = True)
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
                 self._check_if_still_disconnected_handler = None
             self._check_if_still_disconnected_handler = self.ADapi.run_in(self._check_if_still_disconnected, self._disconnected_check_seconds)
@@ -1571,6 +1605,14 @@ class Easee(Charger):
             f"{EASEE_READY_BACKOFF_SECONDS // 60} minutes."
         )
         self._warn_and_notify(message)
+
+    def _notify_no_car_found(self) -> None:
+        guest_text = " Turn on the guest switch to charge a car the app does not know." if self.guest_manager is not None else ""
+        self._warn_and_notify(
+            f"Easee {self.charger} has a cable in but no car was found after {self._link_rounds} wake-up rounds "
+            f"({self._link_rounds * self.LINK_CYCLE_COOLDOWN_MINUTES} min). It will not charge.{guest_text} "
+            "A known car is still linked if it reports in by itself."
+        )
 
     def _warn_and_notify(self, message:str) -> None:
         self.ADapi.log(message, level = 'WARNING')
@@ -2251,6 +2293,8 @@ class Audi_charger(Charger):
         self._call_audi_action('start_charger')
 
     def _send_stop_command(self) -> None:
+        # Owner decision: stop is stop_charger only. Lowering the car's charge limit as a fallback was rejected on
+        # purpose (the car could keep a very low limit after driving off). Do not add it.
         if not self._stop_warned:
             self._stop_warned = True
             self.ADapi.log(

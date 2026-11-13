@@ -29,6 +29,8 @@ class GuestCar(Car):
         (max_kWh_charged, battery size) untouched by guest sessions. """
 
     is_guest: bool = True
+    # No charge_now helper entity exists for guests: "Charge now" on a guest only sets the in-app flag.
+    # Whether the Easee entry should get a helper for guests is an open owner question.
 
 
 class GuestManager:

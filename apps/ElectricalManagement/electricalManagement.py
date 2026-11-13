@@ -45,7 +45,7 @@ from utils import (
 from registry import Registry
 from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car, Audi_car, STALE_DATA_MINUTES
-from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger
+from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger, DEFAULT_LINK_MAX_ROUNDS
 from electrical_heater import Heater, Climate, On_off_switch, ClimateCommanderHeater
 from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
@@ -977,6 +977,20 @@ class ElectricalUsage(ad.ADBase):
                 )
                 guest_remove_after_minutes = DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
+            # Config only: wake-up / force-update rounds (10 min apart) per cable event, 0 = no limit.
+            link_max_rounds = cfg.get('link_max_rounds', DEFAULT_LINK_MAX_ROUNDS)
+            try:
+                link_max_rounds = int(link_max_rounds)
+                if link_max_rounds < 0:
+                    raise ValueError("below 0")
+            except (ValueError, TypeError):
+                self.ADapi.log(
+                    f"{charger}: link_max_rounds '{cfg.get('link_max_rounds')}' is not a whole number >= 0. "
+                    f"Using {DEFAULT_LINK_MAX_ROUNDS}.",
+                    level = 'WARNING'
+                )
+                link_max_rounds = DEFAULT_LINK_MAX_ROUNDS
+
             # all_cars() is a live dict view: cars added later (guests) are visible to the Easee.
             easee = Easee(
                 api = self,
@@ -988,6 +1002,7 @@ class ElectricalUsage(ad.ADBase):
                 notify_app = self.notify_app,
                 recipients = self.recipients,
                 guest_remove_after_minutes = guest_remove_after_minutes,
+                link_max_rounds = link_max_rounds,
             )
             self.chargers[easee.charger_id] = easee
 
