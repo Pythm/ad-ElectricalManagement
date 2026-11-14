@@ -7,7 +7,7 @@ from electrical_cars import Car
 from utils import UNAVAIL, cancel_timer_handler, cancel_listen_handler, to_float_or_none
 
 from registry import Registry
-from guest import GuestManager, DEFAULT_GUEST_REMOVE_AFTER_MINUTES
+from guest import GuestManager, DEFAULT_GUEST_REMOVE_AFTER_MINUTES, DEFAULT_GUEST_RESUME_MINUTES
 
 # Easee: resume resends at 60 s while 'ready_to_charge' before backing off to EASEE_READY_BACKOFF_SECONDS.
 # Wake-up / force-update rounds (10 min apart) per cable event while no car is linked to the Easee; 0 = no limit.
@@ -1044,6 +1044,7 @@ class Easee(Charger):
         recipients,
         guest_remove_after_minutes:int = DEFAULT_GUEST_REMOVE_AFTER_MINUTES,
         link_max_rounds:int = DEFAULT_LINK_MAX_ROUNDS,
+        guest_resume_minutes:int = DEFAULT_GUEST_RESUME_MINUTES,
     ):
 
         charger_id = None
@@ -1066,6 +1067,8 @@ class Easee(Charger):
         # Seconds the Easee must report 'disconnected' before _check_if_still_disconnected acts
         # (guest session ended, or a Tesla relinked to its onboard charger). Config only, not persisted.
         self._disconnected_check_seconds:int = max(1, int(guest_remove_after_minutes)) * 60
+        # Minutes after `completed` in which a guest that charges again is planned again (0 = never).
+        self.guest_resume_minutes:int = max(0, int(guest_resume_minutes))
 
         super().__init__(
             api = api,
@@ -1370,7 +1373,9 @@ class Easee(Charger):
         ):
             if self.connected_vehicle is not None:
                 self.connected_vehicle._completion_deferred = False   # a new session: the held-back completion is void
-                if (
+                if self.guest_manager is not None and self.guest_manager.resume_after_complete():
+                    pass   # a guest that said Finished (door opened) is planned again
+                elif (
                     self.kWhRemaining() > 2
                     and not self.connected_vehicle.charging_scheduled_with_updated_data()
                 ):
@@ -1413,10 +1418,14 @@ class Easee(Charger):
                     )
 
         elif new == 'completed':
+            if self.guest_manager is not None:
+                self.guest_manager.note_completed()
             if self.connected_vehicle is not None:
                 self._CleanUpWhenChargingStopped()
                 # A completed guest session is ended when the charger disconnects (_check_if_still_disconnected).
         elif new == 'disconnected':
+            if self.guest_manager is not None:
+                self.guest_manager.forget_completed()
             self._cancel_link_check(reset_rounds = True)
             if cancel_timer_handler(ADapi = self.ADapi, handler = self._check_if_still_disconnected_handler, name = self.charger):
                 self._check_if_still_disconnected_handler = None

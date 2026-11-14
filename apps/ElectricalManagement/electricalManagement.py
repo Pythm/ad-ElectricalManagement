@@ -47,9 +47,9 @@ from scheduler import Scheduler
 from electrical_cars import Car, Tesla_car, Audi_car, STALE_DATA_MINUTES
 from electrical_chargers import Charger, Tesla_charger, Audi_charger, Easee, Onboard_charger, DEFAULT_LINK_MAX_ROUNDS
 from electrical_heater import Heater, Climate, On_off_switch, ClimateCommanderHeater
-from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES
+from guest import DEFAULT_GUEST_REMOVE_AFTER_MINUTES, DEFAULT_GUEST_RESUME_MINUTES
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 MAX_TEMP_DIFFERENCE = 5
 MAX_CONSUMPTION_RATIO_DIFFERENCE = 3
@@ -977,6 +977,20 @@ class ElectricalUsage(ad.ADBase):
                 )
                 guest_remove_after_minutes = DEFAULT_GUEST_REMOVE_AFTER_MINUTES
 
+            # Config only: minutes after `completed` in which a guest that charges again is planned again, 0 = never.
+            guest_resume_minutes = cfg.get('guest_resume_minutes', DEFAULT_GUEST_RESUME_MINUTES)
+            try:
+                guest_resume_minutes = int(guest_resume_minutes)
+                if guest_resume_minutes < 0:
+                    raise ValueError("below 0")
+            except (ValueError, TypeError):
+                self.ADapi.log(
+                    f"{charger}: guest_resume_minutes '{cfg.get('guest_resume_minutes')}' is not a whole number >= 0. "
+                    f"Using {DEFAULT_GUEST_RESUME_MINUTES}.",
+                    level = 'WARNING'
+                )
+                guest_resume_minutes = DEFAULT_GUEST_RESUME_MINUTES
+
             # Config only: wake-up / force-update rounds (10 min apart) per cable event, 0 = no limit.
             link_max_rounds = cfg.get('link_max_rounds', DEFAULT_LINK_MAX_ROUNDS)
             try:
@@ -1003,6 +1017,7 @@ class ElectricalUsage(ad.ADBase):
                 recipients = self.recipients,
                 guest_remove_after_minutes = guest_remove_after_minutes,
                 link_max_rounds = link_max_rounds,
+                guest_resume_minutes = guest_resume_minutes,
             )
             self.chargers[easee.charger_id] = easee
 

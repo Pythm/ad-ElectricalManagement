@@ -9,7 +9,7 @@ from pydantic_models import ChargingQueueItem, WattSlot
 from registry import Registry
 from utils import NO_TOMORROW_PRICES_WINDOW, cancel_timer_handler, get_next_runtime_aware, price_now_or_inf, slot_index_now, to_float_or_none
 
-LOW_PRICE_PATH_WINDOW = ("09:00:00", "14:00:00")   # without tomorrow's prices a low price is charging time here
+LOW_PRICE_PATH_WINDOW = NO_TOMORROW_PRICES_WINDOW   # without tomorrow's prices a low price is charging time here (06:00-15:00)
 INFO_UPDATE_DELAY_SECONDS = 3   # lets several queue changes in a row end in one update
 INFOTEXT_MAX_LENGTH = 255       # the most a Home Assistant input_text can hold
 INFOTEXT_NOTHING_PLANNED = "No planned charging"

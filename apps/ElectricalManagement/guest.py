@@ -11,17 +11,25 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Optional
 
 from electrical_cars import Car
 from pydantic_models import CarData
 from registry import Registry
-from utils import cancel_timer_handler, cancel_listen_handler
+from utils import cancel_timer_handler, cancel_listen_handler, to_float_or_none
 
 DEFAULT_GUEST_KWH = 5.0
 # Minutes the Easee must stay 'disconnected' before the guest session is ended (config
 # `guest_remove_after_minutes` on the easee entry). 12 minutes = the 720 s timer the app always had.
 DEFAULT_GUEST_REMOVE_AFTER_MINUTES = 12
+# A car without sensors says 'Finished' when a door is opened and charges again when it is closed.
+# The Easee reports `completed` and then charging/awaiting_start again. A guest is planned again when
+# that happens within this many minutes of `completed` (config `guest_resume_minutes` on the easee
+# entry, 0 = never). Later it is taken as a car that is really full. A new cable event always plans.
+DEFAULT_GUEST_RESUME_MINUTES = 60
+# The guest has no battery reading, so it is planned again with at least this many kWh.
+GUEST_RESUME_MIN_KWH = 10.0
 
 
 class GuestCar(Car):
@@ -60,6 +68,8 @@ class GuestManager:
         self.guest: Optional[GuestCar] = None
         # kWh the guest asked for last time, used as start value for the next guest. Not stored between restarts.
         self.last_kWh: float = DEFAULT_GUEST_KWH
+        # When the Easee last reported `completed` (set by the charger), for resume_after_complete.
+        self._completed_at: Optional[datetime] = None
 
         self.switch_is_on: bool = self.ADapi.get_state(self.switch, namespace = self.namespace) == 'on'
         self.ADapi.listen_state(self.switch_changed, self.switch, namespace = self.namespace)
@@ -73,6 +83,50 @@ class GuestManager:
 
     def is_guest(self, car) -> bool:
         return car is not None and car is self.guest
+
+    # ---- Finished, then charging again -------------------------------------------------- #
+
+    def note_completed(self) -> None:
+        """ The Easee reported `completed`. """
+
+        self._completed_at = self.ADapi.datetime(aware = True)
+
+    def forget_completed(self) -> None:
+        """ New cable event: the next `completed` starts a new count. """
+
+        self._completed_at = None
+
+    def resume_after_complete(self) -> bool:
+        """ The Easee left `completed` while the guest is its vehicle. Completion removed the guest from the
+            queue and set its kWh to -1, so without this it is never planned again and the charger is paused.
+            Within `guest_resume_minutes` of `completed` the guest gets max(10, kWh - session energy) and is
+            planned like any car: it charges in its window or below the charge price, otherwise the
+            charger is paused as before (the pre-heat block stays). Returns True when the guest was planned. """
+
+        since, self._completed_at = self._completed_at, None
+        guest = self.guest
+        if guest is None or self.charger.connected_vehicle is not guest or since is None:
+            return False
+        minutes = getattr(self.charger, 'guest_resume_minutes', DEFAULT_GUEST_RESUME_MINUTES)
+        now = self.ADapi.datetime(aware = True)
+        if minutes <= 0 or now - since > timedelta(minutes = minutes):
+            self.ADapi.log(
+                f"{self.charger.charger}: guest {guest.carName} charging again {int((now - since).total_seconds() // 60)} min "
+                f"after completed (more than {minutes} min). Not planned again.",
+                level = 'INFO'
+            )
+            return False
+        session = 0.0
+        if self.charger.charger_data.session_energy:
+            session = to_float_or_none(self.ADapi.get_state(self.charger.charger_data.session_energy, namespace = self.namespace)) or 0.0
+        kWh = max(GUEST_RESUME_MIN_KWH, self.last_kWh - session)
+        guest.car_data.kWh_remain_to_charge = kWh
+        self.ADapi.log(
+            f"{self.charger.charger}: guest {guest.carName} charging again after completed. Planned again with {kWh:.1f} kWh.",
+            level = 'INFO'
+        )
+        guest.findNewChargeTime()
+        return True
 
     # ---- switch -------------------------------------------------------------------------- #
 
@@ -158,6 +212,10 @@ class GuestManager:
         """ Queue the guest with the kWh it has now. Does nothing without a guest or a cable. """
 
         if self.guest is not None and self.cable_connected():
+            if self.guest.car_data.kWh_remain_to_charge <= 0:
+                # The guest finished earlier and the cable was out and in again within guest_remove_after_minutes:
+                # completion left -1 behind, and this is a new session.
+                self.guest.car_data.kWh_remain_to_charge = self.last_kWh
             self.guest.findNewChargeTime()
 
     def recreate_at_startup(self) -> None:
