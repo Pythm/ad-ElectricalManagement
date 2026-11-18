@@ -1077,14 +1077,14 @@ class ElectricalUsage(ad.ADBase):
         if persisted_heater:
             for key in CLIMATE_KEYS:
                 value = getattr(persisted_heater, key, None)
-                if key == 'target_heater_input' and 'target_indoor_input' in heater_cfg: ### New Key in version 1.0.3
+                if key == 'target_heater_input' and 'target_indoor_input' in heater_cfg:
                     if value is None:
                         if key not in heater_cfg or heater_cfg[key] is None:
                             if set_validated(self.ADapi, persisted_heater, key, heater_cfg['target_indoor_input']):
                                 value_changed = True
 
                             continue
-                if key == 'target_heater_temp' and 'target_indoor_temp' in heater_cfg: ### New Key in version 1.0.3
+                if key == 'target_heater_temp' and 'target_indoor_temp' in heater_cfg:
                     if value is None:
                         if key not in heater_cfg or heater_cfg[key] is None:
                             if set_validated(self.ADapi, persisted_heater, key, heater_cfg['target_indoor_temp']):
@@ -2037,7 +2037,6 @@ class ElectricalUsage(ad.ADBase):
                             charger.connected_vehicle is None
                             and charger.getChargingState() in ('Stopped', 'awaiting_start')
                         ):
-                            self.ADapi.log(f"{car.carName} {ChargingState} on its own charger: trying {charger.charger}", level = 'DEBUG') ###
                             charger.findCarConnectedToCharger()
                 else:
                     car_connected_to_charger = False
@@ -2282,7 +2281,6 @@ class ElectricalUsage(ad.ADBase):
                     if charger.connected_vehicle is None:
                         charger.findCarConnectedToCharger()
             if car.connected_charger is None:
-                self.ADapi.log(f"{car.carName} is not connected") ###
                 continue
             if (
                 car.vehicle_id not in charging_list and
@@ -2377,7 +2375,6 @@ class ElectricalUsage(ad.ADBase):
                     if charger.connected_vehicle is None:
                         charger.findCarConnectedToCharger()
             if car.connected_charger is None:
-                self.ADapi.log(f"{car.carName} is not connected") ###
                 continue
 
             if car.connected_charger.getChargingState() == "Charging":
@@ -2612,7 +2609,6 @@ class ElectricalUsage(ad.ADBase):
                 heater_watt = max(0.0, heater_watt - reduce_avg_heater_watt * pct)
                 heater_consumption = heater_watt * duration_hours
                 if heater_consumption <= 0:
-                    self.ADapi.log(f"{heater_id}: heater_consumption {heater_consumption}, total_power {total_power}, stored heater use {reduce_avg_heater_watt}", level = 'DEBUG') ###
                     continue
 
                 idx = bisect.bisect_left([s.start for s in slots], end_time)
@@ -2849,7 +2845,6 @@ class ElectricalUsage(ad.ADBase):
                 # One charger that fails must not keep the other chargers and the heaters on.
                 try:
                     charger.stop_on_fire()
-                    self.ADapi.log(f"Fire: {charger.charger} state {charger.getChargingState()}, start loop {charger.checkCharging_handler is not None and self.ADapi.timer_running(charger.checkCharging_handler)}, linked {getattr(charger.connected_vehicle, 'carName', None)} state {charger.connected_vehicle.getCarChargerState() if charger.connected_vehicle is not None else None}") ###
                 except Exception as e:
                     charger.doNotStartMe = True
                     self.ADapi.log(f"{charger.charger} could not be stopped for the fire alarm: {e}", level = 'ERROR')

@@ -45,7 +45,7 @@ class Registry:
         """ Debug line for a link change, so power.log shows which car sits on which charger. """
         api = getattr(car, "ADapi", None)
         if api is not None:
-            api.log(message) ###
+            api.log(message)
 
     @classmethod
     def set_onboard_link(cls, car: "Car", charger: "Charger") -> None:
